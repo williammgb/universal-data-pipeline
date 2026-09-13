@@ -38,3 +38,7 @@ while its section has no `built:` line.
 - smoke gate passed (37s): postgres 18.6 (Debian 18.6-1.pgdg13+2)
 - full gate passed (15s): 16 passed in 1.60s
 - fast gate passed (5s): 15 passed, 1 deselected in 1.76s
+- built: the skeleton, a `udp` command that prints its version and connects to Postgres 18 running in the WSL Docker engine, with fast, full and smoke gates in `./run`, a container image, and a GitHub Actions workflow that runs the fast gate on every push.
+- built: `./run` keeps one idle WSL session open while a database stack runs, because the first full gate failed when WSL shut its Linux system down about 15 seconds after the last command and stopped Postgres mid-test.
+- built: `./run` connects on 127.0.0.1 instead of localhost, because from Windows localhost tries IPv6 first and the connection hung for 130 seconds before falling back, which is where the second full gate's two minutes went.
+- built: the CI workflow pins setup-uv to v10.1.0, because the first CI run failed with "unable to find version `v10`" (that action publishes only exact version tags); the second CI run passed.

@@ -5,18 +5,18 @@
     {
       "id": 0,
       "name": "skeleton",
-      "state": "planned",
+      "state": "in-progress",
       "commit": null,
       "checks": [
-        { "claim": "own git repo exists; the folder is ignored by the Maxxing repo; .gitignore keeps only SPEC.md, slices.json and JOURNAL.md from .work/", "passes": false, "evidence": null },
-        { "claim": "./run setup (uv sync --frozen) installs the Python 3.14 environment with the full approved dependency list", "passes": false, "evidence": null },
-        { "claim": "uv run udp --version prints the version", "passes": false, "evidence": null },
-        { "claim": "wsl docker compose starts Postgres 18 and udp doctor connects from Windows and prints the server version", "passes": false, "evidence": null },
-        { "claim": "one fast test passes and one db test passes in the full gate", "passes": false, "evidence": null },
-        { "claim": "a GitHub Actions workflow runs the fast gate on push", "passes": false, "evidence": null },
-        { "claim": "the fast gate passes", "passes": false, "evidence": null },
-        { "claim": "the full gate passes, and its real duration is recorded in SPEC.md", "passes": false, "evidence": null },
-        { "claim": "./run smoke starts the real entrypoint and it comes up", "passes": false, "evidence": null }
+        { "claim": "own git repo exists; the folder is ignored by the Maxxing repo; .gitignore keeps only SPEC.md, slices.json and JOURNAL.md from .work/", "passes": true, "evidence": "git rev-parse --show-toplevel printed C:/Users/Willi/Maxxing/universal-data-pipeline with origin williammgb/universal-data-pipeline; git -C .. check-ignore -v printed '.gitignore:17:universal-data-pipeline/'; git ls-files .work printed only JOURNAL.md, SPEC.md, slices.json" },
+        { "claim": "./run setup (uv sync --frozen) installs the Python 3.14 environment with the full approved dependency list", "passes": true, "evidence": "./run setup installed from uv.lock with CPython 3.14.3 (54 packages resolved); ./run fast test_approved_dependency_imports passed for all 14 runtime dependencies; also on CI ubuntu-24.04" },
+        { "claim": "uv run udp --version prints the version", "passes": true, "evidence": "uv run --locked udp --version printed 0.1.0; test_version_prints_package_version passed in ./run fast" },
+        { "claim": "wsl docker compose starts Postgres 18 and udp doctor connects from Windows and prints the server version", "passes": true, "evidence": "./run smoke: compose up --wait reported udp-smoke-postgres-1 Healthy; uv run udp doctor on Windows printed 'postgres 18.6 (Debian 18.6-1.pgdg13+2)'" },
+        { "claim": "one fast test passes and one db test passes in the full gate", "passes": true, "evidence": "./run fast printed '15 passed, 1 deselected in 1.66s'; ./run full printed '16 passed in 1.60s' including test_doctor_reports_postgres_18" },
+        { "claim": "a GitHub Actions workflow runs the fast gate on push", "passes": true, "evidence": "gh run 34785351674 on commit 4eb7eca completed success; its log printed 'All checks passed!', 'Success: no issues found in 5 source files', '15 passed, 1 deselected in 2.98s'" },
+        { "claim": "the fast gate passes", "passes": true, "evidence": "./run fast exit 0 in 5s warm, printed '15 passed, 1 deselected in 1.66s'" },
+        { "claim": "the full gate passes, and its real duration is recorded in SPEC.md", "passes": true, "evidence": "./run full exit 0 in 15s warm (app image cached), printed '16 passed in 1.60s'; durations written under Skeleton in SPEC.md" },
+        { "claim": "./run smoke starts the real entrypoint and it comes up", "passes": true, "evidence": "./run smoke exit 0 in 38s; the app container and the Windows host both ran udp doctor and printed 'postgres 18.6 (Debian 18.6-1.pgdg13+2)'" }
       ]
     },
     {
