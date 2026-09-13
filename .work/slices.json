@@ -5,8 +5,8 @@
     {
       "id": 0,
       "name": "skeleton",
-      "state": "in-progress",
-      "commit": null,
+      "state": "done",
+      "commit": "fa0bad2c0d6bcaddfa6d649414bf4ade9d675c3a",
       "checks": [
         { "claim": "own git repo exists; the folder is ignored by the Maxxing repo; .gitignore keeps only SPEC.md, slices.json and JOURNAL.md from .work/", "passes": true, "evidence": "git rev-parse --show-toplevel printed C:/Users/Willi/Maxxing/universal-data-pipeline with origin williammgb/universal-data-pipeline; git -C .. check-ignore -v printed '.gitignore:17:universal-data-pipeline/'; git ls-files .work printed only JOURNAL.md, SPEC.md, slices.json" },
         { "claim": "./run setup (uv sync --frozen) installs the Python 3.14 environment with the full approved dependency list", "passes": true, "evidence": "./run setup installed from uv.lock with CPython 3.14.3 (54 packages resolved); ./run fast test_approved_dependency_imports passed for all 14 runtime dependencies; also on CI ubuntu-24.04" },
