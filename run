@@ -1,0 +1,146 @@
+#!/bin/sh
+# One entrypoint for this project. Every command a person or an agent runs goes
+# through here: one place to look, one thing to allowlist, one thing that can't
+# drift from what SPEC.md claims the commands are.
+set -eu
+
+# A gate that passes stamps .work/gates/<task>.stamp. The commit hook compares
+# those stamps against the files being committed and refuses a commit the fast
+# gate never saw — gate output older than the code it is quoted as proving is not
+# evidence.
+stamp() {
+  mkdir -p .work/gates
+  date -u +%Y-%m-%dT%H:%M:%SZ > ".work/gates/$1.stamp"
+}
+
+# One line in .work/JOURNAL.md, the project's record of what was tested. A gate run
+# with the same result as the line just above it adds nothing, so the builder's
+# inner loop of fast-gate reruns does not bury everything else.
+journal() {
+  file=.work/JOURNAL.md
+  [ -f "$file" ] || return 0
+  last=$(grep -v '^[[:space:]]*$' "$file" | tail -n 1)
+  case "$last" in "- ${1%% (*}"*) return 0 ;; esac
+  [ -z "$(tail -c 1 "$file")" ] || echo >> "$file"
+  printf -- '- %s\n' "$1" >> "$file"
+}
+
+# gate <name> <command...>
+# Runs one gate with its output shown as it goes. A filtered run (./run fast -k name)
+# proved a subset, not the gate, so it neither stamps nor writes to the journal. A
+# full run stamps when it passes, and journals either way with the last line the
+# command printed — for most test runners, the count.
+gate() {
+  name=$1; shift
+  if [ "$filtered" -gt 0 ]; then "$@"; return; fi
+  mkdir -p .work/gates
+  log=".work/gates/$name.log"
+  rm -f "$log.code"
+  started=$(date +%s)
+  { "$@" && echo 0 > "$log.code" || echo $? > "$log.code"; } 2>&1 | tee "$log"
+  code=$(cat "$log.code" 2>/dev/null || echo 1)
+  took=$(( $(date +%s) - started ))
+  if [ "$code" -eq 0 ]; then result=passed; stamp "$name"; else result=failed; fi
+  said=$(grep -v '^[[:space:]]*$' "$log" | tail -n 1 | tr -d '\033' | cut -c1-160)
+  journal "$name gate $result (${took}s): $said"
+  return "$code"
+}
+
+usage() {
+  cat <<'USAGE'
+usage: ./run <task> [args]
+
+  setup   install the pinned toolchain and the locked dependencies
+  fast    the fast gate — under ~60s, no external services, no real data volume
+  full    the full gate — real size, real dependencies, allowed to be slow
+  smoke   start the real entrypoint and prove it comes up
+  check   syntax or lint one file:  ./run check path/to/file
+USAGE
+}
+
+# Containers run on the Docker engine inside WSL, never Docker Desktop. Each gate
+# gets its own compose project, host port and throwaway password, so a gate never
+# touches a developer's database and no password is ever written down.
+stack_project=
+stack_port=
+stack_password=
+
+compose() {
+  wsl.exe -e env POSTGRES_PASSWORD="$stack_password" UDP_PG_PORT="$stack_port" \
+    docker compose -p "$stack_project" -f deploy/compose.yaml --profile app "$@"
+}
+
+# WSL shuts the distro down about 15 seconds after the last wsl.exe command ends,
+# stopping every container with it — even while tests on Windows are still using
+# the database. One idle wsl.exe session held open for the life of the stack
+# keeps it up.
+keepalive_start() {
+  MSYS_NO_PATHCONV=1 wsl.exe -e sh -c \
+    "echo \$\$ > /tmp/$stack_project.keepalive; exec sleep 86400" > /dev/null 2>&1 &
+}
+
+keepalive_stop() {
+  MSYS_NO_PATHCONV=1 wsl.exe -e sh -c \
+    "kill \$(cat /tmp/$stack_project.keepalive) 2>/dev/null; rm -f /tmp/$stack_project.keepalive"
+}
+
+stack_start() {
+  stack_project=$1
+  stack_port=$2
+  stack_password=$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
+  # 127.0.0.1, not localhost: from Windows, localhost tries IPv6 first, and IPv6
+  # to a port published inside WSL hangs for two minutes instead of being refused.
+  UDP_DATABASE_URL="postgresql://udp:$stack_password@127.0.0.1:$stack_port/udp"
+  export UDP_DATABASE_URL
+  keepalive_start
+  compose up -d --wait postgres
+}
+
+stack_stop() {
+  compose down -v --remove-orphans > /dev/null 2>&1
+  keepalive_stop
+}
+
+fast_gate() {
+  uv run --locked ruff check . &&
+    uv run --locked ruff format --check . &&
+    uv run --locked mypy &&
+    uv run --locked pytest -q -m "not db" "$@"
+}
+
+full_gate() {
+  code=0
+  stack_start udp-gate 55432 &&
+    compose build app &&
+    uv run --locked pytest -q "$@" || code=$?
+  stack_stop || true
+  return "$code"
+}
+
+smoke_gate() {
+  code=0
+  stack_start udp-smoke 55433 &&
+    compose run --build --rm app &&
+    uv run --locked udp doctor || code=$?
+  stack_stop || true
+  return "$code"
+}
+
+task="${1:-}"
+[ $# -gt 0 ] && shift
+filtered=$#
+
+case "$task" in
+  setup) uv sync --frozen ;;
+  fast)  gate fast fast_gate "$@" ;;
+  full)  gate full full_gate "$@" ;;
+  smoke) gate smoke smoke_gate ;;
+  check)
+    case "${1:-}" in
+      *.py) uv run --locked ruff check "$1" ;;
+      *) ;;
+    esac
+    ;;
+  ""|-h|--help|help) usage ;;
+  *) echo "run: unknown task '$task'" >&2; usage >&2; exit 1 ;;
+esac

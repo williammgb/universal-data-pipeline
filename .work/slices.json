@@ -1,0 +1,143 @@
+{
+  "project": "universal-data-pipeline",
+  "updated": "2026-09-13",
+  "slices": [
+    {
+      "id": 0,
+      "name": "skeleton",
+      "state": "planned",
+      "commit": null,
+      "checks": [
+        { "claim": "own git repo exists; the folder is ignored by the Maxxing repo; .gitignore keeps only SPEC.md, slices.json and JOURNAL.md from .work/", "passes": false, "evidence": null },
+        { "claim": "./run setup (uv sync --frozen) installs the Python 3.14 environment with the full approved dependency list", "passes": false, "evidence": null },
+        { "claim": "uv run udp --version prints the version", "passes": false, "evidence": null },
+        { "claim": "wsl docker compose starts Postgres 18 and udp doctor connects from Windows and prints the server version", "passes": false, "evidence": null },
+        { "claim": "one fast test passes and one db test passes in the full gate", "passes": false, "evidence": null },
+        { "claim": "a GitHub Actions workflow runs the fast gate on push", "passes": false, "evidence": null },
+        { "claim": "the fast gate passes", "passes": false, "evidence": null },
+        { "claim": "the full gate passes, and its real duration is recorded in SPEC.md", "passes": false, "evidence": null },
+        { "claim": "./run smoke starts the real entrypoint and it comes up", "passes": false, "evidence": null }
+      ]
+    },
+    {
+      "id": 1,
+      "name": "MVP: one CSV source, config-driven",
+      "state": "planned",
+      "commit": null,
+      "checks": [
+        { "claim": "sources/demo_csv/source.yaml plus udp run demo_csv loads every CSV row into datasets.demo_csv__<dataset> with _run_id, _loaded_at and _record_hash", "passes": false, "evidence": null },
+        { "claim": "platform.pipeline_runs gets a row with status succeeded, trigger manual, rows extracted and loaded, start and end times", "passes": false, "evidence": null },
+        { "claim": "a missing CSV file records the run as failed with the error message and the command exits non-zero", "passes": false, "evidence": null },
+        { "claim": "an invalid source.yaml fails before extraction, naming the file and the field", "passes": false, "evidence": null },
+        { "claim": "a second full run leaves the same row count", "passes": false, "evidence": null },
+        { "claim": "the CSV connector implements the connector interface and extract, validate, transform and load exist as separate stages", "passes": false, "evidence": null },
+        { "claim": "log lines are JSON and carry run_id, source, dataset and step", "passes": false, "evidence": null }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "connectors: Excel, database table, REST API",
+      "state": "planned",
+      "commit": null,
+      "checks": [
+        { "claim": "an Excel source, a database table source and a REST API source each load through YAML only", "passes": false, "evidence": null },
+        { "claim": "adding the connectors changed no file under src/udp/pipeline/", "passes": false, "evidence": null },
+        { "claim": "API pagination modes (none, page, offset, cursor field, next link) and auth modes (none, API-key header, bearer token) are covered by mock-API tests", "passes": false, "evidence": null }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "incremental loading and column changes",
+      "state": "planned",
+      "commit": null,
+      "checks": [
+        { "claim": "append and merge modes load only new or changed rows", "passes": false, "evidence": null },
+        { "claim": "unchanged files are skipped by content hash", "passes": false, "evidence": null },
+        { "claim": "a second run with no new source data loads 0 rows and leaves the table identical", "passes": false, "evidence": null },
+        { "claim": "--full-refresh resets state and reloads everything", "passes": false, "evidence": null },
+        { "claim": "a run killed mid-load leaves the table and the watermark unchanged", "passes": false, "evidence": null },
+        { "claim": "a new source column is added to the table and recorded; a column type change fails the run", "passes": false, "evidence": null }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "common and custom transformations",
+      "state": "planned",
+      "commit": null,
+      "checks": [
+        { "claim": "common transforms (trim text, snake_case column names, empty string to null) run on every dataset", "passes": false, "evidence": null },
+        { "claim": "a sources/<name>/transform.py plug-in is applied to its dataset", "passes": false, "evidence": null },
+        { "claim": "a broken transform fails the run naming the file", "passes": false, "evidence": null }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "metadata, quarantine and data quality",
+      "state": "planned",
+      "commit": null,
+      "checks": [
+        { "claim": "schema versions are recorded per dataset", "passes": false, "evidence": null },
+        { "claim": "bad rows go to platform.quarantine and the run fails above the dataset's threshold", "passes": false, "evidence": null },
+        { "claim": "YAML quality checks (not_null, unique, accepted_values, range, regex, min_rows, freshness, row-count change) write platform.quality_results with severity warn or error", "passes": false, "evidence": null }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "orchestration",
+      "state": "planned",
+      "commit": null,
+      "checks": [
+        { "claim": "the scheduler container runs datasets on their YAML cron", "passes": false, "evidence": null },
+        { "claim": "an overlapping run of the same dataset is recorded as skipped", "passes": false, "evidence": null },
+        { "claim": "manual and scheduled runs use the same runner and the trigger is recorded", "passes": false, "evidence": null }
+      ]
+    },
+    {
+      "id": 7,
+      "name": "API",
+      "state": "planned",
+      "commit": null,
+      "checks": [
+        { "claim": "endpoints list and search sources and datasets, and return dataset schema and metadata", "passes": false, "evidence": null },
+        { "claim": "a paginated row preview endpoint returns dataset rows", "passes": false, "evidence": null },
+        { "claim": "runs list with filters and run detail with errors and statistics are served", "passes": false, "evidence": null },
+        { "claim": "quality results are served", "passes": false, "evidence": null },
+        { "claim": "POST triggers a run; a health endpoint and OpenAPI docs exist", "passes": false, "evidence": null }
+      ]
+    },
+    {
+      "id": 8,
+      "name": "dashboard",
+      "state": "planned",
+      "commit": null,
+      "checks": [
+        { "claim": "an HTML preview Artifact was approved before building", "passes": false, "evidence": null },
+        { "claim": "pages exist for dataset discovery, dataset detail (schema, metadata, preview, quality) and pipeline runs", "passes": false, "evidence": null },
+        { "claim": "the smoke launch opens the dashboard with zero browser console errors", "passes": false, "evidence": null }
+      ]
+    },
+    {
+      "id": 9,
+      "name": "monitoring and CI/CD",
+      "state": "planned",
+      "commit": null,
+      "checks": [
+        { "claim": "platform metrics are exposed and viewable", "passes": false, "evidence": null },
+        { "claim": "CI runs the full gate on pull requests and builds the images", "passes": false, "evidence": null }
+      ]
+    },
+    {
+      "id": 10,
+      "name": "production hardening",
+      "state": "planned",
+      "commit": null,
+      "checks": [
+        { "claim": "the API requires an API key", "passes": false, "evidence": null },
+        { "claim": "a database backup and restore is proven", "passes": false, "evidence": null },
+        { "claim": "compose sets resource limits for every service", "passes": false, "evidence": null },
+        { "claim": "a 5,000,000-row load stays inside the memory target", "passes": false, "evidence": null },
+        { "claim": "a README and an add-a-source guide exist", "passes": false, "evidence": null }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+# The spec, the done ledger and the journal are the record; everything else the
+# workflow writes into .work/ is regenerated.
+.work/*
+!.work/SPEC.md
+!.work/slices.json
+!.work/JOURNAL.md
+
+.claude/settings.local.json
+
+.env
+.venv/
+__pycache__/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+reports/

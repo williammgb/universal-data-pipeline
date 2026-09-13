@@ -1,0 +1,53 @@
+[project]
+name = "udp"
+version = "0.1.0"
+description = "A configuration-driven platform that loads CSV, Excel, database and API sources into PostgreSQL."
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "alembic>=1.16,<2",
+    "apscheduler>=3.11,<4",
+    "fastapi>=0.115",
+    "fastexcel>=0.14",
+    "httpx>=0.28,<1",
+    "polars>=1.30,<2",
+    "psycopg[binary]>=3.2,<4",
+    "pydantic>=2.11,<3",
+    "pydantic-settings>=2.10,<3",
+    "pyyaml>=6,<7",
+    "sqlalchemy>=2.0.40,<3",
+    "structlog>=25",
+    "typer>=0.16",
+    "uvicorn>=0.35",
+]
+
+[project.scripts]
+udp = "udp.cli:app"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.130",
+    "mypy>=1.17",
+    "pytest>=8.4",
+    "ruff>=0.12",
+    "types-pyyaml>=6",
+]
+
+[build-system]
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers"]
+markers = ["db: needs a running PostgreSQL, reached through UDP_DATABASE_URL"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.mypy]
+strict = true
+files = ["src", "tests"]
