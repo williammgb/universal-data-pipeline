@@ -4,3 +4,6 @@ connection:
 datasets:
   - name: orders
     table: orders
+    load_mode: merge
+    watermark: updated_at
+    primary_key: [id]

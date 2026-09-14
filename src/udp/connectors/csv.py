@@ -3,7 +3,14 @@ from typing import Literal
 
 import polars as pl
 
-from udp.connectors.base import ConnectionBase, DatasetBase, ExtractRequest, SourcePath
+from udp.connectors.base import (
+    ConnectionBase,
+    DatasetBase,
+    ExtractRequest,
+    FileVersion,
+    SourcePath,
+    file_sha256,
+)
 from udp.errors import ExtractError
 
 INFER_SCHEMA_ROWS = 10_000
@@ -20,6 +27,12 @@ class CsvDataset(DatasetBase):
 class CsvConnector:
     connection_model = CsvConnection
     dataset_model = CsvDataset
+
+    def file_version(self, request: ExtractRequest[CsvConnection, CsvDataset]) -> FileVersion:
+        path = request.source_dir / request.dataset.path
+        if not path.is_file():
+            raise ExtractError(f"CSV file not found: {path.as_posix()}")
+        return FileVersion(request.dataset.path, file_sha256(path))
 
     def extract(self, request: ExtractRequest[CsvConnection, CsvDataset]) -> Iterator[pl.DataFrame]:
         path = request.source_dir / request.dataset.path

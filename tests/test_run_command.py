@@ -70,12 +70,28 @@ def _query(sql: str, *params: object) -> list[dict[str, object]]:
         return conn.execute(sql, params).fetchall()
 
 
+def test_full_refresh_flag_reaches_the_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_run_source(*args: object, **kwargs: object) -> list[object]:
+        calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr("udp.cli.run_source", fake_run_source)
+    runner = CliRunner()
+    env = {"UDP_DATABASE_URL": UNREACHABLE_DATABASE, "UDP_SOURCES_DIR": "sources"}
+
+    assert runner.invoke(app, ["run", "demo_csv", "--full-refresh"], env=env).exit_code == 0
+    assert runner.invoke(app, ["run", "demo_csv"], env=env).exit_code == 0
+    assert [call["full_refresh"] for call in calls] == [True, False]
+
+
 @pytest.mark.db
-def test_demo_source_loads_twice_into_postgres() -> None:
+def test_demo_source_loads_then_skips_the_unchanged_file() -> None:
     runner = CliRunner()
 
-    for _ in range(2):
-        result = runner.invoke(app, ["run", "demo_csv"], env={"UDP_SOURCES_DIR": "sources"})
+    for arguments in (["run", "demo_csv", "--full-refresh"], ["run", "demo_csv"]):
+        result = runner.invoke(app, arguments, env={"UDP_SOURCES_DIR": "sources"})
         assert result.exit_code == 0, result.output
 
         (count,) = _query("SELECT count(*) AS n FROM datasets.demo_csv__customers")
@@ -97,16 +113,18 @@ def test_demo_source_loads_twice_into_postgres() -> None:
         "SELECT * FROM platform.pipeline_runs WHERE source = 'demo_csv' ORDER BY started_at"
     )
     assert len(runs) >= 2
-    for run in runs[-2:]:
+    loaded, skipped = runs[-2:]
+    for run in (loaded, skipped):
         assert (run["status"], run["trigger"], run["dataset"]) == (
             "succeeded",
             "manual",
             "customers",
         )
-        assert run["rows_extracted"] == run["rows_loaded"] == 20
         assert run["started_at"] <= run["ended_at"]  # type: ignore[operator]
+    assert loaded["rows_extracted"] == loaded["rows_loaded"] == 20
+    assert skipped["rows_extracted"] == skipped["rows_loaded"] == 0
     latest = _query("SELECT DISTINCT _run_id::text AS id FROM datasets.demo_csv__customers")
-    assert [row["id"] for row in latest] == [str(runs[-1]["run_id"])]
+    assert [row["id"] for row in latest] == [str(loaded["run_id"])]
 
 
 @pytest.mark.db

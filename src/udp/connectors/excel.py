@@ -3,7 +3,14 @@ from typing import Literal
 
 import polars as pl
 
-from udp.connectors.base import ConnectionBase, DatasetBase, ExtractRequest, SourcePath
+from udp.connectors.base import (
+    ConnectionBase,
+    DatasetBase,
+    ExtractRequest,
+    FileVersion,
+    SourcePath,
+    file_sha256,
+)
 from udp.errors import ExtractError
 
 
@@ -19,6 +26,12 @@ class ExcelDataset(DatasetBase):
 class ExcelConnector:
     connection_model = ExcelConnection
     dataset_model = ExcelDataset
+
+    def file_version(self, request: ExtractRequest[ExcelConnection, ExcelDataset]) -> FileVersion:
+        path = request.source_dir / request.dataset.path
+        if not path.is_file():
+            raise ExtractError(f"Excel file not found: {path.as_posix()}")
+        return FileVersion(request.dataset.path, file_sha256(path))
 
     def extract(
         self, request: ExtractRequest[ExcelConnection, ExcelDataset]

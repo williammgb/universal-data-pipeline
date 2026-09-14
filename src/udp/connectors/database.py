@@ -6,13 +6,16 @@ from typing import Any, Literal
 from urllib.parse import quote
 
 import polars as pl
+import structlog
 from pydantic import ConfigDict, Field, SecretStr, field_validator
 from sqlalchemy import URL, Column, Engine, MetaData, Table, create_engine, make_url, select, types
 from sqlalchemy.exc import ArgumentError, NoSuchTableError, OperationalError, SQLAlchemyError
 
-from udp.connectors.base import ConnectionBase, DatasetBase, ExtractRequest
+from udp.connectors.base import ConnectionBase, DatasetBase, ExtractRequest, FileVersion
 from udp.connectors.retry import RETRY_WAITS, retry
 from udp.errors import ExtractError
+
+log = structlog.get_logger(step="extract")
 
 Convert = Callable[[Any], Any] | None
 
@@ -109,6 +112,11 @@ class DatabaseConnector:
         self._waits = waits
         self._sleep = sleep
 
+    def file_version(
+        self, request: ExtractRequest[DatabaseConnection, DatabaseDataset]
+    ) -> FileVersion | None:
+        return None
+
     def extract(
         self, request: ExtractRequest[DatabaseConnection, DatabaseDataset]
     ) -> Iterator[pl.DataFrame]:
@@ -140,9 +148,19 @@ class DatabaseConnector:
                     autoload_with=connection,
                 )
                 columns = [(c.name, *column_type(c)) for c in table.columns]
+                query = select(table)
+                saved = request.watermark
+                if saved is not None:
+                    column = table.columns.get(saved.column)
+                    if column is None:
+                        log.info("watermark not pushed to source", column=saved.column)
+                    elif saved.inclusive:
+                        query = query.where(column >= saved.value)
+                    else:
+                        query = query.where(column > saved.value)
                 result = connection.execution_options(
                     stream_results=True, yield_per=request.chunk_size
-                ).execute(select(table))
+                ).execute(query)
                 yielded = False
                 for rows in result.partitions():
                     yielded = True

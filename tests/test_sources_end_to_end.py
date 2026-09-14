@@ -11,16 +11,33 @@ from udp.cli import app
 API_ENDPOINTS = ("all", "pages", "offsets", "cursor", "linked")
 
 
-def _count(table: str) -> int:
+def _scalar(query: str) -> object:
     with psycopg.connect(os.environ["UDP_DATABASE_URL"]) as conn:
-        row = conn.execute(f"SELECT count(*) FROM datasets.{table}").fetchone()
+        row = conn.execute(query).fetchone()
     assert row is not None
-    return int(row[0])
+    return row[0]
 
 
-def _run(source: str, sources_dir: Path | str = "sources") -> None:
-    result = CliRunner().invoke(app, ["run", source], env={"UDP_SOURCES_DIR": str(sources_dir)})
+def _count(table: str) -> int:
+    return int(str(_scalar(f"SELECT count(*) FROM datasets.{table}")))
+
+
+def _fingerprint(table: str, key: str) -> str:
+    """One hash over every column of every row, so "identical" includes _run_id and _loaded_at."""
+    query = f"SELECT md5(string_agg(t::text, '|' ORDER BY {key})) FROM datasets.{table} t"
+    return str(_scalar(query))
+
+
+def _run(source: str, sources_dir: Path | str = "sources", *, refresh: bool = False) -> int:
+    """Run a source and return the rows its most recent run loaded."""
+    arguments = ["run", source, *(["--full-refresh"] if refresh else [])]
+    result = CliRunner().invoke(app, arguments, env={"UDP_SOURCES_DIR": str(sources_dir)})
     assert result.exit_code == 0, result.output[-3000:]
+    loaded = _scalar(
+        "SELECT rows_loaded FROM platform.pipeline_runs "
+        f"WHERE source = '{source}' ORDER BY started_at DESC LIMIT 1"
+    )
+    return int(str(loaded))
 
 
 def _write_source(sources_dir: Path, name: str, text: str) -> None:
@@ -31,10 +48,13 @@ def _write_source(sources_dir: Path, name: str, text: str) -> None:
 
 @pytest.mark.db
 @pytest.mark.services
-def test_database_demo_loads_twice_from_the_source_postgres() -> None:
-    for _ in range(2):
-        _run("demo_db")
-        assert _count("demo_db__orders") == 1000
+def test_database_demo_merges_nothing_on_its_second_run() -> None:
+    assert _run("demo_db", refresh=True) == 1000
+    before = _fingerprint("demo_db__orders", "id")
+
+    assert _run("demo_db") == 0
+    assert _count("demo_db__orders") == 1000
+    assert _fingerprint("demo_db__orders", "id") == before
 
 
 @pytest.mark.db
@@ -71,16 +91,42 @@ def test_other_auth_modes_load_from_the_mock_api(
     assert _count(f"{name}__items") == 2000
 
 
+@pytest.mark.db
+@pytest.mark.services
+def test_api_merge_loads_all_then_nothing_then_only_the_revision(tmp_path: Path) -> None:
+    def configure(revision: int) -> None:
+        _write_source(
+            tmp_path,
+            "revised_api",
+            "connection:\n  type: rest_api\n  base_url: ${DEMO_API_URL}\n"
+            "datasets:\n  - name: items\n    endpoint: /public/cursor\n    records_path: data\n"
+            f"    params:\n      limit: 100\n      revision: {revision}\n"
+            "    pagination:\n      type: cursor\n      cursor_path: meta.next_cursor\n"
+            "    load_mode: merge\n    watermark: changed_in\n    primary_key: [id]\n",
+        )
+
+    configure(0)
+    assert _run("revised_api", tmp_path, refresh=True) == 2000
+    before = _fingerprint("revised_api__items", "id")
+    assert _run("revised_api", tmp_path) == 0
+    assert _fingerprint("revised_api__items", "id") == before
+
+    configure(1)
+    assert _run("revised_api", tmp_path) == 70
+    assert _count("revised_api__items") == 2050
+
+
 SCALE_ROWS = 500_000
 
 
 @pytest.mark.db
 @pytest.mark.services
 @pytest.mark.scale
-def test_half_million_row_source_table_loads_twice(tmp_path: Path) -> None:
+def test_half_million_row_source_table_merges_only_what_changed(tmp_path: Path) -> None:
     with psycopg.connect(os.environ["DEMO_DB_URL"], autocommit=True) as conn:
+        conn.execute("DROP TABLE IF EXISTS scale_orders")
         conn.execute(
-            "CREATE TABLE IF NOT EXISTS scale_orders AS "
+            "CREATE TABLE scale_orders AS "
             "SELECT i AS id, 'customer ' || (i % 997) AS customer, "
             "(i * 1.17)::numeric(12, 2) AS amount, "
             "timestamptz '2024-01-01 00:00:00+00' + i * interval '1 second' AS updated_at "
@@ -90,12 +136,29 @@ def test_half_million_row_source_table_loads_twice(tmp_path: Path) -> None:
         tmp_path,
         "scale_db",
         "connection:\n  type: database\n  url: ${DEMO_DB_URL}\n"
-        "datasets:\n  - name: orders\n    table: scale_orders\n",
+        "datasets:\n  - name: orders\n    table: scale_orders\n"
+        "    load_mode: merge\n    watermark: updated_at\n    primary_key: [id]\n",
     )
 
-    for _ in range(2):
-        _run("scale_db", tmp_path)
-        assert _count("scale_db__orders") == SCALE_ROWS
+    assert _run("scale_db", tmp_path, refresh=True) == SCALE_ROWS
+    before = _fingerprint("scale_db__orders", "id")
+    assert _run("scale_db", tmp_path) == 0
+    assert _fingerprint("scale_db__orders", "id") == before
+
+    with psycopg.connect(os.environ["DEMO_DB_URL"], autocommit=True) as conn:
+        conn.execute(
+            "UPDATE scale_orders SET amount = amount + 1, "
+            "updated_at = timestamptz '2025-01-01 00:00:00+00' + id * interval '1 second' "
+            "WHERE id % 1000 = 0"
+        )
+        conn.execute(
+            "INSERT INTO scale_orders SELECT i, 'customer new', 1.00, "
+            "timestamptz '2025-02-01 00:00:00+00' + i * interval '1 second' "
+            f"FROM generate_series({SCALE_ROWS + 1}, {SCALE_ROWS + 500}) AS i"
+        )
+
+    assert _run("scale_db", tmp_path) == 1000
+    assert _count("scale_db__orders") == SCALE_ROWS + 500
 
 
 SHEET_ROWS = 50_000
@@ -103,20 +166,28 @@ SHEET_ROWS = 50_000
 
 @pytest.mark.db
 @pytest.mark.scale
-def test_fifty_thousand_row_spreadsheet_loads_twice(tmp_path: Path) -> None:
+def test_fifty_thousand_row_spreadsheet_appends_only_new_rows(tmp_path: Path) -> None:
     folder = tmp_path / "scale_excel" / "data"
     folder.mkdir(parents=True)
-    pl.select(
-        pl.int_range(SHEET_ROWS).alias("Row ID"),
-        (pl.lit("sku-") + pl.int_range(SHEET_ROWS).cast(pl.String)).alias("SKU"),
-        (pl.int_range(SHEET_ROWS) * 0.25).alias("Price"),
-    ).write_excel(folder / "rows.xlsx", worksheet="rows")
+
+    def write(rows: int) -> None:
+        pl.select(
+            pl.int_range(rows).alias("Row ID"),
+            (pl.lit("sku-") + pl.int_range(rows).cast(pl.String)).alias("SKU"),
+            (pl.int_range(rows) * 0.25).alias("Price"),
+        ).write_excel(folder / "rows.xlsx", worksheet="rows")
+
     _write_source(
         tmp_path,
         "scale_excel",
-        "connection:\n  type: excel\ndatasets:\n  - name: rows\n    path: data/rows.xlsx\n",
+        "connection:\n  type: excel\ndatasets:\n  - name: rows\n    path: data/rows.xlsx\n"
+        "    load_mode: append\n    watermark: row_id\n",
     )
 
-    for _ in range(2):
-        _run("scale_excel", tmp_path)
-        assert _count("scale_excel__rows") == SHEET_ROWS
+    write(SHEET_ROWS)
+    assert _run("scale_excel", tmp_path, refresh=True) == SHEET_ROWS
+    assert _run("scale_excel", tmp_path) == 0
+
+    write(SHEET_ROWS + 1000)
+    assert _run("scale_excel", tmp_path) == 1000
+    assert _count("scale_excel__rows") == SHEET_ROWS + 1000

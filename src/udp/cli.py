@@ -34,7 +34,13 @@ def main(
 
 
 @app.command()
-def run(source: Annotated[str, typer.Argument(help="Folder name under sources/.")]) -> None:
+def run(
+    source: Annotated[str, typer.Argument(help="Folder name under sources/.")],
+    full_refresh: Annotated[
+        bool,
+        typer.Option("--full-refresh", help="Delete each dataset's table and load it again."),
+    ] = False,
+) -> None:
     """Load every dataset of a source. Exit 0 all succeeded, 1 a run failed, 2 invalid config."""
     configure_logging()
     settings = Settings()  # type: ignore[call-arg]
@@ -46,7 +52,9 @@ def run(source: Annotated[str, typer.Argument(help="Folder name under sources/."
         )
         raise typer.Exit(2) from error
     with PostgresLoader(settings.database_url) as loader:
-        outcomes = run_source(source, config, settings.sources_dir, loader)
+        outcomes = run_source(
+            source, config, settings.sources_dir, loader, full_refresh=full_refresh
+        )
     if any(outcome.status != "succeeded" for outcome in outcomes):
         raise typer.Exit(1)
 

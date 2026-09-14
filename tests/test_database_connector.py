@@ -31,7 +31,7 @@ from sqlalchemy import (
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 
-from udp.connectors.base import ExtractRequest
+from udp.connectors.base import ExtractRequest, SavedWatermark
 from udp.connectors.database import (
     DatabaseConnection,
     DatabaseConnector,
@@ -47,13 +47,18 @@ def _sqlite_url(path: Path) -> str:
 
 
 def _extract(
-    url: str, table: str, chunk_size: int, connector: DatabaseConnector | None = None
+    url: str,
+    table: str,
+    chunk_size: int,
+    connector: DatabaseConnector | None = None,
+    watermark: SavedWatermark | None = None,
 ) -> Iterator[pl.DataFrame]:
     request = ExtractRequest(
         source_dir=Path("."),
         connection=DatabaseConnection(type="database", url=SecretStr(url)),
         dataset=DatabaseDataset(name="data", table=table),
         chunk_size=chunk_size,
+        watermark=watermark,
     )
     return (connector or DatabaseConnector(waits=())).extract(request)
 
@@ -216,6 +221,70 @@ def test_missing_sqlite_file_raises_without_creating_it(tmp_path: Path) -> None:
     with pytest.raises(ExtractError, match="not found"):
         list(_extract(_sqlite_url(path), "items", 10))
     assert not path.exists()
+
+
+WATERMARK_COLUMNS: dict[str, tuple[Any, st.SearchStrategy[Any]]] = {
+    "integer": (BigInteger, st.integers(-(2**62), 2**62)),
+    "date": (Date, st.dates()),
+    "datetime": (DateTime, st.datetimes()),
+}
+
+
+@st.composite
+def watermarked_tables(draw: st.DrawFn) -> tuple[Any, list[Any], Any, bool]:
+    kind = draw(st.sampled_from(sorted(WATERMARK_COLUMNS)))
+    column_type, values = WATERMARK_COLUMNS[kind]
+    stored = draw(st.lists(st.none() | values, max_size=30))
+    present = [value for value in stored if value is not None]
+    saved = draw(st.sampled_from(present) | values if present else values)
+    return column_type, stored, saved, draw(st.booleans())
+
+
+@settings(
+    max_examples=settings().max_examples // 4,
+    suppress_health_check=[HealthCheck.too_slow],
+)
+@given(watermarked_tables())
+def test_watermark_in_the_query_reads_the_same_rows_as_filtering_afterwards(
+    generated: tuple[Any, list[Any], Any, bool],
+) -> None:
+    column_type, stored, saved, inclusive = generated
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "source.db"
+        rows = [{"id": index, "changed": value} for index, value in enumerate(stored)]
+        _create(path, [Column("id", BigInteger), Column("changed", column_type)], rows)
+        url = _sqlite_url(path)
+
+        pushed = pl.concat(
+            _extract(url, "items", 7, watermark=SavedWatermark("changed", saved, inclusive))
+        )
+        everything = pl.concat(_extract(url, "items", 7))
+
+    def newer(value: Any) -> bool:
+        return value is not None and (value >= saved if inclusive else value > saved)
+
+    expected = sorted(row["id"] for row in everything.to_dicts() if newer(row["changed"]))
+    assert sorted(pushed["id"].to_list()) == expected
+
+
+def test_watermark_on_an_unknown_column_reads_everything(tmp_path: Path) -> None:
+    path = tmp_path / "source.db"
+    _create(path, [Column("id", BigInteger)], [{"id": 1}, {"id": 2}])
+
+    chunks = _extract(_sqlite_url(path), "items", 10, watermark=SavedWatermark("gone", 5, False))
+
+    assert pl.concat(chunks).height == 2
+
+
+def test_database_sources_have_no_file_version() -> None:
+    request = ExtractRequest(
+        source_dir=Path("."),
+        connection=DatabaseConnection(type="database", url=SecretStr("sqlite://")),
+        dataset=DatabaseDataset(name="data", table="items"),
+        chunk_size=10,
+    )
+
+    assert DatabaseConnector().file_version(request) is None
 
 
 def test_plain_postgresql_urls_use_the_psycopg_driver() -> None:

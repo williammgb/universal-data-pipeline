@@ -63,6 +63,35 @@ def test_missing_file_raises_extract_error_naming_the_path(tmp_path: Path) -> No
         list(_extract(tmp_path, 10))
 
 
+def _request(source_dir: Path) -> ExtractRequest[CsvConnection, CsvDataset]:
+    return ExtractRequest(
+        source_dir=source_dir,
+        connection=CsvConnection(type="csv"),
+        dataset=CsvDataset(name="data", path="data.csv"),
+        chunk_size=10,
+    )
+
+
+def test_file_version_follows_the_file_content(tmp_path: Path) -> None:
+    path = tmp_path / "data.csv"
+    path.write_bytes(b"a,b\n1,2\n")
+    first = CsvConnector().file_version(_request(tmp_path))
+
+    path.write_bytes(b"a,b\n1,2\n")
+    same = CsvConnector().file_version(_request(tmp_path))
+    path.write_bytes(b"a,b\n1,3\n")
+    changed = CsvConnector().file_version(_request(tmp_path))
+
+    assert first.path == "data.csv"
+    assert first == same
+    assert first.sha256 != changed.sha256
+
+
+def test_file_version_of_a_missing_file_names_the_path(tmp_path: Path) -> None:
+    with pytest.raises(ExtractError, match=r"data\.csv"):
+        CsvConnector().file_version(_request(tmp_path))
+
+
 def test_header_only_file_yields_one_empty_chunk_with_the_schema(tmp_path: Path) -> None:
     (tmp_path / "data.csv").write_text("a,b\n", encoding="utf-8")
 

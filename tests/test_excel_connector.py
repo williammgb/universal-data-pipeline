@@ -88,6 +88,36 @@ def test_a_late_text_value_makes_the_column_text_without_losing_values(tmp_path:
     assert chunk["code"][-1] == "not a number"
 
 
+def _request(folder: Path) -> ExtractRequest[ExcelConnection, ExcelDataset]:
+    return ExtractRequest(
+        source_dir=folder,
+        connection=ExcelConnection(type="excel"),
+        dataset=ExcelDataset(name="data", path="data.xlsx"),
+        chunk_size=10,
+    )
+
+
+def test_file_version_follows_the_file_content(tmp_path: Path) -> None:
+    path = tmp_path / "data.xlsx"
+    pl.DataFrame({"a": [1, 2]}).write_excel(path)
+    content = path.read_bytes()
+    first = ExcelConnector().file_version(_request(tmp_path))
+
+    path.write_bytes(content)
+    same = ExcelConnector().file_version(_request(tmp_path))
+    path.write_bytes(content[:-1] + bytes([content[-1] ^ 1]))
+    changed = ExcelConnector().file_version(_request(tmp_path))
+
+    assert first.path == "data.xlsx"
+    assert first == same
+    assert first.sha256 != changed.sha256
+
+
+def test_file_version_of_a_missing_file_names_the_path(tmp_path: Path) -> None:
+    with pytest.raises(ExtractError, match=r"data\.xlsx"):
+        ExcelConnector().file_version(_request(tmp_path))
+
+
 def test_missing_file_names_the_file(tmp_path: Path) -> None:
     with pytest.raises(ExtractError, match=r"data\.xlsx"):
         list(_extract(tmp_path, 10))

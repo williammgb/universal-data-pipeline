@@ -1,5 +1,5 @@
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -9,13 +9,20 @@ import structlog
 
 from udp.config.source import SourceConfig
 from udp.connectors import CONNECTORS
-from udp.connectors.base import ExtractRequest
+from udp.connectors.base import Connector, ExtractRequest, SavedWatermark
 from udp.names import table_name
 from udp.pipeline.extract import RowCounter, extract
+from udp.pipeline.incremental import (
+    WatermarkTracker,
+    check_same_load_settings,
+    config_sha256,
+    is_unchanged_file,
+    new_rows,
+)
 from udp.pipeline.load import load
 from udp.pipeline.transform import transform
 from udp.pipeline.validate import validate
-from udp.storage.loader import Loader, RunFailure, RunStart
+from udp.storage.loader import DatasetState, Loader, LoadTransaction, RunFailure, RunStart
 
 log = structlog.get_logger(step="run")
 
@@ -38,6 +45,7 @@ def run_source(
     *,
     trigger: Literal["manual", "scheduled"] = "manual",
     chunk_size: int = CHUNK_SIZE,
+    full_refresh: bool = False,
 ) -> list[RunOutcome]:
     """Run every dataset of an already-validated source, one run each.
 
@@ -55,14 +63,20 @@ def run_source(
             try:
                 started_at = datetime.now(UTC)
                 loader.start_run(RunStart(run_id, source, dataset.name, trigger, started_at))
-                log.info("run started", trigger=trigger)
+                log.info("run started", trigger=trigger, full_refresh=full_refresh)
                 request = ExtractRequest(
                     sources_dir / source, config.connection, dataset, chunk_size
                 )
-                chunks = transform(validate(extract(connector, request, counter)))
                 with loader.transaction() as transaction:
-                    rows = load(
-                        transaction, table_name(source, dataset.name), chunks, run_id, started_at
+                    rows = _load_dataset(
+                        transaction,
+                        connector,
+                        source,
+                        request,
+                        counter,
+                        run_id,
+                        started_at,
+                        full_refresh,
                     )
                     transaction.succeed_run(
                         run_id,
@@ -78,6 +92,81 @@ def run_source(
             )
             outcomes.append(RunOutcome(run_id, dataset.name, "succeeded", rows))
     return outcomes
+
+
+def _load_dataset(
+    transaction: LoadTransaction,
+    connector: Connector[Any, Any],
+    source: str,
+    request: ExtractRequest[Any, Any],
+    counter: RowCounter,
+    run_id: UUID,
+    started_at: datetime,
+    full_refresh: bool,
+) -> int:
+    """Load one dataset inside the caller's transaction; returns rows loaded."""
+    dataset = request.dataset
+    table = table_name(source, dataset.name)
+    state = None if full_refresh else transaction.read_state(source, dataset.name)
+    file = connector.file_version(request)
+    digest = config_sha256(dataset)
+
+    if is_unchanged_file(state, file, digest):
+        log.info("file unchanged, skipped", step="extract", path=file.path if file else None)
+        return 0
+    if state is None:
+        transaction.drop_table(table)
+    else:
+        check_same_load_settings(state, dataset)
+
+    saved = state.watermark if state is not None else None
+    incremental = dataset.load_mode != "full" and dataset.watermark is not None
+    inclusive = dataset.load_mode == "merge"
+    if incremental and saved is not None:
+        request = replace(request, watermark=SavedWatermark(dataset.watermark, saved, inclusive))
+    tracker = WatermarkTracker()
+    chunks = transform(validate(extract(connector, request, counter)))
+    if incremental and dataset.watermark is not None:
+        chunks = new_rows(
+            chunks,
+            watermark=dataset.watermark,
+            primary_key=dataset.primary_key or (),
+            saved=saved,
+            inclusive=inclusive,
+            expected_kind=state.watermark_type if state is not None else None,
+            tracker=tracker,
+        )
+
+    result = load(transaction, table, dataset, chunks, run_id, started_at)
+    if incremental and tracker.kind is None:
+        # No rows arrived, so the column types are unknown: nothing is saved, and the next
+        # run with data builds the table again as a first load.
+        log.info("no rows to load; state not saved", step="load")
+        return result.rows
+    version = transaction.record_columns(table, source, dataset.name, run_id, started_at)
+    if version is not None:
+        log.info("schema version recorded", step="load", version=version)
+
+    highest = tracker.highest
+    if saved is not None and (highest is None or saved > highest):  # type: ignore[operator]
+        highest = saved
+    transaction.save_state(
+        DatasetState(
+            source=source,
+            dataset=dataset.name,
+            load_mode=dataset.load_mode,
+            primary_key=tuple(dataset.primary_key or ()),
+            watermark_column=dataset.watermark,
+            watermark_type=tracker.kind,
+            watermark=highest,
+            file_path=file.path if file else None,
+            file_sha256=file.sha256 if file else None,
+            config_sha256=digest,
+            run_id=run_id,
+            saved_at=datetime.now(UTC),
+        )
+    )
+    return result.rows
 
 
 def _record_failure(

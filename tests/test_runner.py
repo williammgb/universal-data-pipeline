@@ -126,6 +126,9 @@ class BrokenAfterFirstChunk:
     connection_model = CsvConnection
     dataset_model = CsvDataset
 
+    def file_version(self, request: ExtractRequest[CsvConnection, CsvDataset]) -> None:
+        return None
+
     def extract(self, request: ExtractRequest[CsvConnection, CsvDataset]) -> Iterator[pl.DataFrame]:
         yield next(CsvConnector().extract(request))
         raise ExtractError("connection to the source was lost")

@@ -1,12 +1,14 @@
+import hashlib
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Annotated, Literal, Protocol
 
 import polars as pl
-from pydantic import AfterValidator, BaseModel, ConfigDict, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
-from udp.names import name_problem
+from udp.names import RESERVED_COLUMNS, name_problem
 
 
 def _inside_source_folder(value: str) -> str:
@@ -31,7 +33,9 @@ class DatasetBase(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
-    load_mode: Literal["full"] = "full"
+    load_mode: Literal["full", "append", "merge"] = "full"
+    watermark: str | None = Field(default=None, validate_default=True)
+    primary_key: list[str] | None = Field(default=None, validate_default=True)
 
     @field_validator("name")
     @classmethod
@@ -41,6 +45,59 @@ class DatasetBase(BaseModel):
             raise ValueError(problem)
         return value
 
+    @field_validator("watermark")
+    @classmethod
+    def _watermark_fits_load_mode(cls, value: str | None, info: ValidationInfo) -> str | None:
+        mode = info.data.get("load_mode", "full")
+        if mode == "full" and value is not None:
+            raise ValueError("only used by append and merge")
+        if mode != "full" and value is None:
+            raise ValueError(f"required when load_mode is {mode}")
+        if value in RESERVED_COLUMNS:
+            raise ValueError(f"'{value}' is a platform column")
+        return value
+
+    @field_validator("primary_key")
+    @classmethod
+    def _primary_key_fits_load_mode(
+        cls, value: list[str] | None, info: ValidationInfo
+    ) -> list[str] | None:
+        mode = info.data.get("load_mode", "full")
+        if mode != "merge" and value is not None:
+            raise ValueError("only used by merge")
+        if mode == "merge":
+            if not value:
+                raise ValueError("required when load_mode is merge, with at least one column")
+            if len(set(value)) != len(value):
+                raise ValueError("lists a column more than once")
+            reserved = [column for column in value if column in RESERVED_COLUMNS]
+            if reserved:
+                raise ValueError(f"'{reserved[0]}' is a platform column")
+        return value
+
+
+Watermark = int | date | datetime
+
+
+@dataclass(frozen=True)
+class SavedWatermark:
+    """The highest watermark already loaded; inclusive re-reads rows equal to it."""
+
+    column: str
+    value: Watermark
+    inclusive: bool
+
+
+@dataclass(frozen=True)
+class FileVersion:
+    path: str
+    sha256: str
+
+
+def file_sha256(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
+
 
 @dataclass(frozen=True)
 class ExtractRequest[C: ConnectionBase, D: DatasetBase]:
@@ -48,12 +105,14 @@ class ExtractRequest[C: ConnectionBase, D: DatasetBase]:
     connection: C
     dataset: D
     chunk_size: int
+    watermark: SavedWatermark | None = None
 
 
 class Connector[C: ConnectionBase, D: DatasetBase](Protocol):
     """Reads one dataset as chunks of at most chunk_size rows, all sharing one schema.
 
-    A source problem raises ExtractError.
+    A source problem raises ExtractError. A connector may use request.watermark to read
+    less, but the pipeline filters rows either way.
     """
 
     @property
@@ -61,5 +120,9 @@ class Connector[C: ConnectionBase, D: DatasetBase](Protocol):
 
     @property
     def dataset_model(self) -> type[D]: ...
+
+    def file_version(self, request: ExtractRequest[C, D]) -> FileVersion | None:
+        """The file and content hash a file source would read; None for other sources."""
+        ...
 
     def extract(self, request: ExtractRequest[C, D]) -> Iterator[pl.DataFrame]: ...

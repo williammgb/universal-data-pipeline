@@ -16,3 +16,7 @@ class ValidationError(UdpError):
 
 class LoadError(UdpError):
     """Data could not be written to the platform database."""
+
+
+class SchemaDriftError(UdpError):
+    """A source column changed type since the dataset was last loaded."""

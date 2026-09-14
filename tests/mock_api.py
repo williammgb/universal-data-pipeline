@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request
 COLOURS = ("red", "green", "blue", "black")
 
 
-def record(index: int) -> dict[str, Any]:
+def record(index: int, changed_in: int = 0) -> dict[str, Any]:
     note = None if index < 100 or index % 7 else f"replaced by item {index + 1}"
     return {
         "id": index + 1,
@@ -18,11 +18,29 @@ def record(index: int) -> dict[str, Any]:
         "created_at": f"2024-{index % 12 + 1:02d}-{index % 28 + 1:02d}T08:30:00Z",
         "attributes": {"colour": COLOURS[index % 4], "size": index % 5},
         "discontinued_note": note,
+        "changed_in": changed_in,
     }
 
 
-def create_app(rows: int = 2000, token: str = "test-token") -> FastAPI:
+def records_at(rows: int, revision: int) -> list[dict[str, Any]]:
+    """The dataset as it looks at a revision: every 100th record renamed, 50 more per revision."""
     data = [record(index) for index in range(rows)]
+    if revision:
+        for item in data[::100]:
+            item["name"] += " (revised)"
+            item["changed_in"] = revision
+        data += [record(index, revision) for index in range(rows, rows + 50 * revision)]
+    return data
+
+
+def create_app(rows: int = 2000, token: str = "test-token") -> FastAPI:
+    revisions: dict[int, list[dict[str, Any]]] = {}
+
+    def dataset(revision: int) -> list[dict[str, Any]]:
+        if revision not in revisions:
+            revisions[revision] = records_at(rows, revision)
+        return revisions[revision]
+
     app = FastAPI()
 
     @app.get("/health")
@@ -44,27 +62,33 @@ def create_app(rows: int = 2000, token: str = "test-token") -> FastAPI:
         router = APIRouter(dependencies=[Depends(check)])
 
         @router.get("/all")
-        def all_records() -> dict[str, Any]:
-            return {"data": data}
+        def all_records(revision: int = 0) -> dict[str, Any]:
+            return {"data": dataset(revision)}
 
         @router.get("/pages")
-        def pages(page: int = 1, per_page: int = 100) -> dict[str, Any]:
+        def pages(page: int = 1, per_page: int = 100, revision: int = 0) -> dict[str, Any]:
             start = (page - 1) * per_page
-            return {"data": data[start : start + per_page]}
+            return {"data": dataset(revision)[start : start + per_page]}
 
         @router.get("/offsets")
-        def offsets(offset: int = 0, limit: int = 100) -> dict[str, Any]:
-            return {"items": data[offset : offset + limit]}
+        def offsets(offset: int = 0, limit: int = 100, revision: int = 0) -> dict[str, Any]:
+            return {"items": dataset(revision)[offset : offset + limit]}
 
         @router.get("/cursor")
-        def cursor(cursor: str | None = None, limit: int = 100) -> dict[str, Any]:
+        def cursor(
+            cursor: str | None = None, limit: int = 100, revision: int = 0
+        ) -> dict[str, Any]:
+            data = dataset(revision)
             start = int(cursor) if cursor else 0
             following = start + limit
             next_cursor = str(following) if following < len(data) else None
             return {"data": data[start:following], "meta": {"next_cursor": next_cursor}}
 
         @router.get("/linked")
-        def linked(request: Request, after: int = 0, limit: int = 100) -> dict[str, Any]:
+        def linked(
+            request: Request, after: int = 0, limit: int = 100, revision: int = 0
+        ) -> dict[str, Any]:
+            data = dataset(revision)
             following = after + limit
             link = (
                 str(request.url.include_query_params(after=following, limit=limit))

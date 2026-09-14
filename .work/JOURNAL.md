@@ -163,3 +163,74 @@ while its section has no `built:` line.
 - built: after final-check's notes, the unset-secret test runs from an empty folder so a developer's `.env` can't break it, a patch that did nothing was removed, the database connector takes a `sleep` argument like the API connector, the one `assert` in `src` became a typed cast, and the Excel reader wraps every error from the spreadsheet library.
 - smoke gate passed (56s): {"step": "run", "status": "succeeded", "rows_extracted": 2000, "rows_loaded": 2000, "event": "run finished", "run_id": "01a0a16c-16ac-73cc-ad2b-6b3a72ad5a9e", "
 - full gate passed (140s): 146 passed, 8 warnings in 126.81s (0:02:06)
+
+## Slice 3 — incremental loading and column changes
+- designer plan: slice 3 — incremental loading and column changes
+- designer chose: each dataset's saved state lives in one row of `platform.source_state`, written in the same transaction as the table and the run's success, so a killed run leaves both untouched.
+- designer chose: the "only new rows" filter is a pipeline stage after transform, so every source type behaves the same; the database connector also puts the condition in its query to read less, but the pipeline filter decides.
+- designer chose: append loads rows strictly above the saved watermark, while merge also re-reads rows equal to it and writes none that are unchanged, so a late row with the same timestamp is not lost.
+- designer chose: a merge writes a row only when its row fingerprint changed, so running again with the same data loads 0 rows and leaves every row identical.
+- designer chose: a file is skipped when its path, content hash and dataset config all match the last load, so editing the config (for example the sheet name) still reloads.
+- designer chose: a dataset's first run and `--full-refresh` are the same operation, and changing the load mode, watermark or key without `--full-refresh` fails the run instead of guessing.
+- designer chose: a column that is empty in a batch fits any existing column type, so an incremental batch with no values in an integer column is not treated as a type change.
+- designer chose: the killed-run check really kills a separate process in the middle of a load, instead of only raising an error inside the test.
+- designer ruled out: working the watermark out from the table's highest value, because rows set aside by slice 5's quarantine would be read again on every run.
+- designer ruled out: letting each connector skip unchanged data itself, because the rule would be written four times and a new connector could get it wrong.
+- [F16] plan-check found: the plan never schedules or mentions the mutmut mutation-testing pass that SPEC.md's Verification block requires once after slice 3.
+- [F17] plan-check found: the plan's "Interface assumptions" claim REST params are sent on every page request, but the actual code drops `dataset.params` after the first page under `next_link` pagination.
+- F16 fixed: the plan gains step 8, the spec's milestone mutation run on `pipeline/incremental.py` inside WSL, proven to start before it is relied on and run in the background outside every gate.
+- F17 fixed: the plan's interface note now says `next_link` pagination sends `params` only on the first request, which is why the API revision test uses cursor pagination.
+- you decided: a watermark column must hold whole numbers, dates or timestamps; text is not allowed.
+- you decided: `--full-refresh` deletes the dataset's table and builds it again.
+- you decided: `platform.schema_versions` is created now, with one row each time a dataset's columns change.
+- you decided: when a merge run sees the same primary key twice, the copy with the newest watermark wins, and the last one read on a tie.
+- you decided: a row with an empty watermark fails the run with a count of such rows, instead of being skipped.
+- fast gate failed (1s): Found 2 errors in 2 files (checked 49 source files)
+- fast gate passed (29s): 173 passed, 27 deselected, 8 warnings in 25.60s
+- db gate passed (39s): 19 passed, 181 deselected, 2 warnings in 16.39s
+- built: every dataset can now load as `full`, `append` or `merge`; each dataset's watermark, file fingerprint and settings live in `platform.source_state`, saved in the same transaction as the load, so an unchanged file is skipped, a merge rewrites only rows whose fingerprint changed, and `udp run SOURCE --full-refresh` rebuilds the table.
+- built: new source columns are added to the table and recorded in `platform.schema_versions`, columns the source stops sending are kept, and a column that changes type fails the run until `--full-refresh`.
+- built: a test starts a real run in a separate process, kills it in the middle of loading, and shows the table, its columns and the saved state are exactly as before.
+- built: a date written into a CSV arrives as text, so CSV date and timestamp columns can't be watermarks until slice 5's declared column types; spreadsheets and databases carry real dates, and a spreadsheet date watermark is tested.
+- built: mutmut 3.8.0 was proven to start inside WSL before the milestone mutation run relies on it.
+- smoke gate passed (39s): {"step": "run", "status": "succeeded", "rows_extracted": 2000, "rows_loaded": 2000, "event": "run finished", "source": "demo_api", "run_id": "01a0a18c-9b29-708f
+- full gate passed (246s): 200 passed, 9 warnings in 229.97s (0:03:49)
+- final-check verdict: SHIP
+- final-check noted: The slice 3 ledger checks are all still false with no evidence; each needs its command and output before the slice-done commit.
+- final-check noted: Plan step 7 says to record gate durations in .work/SPEC.md, and that file is not in the diff.
+- final-check noted: The empty-watermark error counts only the first bad chunk, so on large files it undercounts the rows the user asked to see counted.
+- final-check noted: The Watermark type is defined in two modules, and load.py and runner.py carry checks that exist only for mypy.
+- final-check noted: The merge model property re-merges with the same run id, so rows == 0 and the end-to-end test are what catch a rewritten _run_id.
+- final-check noted: A killed run stays "running" in pipeline_runs forever, and nothing cleans it up yet.
+- final-check noted: .work/CONTEXT.md still describes the pipeline as unchanged since slice 1 and must be regenerated after the commit.
+- [F18] edge-hunter found: header-only CSV (zero data rows) breaks a brand-new incremental/merge dataset because polars infers every column as text with no data rows, and the watermark-type check rejects text, so an empty source file fails a run that should just load zero rows.
+- [F19] edge-hunter found: Postgres and the in-memory test double each pick their own tie-break order for two rows sharing the same primary key and the same watermark value in one run, and nothing proves the two backends agree on the winner.
+- [F20] edge-hunter found: a column that is empty (all-null) in one run is allowed to silently take on a different real type in a later run because the "fits any type" rule for all-null batches doesn't check history across runs, which could let real schema drift through undetected.
+- [F21] edge-hunter found: the saved-watermark-vs-just-loaded comparison in the runner mixes watermark values whose Python types may not be safely order-comparable in some same-"kind" corner cases; flagged as a guess since it wasn't exercised.
+- [F22] edge-hunter found: retrying a dataset whose very first run failed, after changing its load settings, isn't covered by a test even though the code path (no saved state yet) looks like it should just treat it as a fresh dataset; flagged as a guess since it wasn't exercised.
+- [F23] plan-drift found: `.work/SPEC.md` was never updated with slice 3's gate durations even though the plan's step 7 and file list both require it, and the durations already exist in `.work/JOURNAL.md`.
+- plan-drift checked: 30 files (25 modified + 5 new) match the plan's design, interfaces, test scenarios and end-to-end numeric targets exactly, and no assertions, bounds, or skips were weakened anywhere in the diff.
+- fast gate failed (5s): 27 deselected, 2 warnings, 1 error in 1.88s
+- fast gate passed (28s): 177 passed, 27 deselected, 8 warnings in 25.60s
+- designer plan: slice 4 — common and custom transformations
+- designer chose: trim text first, then turn empty text into null, because the other order is not idempotent
+- designer chose: the custom transform is called once per chunk of up to 100,000 rows, so memory stays within the target
+- designer chose: `transform.py` is read once, hashed, and those same bytes are compiled and run, so the stored hash always matches the code that ran and nothing is written into the read-only sources folder
+- designer chose: the user module is loaded fresh on every dataset run and only when data is actually read
+- designer chose: output with unclean column names, reserved names, unstorable types or a changing schema fails the run, naming `transform.py` and the column
+- designer chose: one new error type, `TransformError`, for every transform failure, with the user's traceback kept
+- designer chose: the transform's hash is folded into the dataset's config hash, so editing it reloads an unchanged file
+- designer chose: custom transforms run before the new-rows filter, so a transform can create the watermark or key column
+- designer ruled out: running user code in a separate process, because it copies every chunk twice and nobody asked for isolation
+- designer ruled out: silently re-cleaning column names the transform returns, because it would rename columns the user named on purpose
+- designer ruled out: calling the transform once on the whole dataset, because memory would grow with the dataset
+- db gate passed (37s): 19 passed, 185 deselected, 2 warnings in 16.11s
+- F18 fixed: an append or merge dataset whose file has a header and no rows now loads 0 rows instead of failing; its columns are passed on as typeless so they fit an existing table, and no state is saved, so the next file with data loads as a fresh first run (three tests, including an existing table and state staying untouched).
+- F19 rejected: the random merge test already runs both the in-memory and the Postgres loader against the same model with duplicate keys and equal watermarks in one batch, so the two loaders are proven to pick the same winner.
+- F20 rejected: a column empty in every row of its first load is stored as text, and later real values of another type then fail as a type change, so it is not silent; letting an empty batch fit an existing column type is the decided rule, so an incremental batch with no values doesn't fail.
+- F21 rejected: the watermark type saved in the state is checked against the new data before any comparison, and each saved type maps to exactly one Python type (whole number, date, or a timestamp with or without time zone), so values that can't be compared never meet.
+- F22 fixed: a test now fails a dataset's first run, changes its watermark setting, and shows the next run loads normally as a fresh dataset.
+- F23 fixed: slice 3's measured gate times are now recorded in `.work/SPEC.md`.
+- built: after final-check's note, a run with empty watermarks or keys now counts them across every chunk before failing, so the error gives the file's total, with a test spanning three chunks.
+- smoke gate passed (43s): {"step": "run", "status": "succeeded", "rows_extracted": 2000, "rows_loaded": 2000, "event": "run finished", "run_id": "01a0a197-3f30-7623-b94f-288560e564df", "
+- full gate passed (215s): 204 passed, 9 warnings in 201.99s (0:03:21)

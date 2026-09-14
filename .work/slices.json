@@ -48,15 +48,15 @@
     {
       "id": 3,
       "name": "incremental loading and column changes",
-      "state": "planned",
+      "state": "in-progress",
       "commit": null,
       "checks": [
-        { "claim": "append and merge modes load only new or changed rows", "passes": false, "evidence": null },
-        { "claim": "unchanged files are skipped by content hash", "passes": false, "evidence": null },
-        { "claim": "a second run with no new source data loads 0 rows and leaves the table identical", "passes": false, "evidence": null },
-        { "claim": "--full-refresh resets state and reloads everything", "passes": false, "evidence": null },
-        { "claim": "a run killed mid-load leaves the table and the watermark unchanged", "passes": false, "evidence": null },
-        { "claim": "a new source column is added to the table and recorded; a column type change fails the run", "passes": false, "evidence": null }
+        { "claim": "append and merge modes load only new or changed rows", "passes": true, "evidence": "./run fast (177 passed): test_merge_writes_only_changed_and_new_rows (rows_loaded 3, only those rows carry the new _run_id), test_append_loads_only_rows_above_the_saved_watermark (rows_loaded 1); ./run full (204 passed): 1M-row CSV merge 1,000,000 then 2,000 changes, 500k-row table merge then 1,000, 50k xlsx append then 1,000, API merge revision 1 loads 70" },
+        { "claim": "unchanged files are skipped by content hash", "passes": true, "evidence": "./run fast: test_unchanged_file_is_skipped_and_the_table_stays_identical (rows 0/0, frame equal), test_full_mode_skips_an_unchanged_file_but_reloads_the_same_bytes_at_a_new_path; ./run smoke (43s): Windows runs of demo_csv and demo_excel logged 'file unchanged, skipped' and rows_loaded 0" },
+        { "claim": "a second run with no new source data loads 0 rows and leaves the table identical", "passes": true, "evidence": "./run full (204 passed): second runs load 0 with an identical md5 over every row for the 1M-row CSV, the 500k-row table, demo_db and the API merge; 50k xlsx second run 0; ./run smoke: Windows demo_db rows_loaded 0" },
+        { "claim": "--full-refresh resets state and reloads everything", "passes": true, "evidence": "./run fast: test_full_refresh_reloads_an_unchanged_file_and_forgets_deleted_rows (reloads 3, then only the file's 1 row with watermark 100), test_full_refresh_flag_reaches_the_runner; test_type_change_fails_until_full_refresh_rebuilds_the_table" },
+        { "claim": "a run killed mid-load leaves the table and the watermark unchanged", "passes": true, "evidence": "./run db (19 passed): test_killing_a_run_mid_load_leaves_table_columns_and_state_unchanged kills a separate process after its first chunk is in COPY and finds the table md5, column list and source_state row identical, run still 'running'; ./run fast: test_failure_mid_load_leaves_table_and_state_unchanged" },
+        { "claim": "a new source column is added to the table and recorded; a column type change fails the run", "passes": true, "evidence": "./run fast and ./run db (memory and Postgres): test_new_column_is_added_at_the_end_with_earlier_rows_empty, test_schema_versions_are_recorded_only_when_columns_change (1, None, 2), test_column_type_change_fails_and_keeps_the_table (SchemaDriftError naming 'id', bigint, text); test_new_column_is_added_and_recorded logs 'columns added'" }
       ]
     },
     {

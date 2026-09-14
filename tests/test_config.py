@@ -65,6 +65,69 @@ def test_demo_source_loads() -> None:
 
 
 @pytest.mark.parametrize(
+    ("settings", "field", "problem"),
+    [
+        ("    load_mode: append\n", "watermark", "required when load_mode is append"),
+        ("    load_mode: merge\n    watermark: updated_at\n", "primary_key", "required"),
+        ("    watermark: updated_at\n", "watermark", "only used by append and merge"),
+        ("    primary_key: [id]\n", "primary_key", "only used by merge"),
+        (
+            "    load_mode: append\n    watermark: id\n    primary_key: [id]\n",
+            "primary_key",
+            "only used by merge",
+        ),
+        (
+            "    load_mode: merge\n    watermark: id\n    primary_key: []\n",
+            "primary_key",
+            "required",
+        ),
+        (
+            "    load_mode: merge\n    watermark: id\n    primary_key: [id, id]\n",
+            "primary_key",
+            "more than once",
+        ),
+        ("    load_mode: append\n    watermark: _loaded_at\n", "watermark", "platform column"),
+        (
+            "    load_mode: merge\n    watermark: id\n    primary_key: [_run_id]\n",
+            "primary_key",
+            "platform column",
+        ),
+    ],
+)
+def test_load_mode_settings_are_checked(
+    tmp_path: Path, settings: str, field: str, problem: str
+) -> None:
+    sources_dir = tmp_path / "sources"
+    _write_source(
+        sources_dir, "shop", f"connection:\n  type: csv\ndatasets:\n{VALID_DATASET}{settings}"
+    )
+
+    with pytest.raises(ConfigError) as raised:
+        load_source(sources_dir, "shop")
+
+    assert f"datasets[0].{field}: " in str(raised.value)
+    assert problem in str(raised.value)
+
+
+def test_merge_settings_load() -> None:
+    dataset = CsvDataset.model_validate(
+        {
+            "name": "orders",
+            "path": "orders.csv",
+            "load_mode": "merge",
+            "watermark": "updated_at",
+            "primary_key": ["id", "line"],
+        }
+    )
+
+    assert (dataset.load_mode, dataset.watermark, dataset.primary_key) == (
+        "merge",
+        "updated_at",
+        ["id", "line"],
+    )
+
+
+@pytest.mark.parametrize(
     ("text", "expected"),
     [
         ("connection:\n  type: csv\ndatasets:\n  - name: customers\n", "datasets[0].path"),
@@ -73,7 +136,7 @@ def test_demo_source_loads() -> None:
             "datasets[0].pth",
         ),
         (
-            f"connection:\n  type: csv\ndatasets:\n{VALID_DATASET}    load_mode: append\n",
+            f"connection:\n  type: csv\ndatasets:\n{VALID_DATASET}    load_mode: upsert\n",
             "datasets[0].load_mode",
         ),
         (f"connection:\n  type: parquet\ndatasets:\n{VALID_DATASET}", "connection.type"),

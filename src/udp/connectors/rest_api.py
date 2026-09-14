@@ -15,7 +15,7 @@ from pydantic import (
     model_validator,
 )
 
-from udp.connectors.base import ConnectionBase, DatasetBase, ExtractRequest
+from udp.connectors.base import ConnectionBase, DatasetBase, ExtractRequest, FileVersion
 from udp.connectors.retry import RETRY_WAITS, retry
 from udp.errors import ExtractError
 
@@ -201,6 +201,11 @@ class RestApiConnector:
         self._waits = waits
         self._max_pages = max_pages
         self._sleep = sleep
+
+    def file_version(
+        self, request: ExtractRequest[RestApiConnection, RestApiDataset]
+    ) -> FileVersion | None:
+        return None
 
     def extract(
         self, request: ExtractRequest[RestApiConnection, RestApiDataset]

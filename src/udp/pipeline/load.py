@@ -6,8 +6,10 @@ from uuid import UUID
 import polars as pl
 import structlog
 
+from udp.connectors.base import DatasetBase
+from udp.errors import ConfigError
 from udp.names import RESERVED_COLUMNS
-from udp.storage.loader import LoadTransaction
+from udp.storage.loader import LoadResult, LoadTransaction
 
 log = structlog.get_logger(step="load")
 
@@ -40,12 +42,25 @@ def with_platform_columns(chunk: pl.DataFrame, run_id: UUID, loaded_at: datetime
 def load(
     transaction: LoadTransaction,
     table: str,
+    dataset: DatasetBase,
     chunks: Iterator[pl.DataFrame],
     run_id: UUID,
     loaded_at: datetime,
-) -> int:
-    rows = transaction.replace_table(
-        table, (with_platform_columns(chunk, run_id, loaded_at) for chunk in chunks)
-    )
-    log.info("loaded", table=f"datasets.{table}", rows=rows)
-    return rows
+) -> LoadResult:
+    prepared = (with_platform_columns(chunk, run_id, loaded_at) for chunk in chunks)
+    if dataset.load_mode == "merge":
+        if dataset.watermark is None or not dataset.primary_key:
+            raise ConfigError(f"dataset '{dataset.name}' merges without watermark or primary_key")
+        result = transaction.merge_rows(
+            table, prepared, primary_key=dataset.primary_key, watermark=dataset.watermark
+        )
+    elif dataset.load_mode == "append":
+        result = transaction.append_rows(table, prepared)
+    else:
+        result = transaction.replace_table(table, prepared)
+    log.info("loaded", table=f"datasets.{table}", mode=dataset.load_mode, rows=result.rows)
+    if result.added:
+        log.info("columns added", columns=[name for name, _ in result.added])
+    if result.missing:
+        log.info("columns kept, missing from source", columns=list(result.missing))
+    return result

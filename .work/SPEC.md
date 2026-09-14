@@ -109,6 +109,7 @@ Proved by: both gates above
 
 Measured in slice 1: fast ~20–34s (69 tests), db ~45s, full ~165–225s (million-row CSV loaded twice, Hypothesis ci profile), smoke ~35–55s.
 Measured in slice 2: fast ~28–40s (128 tests), db ~50s, full ~140–225s (adds source Postgres, mock API, 500k-row table, 50k-row xlsx), smoke ~56–130s (four sources, container and Windows).
+Measured in slice 3: fast ~29s (177 tests), db ~38s (adds the killed-run test), full ~247s (1M-row CSV, 500k-row table, 50k-row xlsx and the API each loaded all → nothing → changes), smoke ~40s.
 
 ## Slice 1 — MVP: one CSV source, config-driven — done means
 - [ ] `sources/demo_csv/source.yaml` + `udp run demo_csv` loads every CSV row into `datasets.demo_csv__<dataset>` with `_run_id`, `_loaded_at`, `_record_hash`
