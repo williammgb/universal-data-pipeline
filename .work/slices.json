@@ -22,8 +22,8 @@
     {
       "id": 1,
       "name": "MVP: one CSV source, config-driven",
-      "state": "in-progress",
-      "commit": null,
+      "state": "done",
+      "commit": "1f6145e1fa0303fa95770313ad431852e726f9e2",
       "checks": [
         { "claim": "sources/demo_csv/source.yaml plus udp run demo_csv loads every CSV row into datasets.demo_csv__<dataset> with _run_id, _loaded_at and _record_hash", "passes": true, "evidence": "./run full printed '81 passed in 198.72s', including test_demo_source_loads_twice_into_postgres (count 20 in datasets.demo_csv__customers, no null _run_id/_loaded_at/_record_hash, last three columns are the platform columns); ./run smoke logged two 'run finished' lines with status succeeded and rows_loaded 20" },
         { "claim": "platform.pipeline_runs gets a row with status succeeded, trigger manual, rows extracted and loaded, start and end times", "passes": true, "evidence": "./run full (81 passed): test_demo_source_loads_twice_into_postgres asserts status succeeded, trigger manual, dataset customers, rows_extracted = rows_loaded = 20, started_at <= ended_at for both runs; ./run fast (69 passed): test_successful_run_is_recorded_with_counts_and_times" },
