@@ -48,8 +48,8 @@
     {
       "id": 3,
       "name": "incremental loading and column changes",
-      "state": "in-progress",
-      "commit": null,
+      "state": "done",
+      "commit": "d10e02e23dbdd64ba3902cb1853e73b98335523a",
       "checks": [
         { "claim": "append and merge modes load only new or changed rows", "passes": true, "evidence": "./run fast (177 passed): test_merge_writes_only_changed_and_new_rows (rows_loaded 3, only those rows carry the new _run_id), test_append_loads_only_rows_above_the_saved_watermark (rows_loaded 1); ./run full (204 passed): 1M-row CSV merge 1,000,000 then 2,000 changes, 500k-row table merge then 1,000, 50k xlsx append then 1,000, API merge revision 1 loads 70" },
         { "claim": "unchanged files are skipped by content hash", "passes": true, "evidence": "./run fast: test_unchanged_file_is_skipped_and_the_table_stays_identical (rows 0/0, frame equal), test_full_mode_skips_an_unchanged_file_but_reloads_the_same_bytes_at_a_new_path; ./run smoke (43s): Windows runs of demo_csv and demo_excel logged 'file unchanged, skipped' and rows_loaded 0" },
