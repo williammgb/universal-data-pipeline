@@ -42,6 +42,29 @@ def test_invalid_config_exits_2_without_touching_the_database(tmp_path: Path) ->
     assert "datasets[1].path" in line["error"]
 
 
+def test_unset_secret_exits_2_without_touching_the_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sources_dir = Path("sources").resolve()
+    monkeypatch.chdir(tmp_path)  # away from any developer's .env
+
+    result = CliRunner().invoke(
+        app,
+        ["run", "demo_api"],
+        env={
+            "UDP_DATABASE_URL": UNREACHABLE_DATABASE,
+            "UDP_SOURCES_DIR": str(sources_dir),
+            "DEMO_API_URL": "http://api.test",
+            "DEMO_API_TOKEN": None,
+        },
+    )
+
+    assert result.exit_code == 2, result.output
+    (line,) = [json.loads(text) for text in result.stdout.splitlines()]
+    assert "connection.auth.token" in line["error"]
+    assert "DEMO_API_TOKEN" in line["error"]
+
+
 def _query(sql: str, *params: object) -> list[dict[str, object]]:
     with psycopg.connect(os.environ["UDP_DATABASE_URL"], row_factory=dict_row) as conn:
         return conn.execute(sql, params).fetchall()

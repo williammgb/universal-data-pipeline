@@ -1,0 +1,6 @@
+connection:
+  type: excel
+datasets:
+  - name: products
+    path: data/products.xlsx
+    sheet: products

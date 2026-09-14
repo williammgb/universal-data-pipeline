@@ -37,12 +37,12 @@
     {
       "id": 2,
       "name": "connectors: Excel, database table, REST API",
-      "state": "planned",
+      "state": "in-progress",
       "commit": null,
       "checks": [
-        { "claim": "an Excel source, a database table source and a REST API source each load through YAML only", "passes": false, "evidence": null },
-        { "claim": "adding the connectors changed no file under src/udp/pipeline/", "passes": false, "evidence": null },
-        { "claim": "API pagination modes (none, page, offset, cursor field, next link) and auth modes (none, API-key header, bearer token) are covered by mock-API tests", "passes": false, "evidence": null }
+        { "claim": "an Excel source, a database table source and a REST API source each load through YAML only", "passes": true, "evidence": "./run smoke (56s): 16 'run finished' lines with status succeeded — demo_csv 20, demo_excel 30, demo_db 1000, demo_api 5 datasets x 2000 — in the app container and again on Windows; ./run full printed '146 passed in 126.81s', including demo_db and demo_api loaded twice against the source Postgres and mock API, a 500,000-row source table and a 50,000-row xlsx each loaded twice; ./run fast (128 passed) test_demo_sources loads all three through run_source from their source.yaml only" },
+        { "claim": "adding the connectors changed no file under src/udp/pipeline/", "passes": true, "evidence": "`git diff --quiet 1f6145e -- src/udp/pipeline` exit 0 and `git status --porcelain src/udp/pipeline` printed nothing, on the tree committed for slice 2" },
+        { "claim": "API pagination modes (none, page, offset, cursor field, next link) and auth modes (none, API-key header, bearer token) are covered by mock-API tests", "passes": true, "evidence": "./run fast (128 passed): test_every_pagination_mode_loads_every_mock_record[all|page|offset|cursor|next_link] loads all 250 mock records each; test_every_auth_mode_is_accepted[/public|/api-key|/bearer] loads 250 each; test_pagination_always_ends property; ./run full: test_other_auth_modes_load_from_the_mock_api (public, api_key) and demo_api (bearer) against the mock API container" }
       ]
     },
     {

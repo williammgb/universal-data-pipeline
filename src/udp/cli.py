@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Annotated
 
 import psycopg
@@ -5,6 +6,7 @@ import structlog
 import typer
 
 from udp import __version__
+from udp.config.secrets import read_environment
 from udp.config.source import load_source
 from udp.errors import ConfigError
 from udp.log import configure_logging
@@ -37,7 +39,7 @@ def run(source: Annotated[str, typer.Argument(help="Folder name under sources/."
     configure_logging()
     settings = Settings()  # type: ignore[call-arg]
     try:
-        config = load_source(settings.sources_dir, source)
+        config = load_source(settings.sources_dir, source, read_environment(Path(".env")))
     except ConfigError as error:
         structlog.get_logger().error(
             "invalid source config", step="config", source=source, error=str(error)

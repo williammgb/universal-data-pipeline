@@ -1,11 +1,9 @@
 from collections.abc import Iterator
-from pathlib import PurePosixPath, PureWindowsPath
 from typing import Literal
 
 import polars as pl
-from pydantic import field_validator
 
-from udp.connectors.base import ConnectionBase, DatasetBase, ExtractRequest
+from udp.connectors.base import ConnectionBase, DatasetBase, ExtractRequest, SourcePath
 from udp.errors import ExtractError
 
 INFER_SCHEMA_ROWS = 10_000
@@ -16,17 +14,7 @@ class CsvConnection(ConnectionBase):
 
 
 class CsvDataset(DatasetBase):
-    path: str
-
-    @field_validator("path")
-    @classmethod
-    def _inside_source_folder(cls, value: str) -> str:
-        path = PureWindowsPath(value)
-        if path.drive or path.root or PurePosixPath(value).is_absolute():
-            raise ValueError("must be a relative path inside the source folder")
-        if ".." in path.parts:
-            raise ValueError("must not contain '..'")
-        return value
+    path: SourcePath
 
 
 class CsvConnector:

@@ -1,10 +1,13 @@
+import os
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pydantic
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from udp.config.secrets import fill_references
 from udp.connectors import CONNECTORS
 from udp.connectors.base import ConnectionBase, DatasetBase
 from udp.errors import ConfigError
@@ -27,8 +30,13 @@ def _location(loc: tuple[int | str, ...]) -> str:
     return text
 
 
-def load_source(sources_dir: Path, name: str) -> SourceConfig[Any, Any]:
-    """Read and check sources/<name>/source.yaml. Every problem raises ConfigError."""
+def load_source(
+    sources_dir: Path, name: str, env: Mapping[str, str] = os.environ
+) -> SourceConfig[Any, Any]:
+    """Read and check sources/<name>/source.yaml, filling ${NAME} from env.
+
+    Every problem raises ConfigError.
+    """
     path = sources_dir / name / SOURCE_FILE
     shown = path.as_posix()
 
@@ -50,6 +58,10 @@ def load_source(sources_dir: Path, name: str) -> SourceConfig[Any, Any]:
 
     if not isinstance(data, dict):
         raise fail("expected a mapping with 'connection' and 'datasets'")
+    filled, problems = fill_references(data, env)
+    if problems:
+        raise fail(*problems)
+    data = cast(dict[str, Any], filled)
     connection = data.get("connection")
     if not isinstance(connection, dict) or "type" not in connection:
         raise fail("connection.type: Field required")
@@ -64,7 +76,6 @@ def load_source(sources_dir: Path, name: str) -> SourceConfig[Any, Any]:
     except pydantic.ValidationError as error:
         raise fail(*(f"{_location(e['loc'])}: {e['msg']}" for e in error.errors())) from error
 
-    problems: list[str] = []
     seen: set[str] = set()
     for index, dataset in enumerate(config.datasets):
         if dataset.name in seen:

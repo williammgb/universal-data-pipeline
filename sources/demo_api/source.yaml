@@ -1,0 +1,38 @@
+connection:
+  type: rest_api
+  base_url: ${DEMO_API_URL}
+  auth:
+    type: bearer
+    token: ${DEMO_API_TOKEN}
+datasets:
+  - name: items_all
+    endpoint: /bearer/all
+    records_path: data
+  - name: items_pages
+    endpoint: /bearer/pages
+    records_path: data
+    params:
+      per_page: 100
+    pagination:
+      type: page
+  - name: items_offsets
+    endpoint: /bearer/offsets
+    records_path: items
+    params:
+      limit: 100
+    pagination:
+      type: offset
+  - name: items_cursor
+    endpoint: /bearer/cursor
+    records_path: data
+    params:
+      limit: 100
+    pagination:
+      type: cursor
+      cursor_path: meta.next_cursor
+  - name: items_linked
+    endpoint: /bearer/linked
+    records_path: results
+    pagination:
+      type: next_link
+      next_path: links.next

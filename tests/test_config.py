@@ -19,6 +19,42 @@ def _write_source(sources_dir: Path, name: str, text: str) -> None:
     (folder / "source.yaml").write_text(text, encoding="utf-8")
 
 
+API_SOURCE = (
+    "connection:\n  type: rest_api\n  base_url: ${API_URL}\n"
+    "  auth:\n    type: bearer\n    token: ${API_TOKEN}\n"
+    "datasets:\n  - name: items\n    endpoint: /items\n"
+)
+
+
+def test_references_are_filled_from_the_environment(tmp_path: Path) -> None:
+    _write_source(tmp_path / "sources", "api", API_SOURCE)
+
+    config = load_source(
+        tmp_path / "sources", "api", {"API_URL": "http://api.test", "API_TOKEN": "secret"}
+    )
+
+    assert str(config.connection.base_url) == "http://api.test/"
+    assert config.connection.auth.token.get_secret_value() == "secret"
+
+
+def test_every_missing_variable_is_reported_with_its_field(tmp_path: Path) -> None:
+    _write_source(tmp_path / "sources", "api", API_SOURCE)
+
+    with pytest.raises(ConfigError) as raised:
+        load_source(tmp_path / "sources", "api", {})
+
+    message = str(raised.value)
+    assert "connection.base_url: environment variable API_URL is not set" in message
+    assert "connection.auth.token: environment variable API_TOKEN is not set" in message
+
+
+def test_lowercase_reference_is_rejected(tmp_path: Path) -> None:
+    _write_source(tmp_path / "sources", "api", API_SOURCE.replace("${API_TOKEN}", "${api_token}"))
+
+    with pytest.raises(ConfigError, match=r"connection\.auth\.token: '\$\{api_token\}'"):
+        load_source(tmp_path / "sources", "api", {"API_URL": "http://api.test", "api_token": "x"})
+
+
 def test_demo_source_loads() -> None:
     config = load_source(Path("sources"), "demo_csv")
 

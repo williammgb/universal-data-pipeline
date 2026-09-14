@@ -13,6 +13,7 @@ dependencies = [
     "psycopg[binary]>=3.2,<4",
     "pydantic>=2.11,<3",
     "pydantic-settings>=2.10,<3",
+    "python-dotenv>=1.1,<2",
     "pyyaml>=6,<7",
     "sqlalchemy>=2.0.40,<3",
     "structlog>=25",
@@ -30,6 +31,7 @@ dev = [
     "pytest>=8.4",
     "ruff>=0.12",
     "types-pyyaml>=6",
+    "xlsxwriter>=3.2",
 ]
 
 [build-system]

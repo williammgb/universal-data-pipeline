@@ -55,7 +55,9 @@ Measured by `env-doctor` on 2026-09-13.
 - source definition: `sources/<name>/source.yaml` = one connection + list of datasets; optional `sources/<name>/transform.py` exposing `transform(df, context) -> df`, found by folder convention
 - secrets: only `${ENV_VAR}` references in YAML, filled from uncommitted `.env`; missing secret fails before extraction
 - config truth: files; copied into `platform.sources` / `platform.datasets` every run
-- column types: inferred on first run, recorded as schema version; optional `columns:` overrides in YAML
+- column types: inferred on first run, recorded as schema version; optional `columns:` block in YAML declares a storage type per column (text, integer, decimal, float, boolean, date, timestamp, json), applied at extraction (slice 5)
+- exact decimal source columns (e.g. Postgres numeric): stored as text until slice 5's `columns:` declares them `decimal`
+- nested API objects and lists: stored as JSON text in one column
 - Postgres layout: schema `datasets` → one table per dataset named `<source>__<dataset>`; schema `platform` → sources, datasets, schema_versions, pipeline_runs, source_state, quarantine, quality_results
 - names: lowercase snake_case, validated against Postgres 63-char identifier limit
 - added columns on every dataset row: `_run_id`, `_loaded_at`, `_record_hash`
@@ -106,6 +108,7 @@ Measured in slice 0, warm (second run): fast 5s (tests 1.7s); full 15s with the 
 Proved by: both gates above
 
 Measured in slice 1: fast ~20–34s (69 tests), db ~45s, full ~165–225s (million-row CSV loaded twice, Hypothesis ci profile), smoke ~35–55s.
+Measured in slice 2: fast ~28–40s (128 tests), db ~50s, full ~140–225s (adds source Postgres, mock API, 500k-row table, 50k-row xlsx), smoke ~56–130s (four sources, container and Windows).
 
 ## Slice 1 — MVP: one CSV source, config-driven — done means
 - [ ] `sources/demo_csv/source.yaml` + `udp run demo_csv` loads every CSV row into `datasets.demo_csv__<dataset>` with `_run_id`, `_loaded_at`, `_record_hash`
@@ -122,7 +125,7 @@ Proved by: both gates, plus the smoke launch
 - 2 connectors: Excel, database table and REST API sources each load via YAML only; no file under `src/udp/pipeline/` changed; API pagination and auth modes above covered by mock-API tests
 - 3 incremental: `append` and `merge` load only new/changed rows; unchanged files skipped by hash; 2nd run loads 0 rows; `--full-refresh` reloads; a run killed mid-load leaves table and watermark unchanged; new column added; type change fails
 - 4 transformations: common transforms (trim text, snake_case column names, empty string → null) run on every dataset; `transform.py` plug-in applied; broken transform fails run naming the file
-- 5 metadata + quality: schema versions recorded per dataset; quarantine + threshold works; YAML checks (not_null, unique, accepted_values, range, regex, min_rows, freshness, row-count change) write `platform.quality_results` with severity warn|error
+- 5 metadata + quality: `columns:` storage types applied at extraction, `decimal` stored as Postgres numeric; schema versions recorded per dataset; quarantine + threshold works; YAML checks (not_null, unique, accepted_values, range, regex, min_rows, freshness, row-count change) write `platform.quality_results` with severity warn|error
 - 6 orchestration: scheduler container runs datasets on their YAML cron; overlapping run recorded `skipped`; manual and scheduled runs use the same runner; trigger recorded
 - 7 API: list/search sources and datasets; dataset schema + metadata; paginated row preview; runs list with filters; run detail with errors and stats; quality results; POST trigger run; health endpoint; OpenAPI docs
 - 8 dashboard: HTML preview approved; pages for dataset discovery, dataset detail (schema, metadata, preview, quality), pipeline runs; smoke shows zero console errors

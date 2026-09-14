@@ -10,3 +10,6 @@ settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "dev"))
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "scale: loads real data volume; runs only in the full gate")
+    config.addinivalue_line(
+        "markers", "services: needs the source Postgres and mock API; runs only in the full gate"
+    )

@@ -64,11 +64,14 @@ USAGE
 # touches a developer's database and no password is ever written down.
 stack_project=
 stack_port=
+stack_source_port=
+stack_api_port=
 stack_password=
 
 compose() {
   wsl.exe -e env POSTGRES_PASSWORD="$stack_password" UDP_PG_PORT="$stack_port" \
-    docker compose -p "$stack_project" -f deploy/compose.yaml --profile app "$@"
+    UDP_SOURCE_PG_PORT="$stack_source_port" UDP_MOCK_API_PORT="$stack_api_port" \
+    docker compose -p "$stack_project" -f deploy/compose.yaml --profile app --profile demo "$@"
 }
 
 # WSL shuts the distro down about 15 seconds after the last wsl.exe command ends,
@@ -85,16 +88,29 @@ keepalive_stop() {
     "kill \$(cat /tmp/$stack_project.keepalive) 2>/dev/null; rm -f /tmp/$stack_project.keepalive"
 }
 
+# stack_start <project> <platform pg port> [<source pg port> <mock api port>]
+# With the extra ports it also starts the source database and the mock API, and
+# exports the demo sources' variables for code running on Windows.
 stack_start() {
   stack_project=$1
   stack_port=$2
+  stack_source_port=${3:-}
+  stack_api_port=${4:-}
   stack_password=$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
   # 127.0.0.1, not localhost: from Windows, localhost tries IPv6 first, and IPv6
   # to a port published inside WSL hangs for two minutes instead of being refused.
   UDP_DATABASE_URL="postgresql://udp:$stack_password@127.0.0.1:$stack_port/udp"
   export UDP_DATABASE_URL
   keepalive_start
-  compose up -d --wait postgres
+  if [ -z "$stack_source_port" ]; then
+    compose up -d --wait postgres
+    return
+  fi
+  DEMO_DB_URL="postgresql://source:$stack_password@127.0.0.1:$stack_source_port/source"
+  DEMO_API_URL="http://127.0.0.1:$stack_api_port"
+  DEMO_API_TOKEN=$stack_password
+  export DEMO_DB_URL DEMO_API_URL DEMO_API_TOKEN
+  compose up -d --wait postgres source-postgres mock-api
 }
 
 stack_stop() {
@@ -117,14 +133,14 @@ db_gate() {
   code=0
   stack_start udp-db 55434 &&
     migrate &&
-    uv run --locked pytest -q -m "db and not scale" "$@" || code=$?
+    uv run --locked pytest -q -m "db and not scale and not services" "$@" || code=$?
   stack_stop || true
   return "$code"
 }
 
 full_gate() {
   code=0
-  stack_start udp-gate 55432 &&
+  stack_start udp-gate 55432 55442 55452 &&
     migrate &&
     compose build app &&
     HYPOTHESIS_PROFILE=ci uv run --locked pytest -q "$@" || code=$?
@@ -132,12 +148,23 @@ full_gate() {
   return "$code"
 }
 
+SMOKE_SOURCES="demo_csv demo_excel demo_db demo_api"
+
+smoke_sources() {
+  compose build app || return
+  for source in $SMOKE_SOURCES; do
+    compose run --rm app run "$source" || return
+  done
+  for source in $SMOKE_SOURCES; do
+    uv run --locked udp run "$source" || return
+  done
+}
+
 smoke_gate() {
   code=0
-  stack_start udp-smoke 55433 &&
+  stack_start udp-smoke 55433 55443 55453 &&
     migrate &&
-    compose run --build --rm app run demo_csv &&
-    uv run --locked udp run demo_csv || code=$?
+    smoke_sources || code=$?
   stack_stop || true
   return "$code"
 }

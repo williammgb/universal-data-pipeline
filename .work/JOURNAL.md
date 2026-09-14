@@ -100,3 +100,66 @@ while its section has no `built:` line.
 - built: after final-check's notes, recording a failure for a run that is not running now raises an error in both the real and the in-memory loader (with a shared test), the golden hash test also pins how dates, times and booleans are encoded, and two property tests skip examples with `assume()` so Hypothesis can warn when too many are skipped.
 - smoke gate passed (56s): {"step": "run", "status": "succeeded", "rows_extracted": 20, "rows_loaded": 20, "event": "run finished", "run_id": "01a09eb1-9ed7-701c-b260-a61472e600f1", "sour
 - full gate passed (225s): 81 passed in 198.72s (0:03:18)
+
+## Slice 2 — connectors: Excel, database table, REST API
+
+- designer plan: slice 2 — connectors: Excel, database table, REST API
+- designer chose: the three new source types sit behind the existing connector interface and bring their own config models, so no pipeline file changes.
+- designer chose: `${NAME}` references are filled right after the YAML is read, from the real environment on top of `.env`, and an unset or empty one fails the config before any database is touched.
+- designer chose: variable names must be uppercase, because Windows upper-cases environment names and a lowercase reference would work on Linux but not here.
+- designer chose: retries sit in one helper used only where repeating is safe (connecting to a database, requesting one API page), 3 retries waiting 1, 2 and 4 seconds, and HTTP 429, 500, 502, 503 and 504 count as temporary.
+- designer chose: the REST connector reads every page before typing its columns, so a field that is empty on the first page cannot break the rule that every chunk has the same columns; the cost is that an API dataset must fit in memory.
+- designer chose: the database connector takes column types from the table definition and streams rows, every integer becomes bigint so nothing overflows, and a type it doesn't know fails the run naming the column.
+- designer chose: page-numbered and offset APIs stop at the first empty page, a repeated cursor or link fails loudly, and a hard cap on requests guarantees every extraction ends.
+- designer chose: a next link pointing to a different host is refused, so the API token is never sent to another host.
+- designer chose: the mock API is a FastAPI app in `tests/`, used in-process by the fast tests and served in a container by the full gate and smoke.
+- designer chose: each gate stack gets its own explicit ports for the source Postgres and mock API (full 55442/55452, smoke 55443/55453), and the db gate does not start them.
+- designer ruled out: typing each API page separately, because a field null on page one gives page two a different schema; storing every API value as text, because numbers and booleans would be lost.
+- designer ruled out: reading spreadsheets chunk by chunk, because the reader reparses the whole sheet each time and column types could differ between chunks.
+- designer ruled out: Polars' `read_database`, because it guesses types per batch; Postgres `COPY` for extraction, because it would only work for Postgres.
+- you decided: python-dotenv is added as a direct dependency to read `.env` files.
+- you decided: xlsxwriter is added for tests only, to write spreadsheets for the Excel tests and the demo file.
+- you decided: nested API objects and lists are stored as JSON text in one column.
+- you decided: the smoke gate runs all four demo sources, in the container and on Windows.
+- you decided: only the demo sources are built for now, no real sources yet.
+- you decided: page-numbered and offset APIs are finished at the first empty page.
+- you decided: exact decimal columns from source databases are stored as text for now, because floating-point numbers can drift in the last digits and in sums.
+- you decided: each column can later be given a declared storage type (text, integer, decimal, float, boolean, date, timestamp, JSON) that is applied when the data is read; it is built in slice 5 with the planned column overrides, which is where decimals become exact numeric columns.
+- plan-check checked: 14 claims agreed (connector/dataset base-class shape, ExtractRequest fields, CONNECTORS registry type, load_source error format, loader's supported dtypes, retry count matching "3x increasing wait", REST pagination/auth modes matching spec's five/three modes, fastexcel already a pinned dependency, the four `./run` gate names, the `src/udp/pipeline/` no-touch constraint, slice-2 slices.jso
+- fast gate failed (4s): Found 6 errors in 4 files (checked 44 source files)
+- fast gate passed (52s): 122 passed, 12 deselected, 7 warnings in 45.52s
+- fast gate failed (4s): Found 1 error in 1 file (checked 45 source files)
+- fast gate passed (44s): 122 passed, 18 deselected, 7 warnings in 37.50s
+- db gate passed (49s): 11 passed, 129 deselected, 2 warnings in 13.23s
+- smoke gate passed (127s): {"step": "run", "status": "succeeded", "rows_extracted": 2000, "rows_loaded": 2000, "event": "run finished", "source": "demo_api", "dataset": "items_linked", "r
+- full gate passed (222s): 140 passed, 8 warnings in 200.69s (0:03:20)
+- built: Excel, database-table and REST API connectors behind the existing connector interface, `${NAME}` secrets filled from the environment and `.env`, retries for dropped connections and temporary API errors, a source Postgres and a fake API in the full and smoke stacks, and three demo sources; no file under `src/udp/pipeline/` changed.
+- built: the password-leak test first took 130 seconds because connecting to a closed port from Windows hangs until the operating system gives up, so it now fakes a connection error that contains the password, which tests the scrubbing more directly.
+- built: the random-spreadsheet and random-SQLite tests run a quarter of the Hypothesis examples, because each example writes a file; that kept the fast gate near 40 seconds.
+- built: the API typing test first failed because a page-numbered API stops at the first empty page, as you decided, so the test now pages by cursor, which carries on past an empty page.
+- [F8] plan-drift found: `tests/test_demo_sources.py:90` pins the pipeline-untouched check to `git diff --quiet 1f6145e -- src/udp/pipeline` instead of the plan's `git diff --quiet HEAD -- src/udp/pipeline` (Steps 7 and Done-means), so once a later slice touches `src/udp/pipeline` this test will fail forever rather than only flagging the current slice's changes.
+- [F9] edge-hunter found: a DB password containing an unescaped special character (@, :, /, %) can be silently misparsed by `make_url`, bypassing config validation and potentially leaking part of the real secret in error text since redaction only knows the truncated password — property: the real secret should never survive in error/log text for any password.
+- [F10] edge-hunter found: `create_engine(url)` in the database connector runs outside the try/except that turns SQLAlchemy errors into `ExtractError`, so an unsupported or uninstalled DB driver crashes with a raw traceback instead of a clean error.
+- [F11] edge-hunter found: a REST API integer field outside int64 range, mixed with normal ints in the same column, silently collapses the whole column to text, and this boundary is never exercised by the existing property tests — property: column typing should be well-defined at the numeric boundary.
+- [F12] edge-hunter found: REST API pagination parameters silently overwrite a user-supplied `params` entry with the same key, with no warning that the user's value was dropped.
+- edge-hunter: found (guess, unverified): the Excel connector's narrow exception catch may let some calamine failure modes (e.g. encrypted files) escape as raw exceptions instead of `ExtractError`.
+- final-check verdict: FIX FIRST — 3 blocking
+- [F13] final-check found: The fast-suite test that diffs `src/udp/pipeline` against commit 1f6145e will fail in CI's shallow checkout and is bound to fail once slice 3 changes the pipeline, so move that check into the ledger evidence.
+- [F14] final-check found: The retry helper logs the raw error text on every retry, so a database password the connector scrubs from its final error can still reach stdout; log only the error type and extend the leak test to a retry.
+- [F15] final-check found: The compose file says source-postgres and mock-api start only when named, but services without a profile start on any plain `compose up`, so put them behind a profile that `./run` enables.
+- final-check noted: Slice 2's checks in slices.json are still unticked; each tick must name the gate command and its output.
+- final-check noted: The unset-secret CLI test fails for any developer whose `.env` sets DEMO_API_TOKEN, because the command reads `.env` from the working directory.
+- final-check noted: The database retry test patches `time.sleep` with no effect, because retry's sleep default is bound at definition.
+- final-check noted: The Excel property test compares the connector against the same `read_excel` call it makes, so it proves the chunking but not the types.
+- final-check noted: `source.py` has the only production `assert` in `src`, used just to narrow a type for mypy.
+- fast gate passed (28s): 128 passed, 18 deselected, 7 warnings in 23.79s
+- F8, F13 fixed: the fast test that compared `src/udp/pipeline` with commit 1f6145e is deleted, because CI's shallow checkout doesn't have that commit and slices 3 and 4 have to change the pipeline; the "pipeline untouched" check is now a command recorded as this slice's evidence.
+- F9 fixed: a database URL whose password has an unencoded `@` is rejected when `source.yaml` is read, with a message that doesn't repeat the password, and error text now hides both the plain and the percent-encoded form of the password.
+- F10 fixed: creating the database engine now happens inside the error handling, so a missing database driver is a clean extract error, with a test.
+- F11 fixed: an API integer beyond 64 bits turns its column into text so every digit is kept, which is now a stated rule with its own test, and the property test generates values at the 64-bit boundary.
+- F12 fixed: a dataset whose `params` also sets the pagination parameter (such as `page`) is rejected when `source.yaml` is read, instead of the value being silently replaced.
+- F14 fixed: the retry log line now records only the error's class, not its text, and the password test now runs through one retry and checks the log output too.
+- F15 fixed: the source Postgres and mock API sit behind a `demo` compose profile that only `./run` enables, so a plain `docker compose up` never starts them.
+- built: after final-check's notes, the unset-secret test runs from an empty folder so a developer's `.env` can't break it, a patch that did nothing was removed, the database connector takes a `sleep` argument like the API connector, the one `assert` in `src` became a typed cast, and the Excel reader wraps every error from the spreadsheet library.
+- smoke gate passed (56s): {"step": "run", "status": "succeeded", "rows_extracted": 2000, "rows_loaded": 2000, "event": "run finished", "run_id": "01a0a16c-16ac-73cc-ad2b-6b3a72ad5a9e", "
+- full gate passed (140s): 146 passed, 8 warnings in 126.81s (0:02:06)

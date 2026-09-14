@@ -1,0 +1,6 @@
+connection:
+  type: database
+  url: ${DEMO_DB_URL}
+datasets:
+  - name: orders
+    table: orders

@@ -9,6 +9,7 @@ from udp.cli import app
 APPROVED_DEPENDENCIES = [
     "alembic",
     "apscheduler",
+    "dotenv",
     "fastapi",
     "fastexcel",
     "httpx",

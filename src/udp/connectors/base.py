@@ -1,12 +1,24 @@
 from collections.abc import Iterator
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Literal, Protocol
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Annotated, Literal, Protocol
 
 import polars as pl
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, field_validator
 
 from udp.names import name_problem
+
+
+def _inside_source_folder(value: str) -> str:
+    path = PureWindowsPath(value)
+    if path.drive or path.root or PurePosixPath(value).is_absolute():
+        raise ValueError("must be a relative path inside the source folder")
+    if ".." in path.parts:
+        raise ValueError("must not contain '..'")
+    return value
+
+
+SourcePath = Annotated[str, AfterValidator(_inside_source_folder)]
 
 
 class ConnectionBase(BaseModel):
