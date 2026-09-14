@@ -24,6 +24,8 @@ services:
       dockerfile: deploy/Dockerfile
     environment:
       UDP_DATABASE_URL: postgresql://udp:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/udp
+    volumes:
+      - ../sources:/app/sources:ro
     depends_on:
       postgres:
         condition: service_healthy

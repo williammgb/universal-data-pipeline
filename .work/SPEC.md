@@ -105,6 +105,8 @@ Measured in slice 0, warm (second run): fast 5s (tests 1.7s); full 15s with the 
 
 Proved by: both gates above
 
+Measured in slice 1: fast ~20–34s (69 tests), db ~45s, full ~165–225s (million-row CSV loaded twice, Hypothesis ci profile), smoke ~35–55s.
+
 ## Slice 1 — MVP: one CSV source, config-driven — done means
 - [ ] `sources/demo_csv/source.yaml` + `udp run demo_csv` loads every CSV row into `datasets.demo_csv__<dataset>` with `_run_id`, `_loaded_at`, `_record_hash`
 - [ ] `platform.pipeline_runs` row: status `succeeded`, trigger `manual`, rows extracted/loaded, start/end times

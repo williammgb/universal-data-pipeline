@@ -52,6 +52,7 @@ usage: ./run <task> [args]
 
   setup   install the pinned toolchain and the locked dependencies
   fast    the fast gate — under ~60s, no external services, no real data volume
+  db      only the database tests, against a throwaway migrated Postgres
   full    the full gate — real size, real dependencies, allowed to be slow
   smoke   start the real entrypoint and prove it comes up
   check   syntax or lint one file:  ./run check path/to/file
@@ -101,6 +102,10 @@ stack_stop() {
   keepalive_stop
 }
 
+migrate() {
+  uv run --locked alembic upgrade head
+}
+
 fast_gate() {
   uv run --locked ruff check . &&
     uv run --locked ruff format --check . &&
@@ -108,11 +113,21 @@ fast_gate() {
     uv run --locked pytest -q -m "not db" "$@"
 }
 
+db_gate() {
+  code=0
+  stack_start udp-db 55434 &&
+    migrate &&
+    uv run --locked pytest -q -m "db and not scale" "$@" || code=$?
+  stack_stop || true
+  return "$code"
+}
+
 full_gate() {
   code=0
   stack_start udp-gate 55432 &&
+    migrate &&
     compose build app &&
-    uv run --locked pytest -q "$@" || code=$?
+    HYPOTHESIS_PROFILE=ci uv run --locked pytest -q "$@" || code=$?
   stack_stop || true
   return "$code"
 }
@@ -120,8 +135,9 @@ full_gate() {
 smoke_gate() {
   code=0
   stack_start udp-smoke 55433 &&
-    compose run --build --rm app &&
-    uv run --locked udp doctor || code=$?
+    migrate &&
+    compose run --build --rm app run demo_csv &&
+    uv run --locked udp run demo_csv || code=$?
   stack_stop || true
   return "$code"
 }
@@ -133,6 +149,7 @@ filtered=$#
 case "$task" in
   setup) uv sync --frozen ;;
   fast)  gate fast fast_gate "$@" ;;
+  db)    gate db db_gate "$@" ;;
   full)  gate full full_gate "$@" ;;
   smoke) gate smoke smoke_gate ;;
   check)

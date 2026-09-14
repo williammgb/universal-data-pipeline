@@ -22,16 +22,16 @@
     {
       "id": 1,
       "name": "MVP: one CSV source, config-driven",
-      "state": "planned",
+      "state": "in-progress",
       "commit": null,
       "checks": [
-        { "claim": "sources/demo_csv/source.yaml plus udp run demo_csv loads every CSV row into datasets.demo_csv__<dataset> with _run_id, _loaded_at and _record_hash", "passes": false, "evidence": null },
-        { "claim": "platform.pipeline_runs gets a row with status succeeded, trigger manual, rows extracted and loaded, start and end times", "passes": false, "evidence": null },
-        { "claim": "a missing CSV file records the run as failed with the error message and the command exits non-zero", "passes": false, "evidence": null },
-        { "claim": "an invalid source.yaml fails before extraction, naming the file and the field", "passes": false, "evidence": null },
-        { "claim": "a second full run leaves the same row count", "passes": false, "evidence": null },
-        { "claim": "the CSV connector implements the connector interface and extract, validate, transform and load exist as separate stages", "passes": false, "evidence": null },
-        { "claim": "log lines are JSON and carry run_id, source, dataset and step", "passes": false, "evidence": null }
+        { "claim": "sources/demo_csv/source.yaml plus udp run demo_csv loads every CSV row into datasets.demo_csv__<dataset> with _run_id, _loaded_at and _record_hash", "passes": true, "evidence": "./run full printed '81 passed in 198.72s', including test_demo_source_loads_twice_into_postgres (count 20 in datasets.demo_csv__customers, no null _run_id/_loaded_at/_record_hash, last three columns are the platform columns); ./run smoke logged two 'run finished' lines with status succeeded and rows_loaded 20" },
+        { "claim": "platform.pipeline_runs gets a row with status succeeded, trigger manual, rows extracted and loaded, start and end times", "passes": true, "evidence": "./run full (81 passed): test_demo_source_loads_twice_into_postgres asserts status succeeded, trigger manual, dataset customers, rows_extracted = rows_loaded = 20, started_at <= ended_at for both runs; ./run fast (69 passed): test_successful_run_is_recorded_with_counts_and_times" },
+        { "claim": "a missing CSV file records the run as failed with the error message and the command exits non-zero", "passes": true, "evidence": "./run full (81 passed): test_missing_file_exits_1_and_records_a_failed_run asserts exit code 1, status failed, error_class ExtractError, error_message contains data/gone.csv, ended_at set" },
+        { "claim": "an invalid source.yaml fails before extraction, naming the file and the field", "passes": true, "evidence": "./run fast (69 passed): test_invalid_source_names_file_and_field (11 cases) and test_dataset_path_must_stay_inside_the_source_folder (7 cases) assert 'sources/shop/source.yaml' and the field path in the message; test_invalid_config_exits_2_without_touching_the_database exits 2 against an unreachable database URL; test_invalid_second_dataset_stops_everything_before_any_run leaves no runs and no tables" },
+        { "claim": "a second full run leaves the same row count", "passes": true, "evidence": "./run full (81 passed): test_demo_source_loads_twice_into_postgres counts 20 after each run, and test_million_row_csv_loads_twice_with_the_same_count counts 1,000,000 after each run; ./run smoke: container run and host run both rows_loaded 20" },
+        { "claim": "the CSV connector implements the connector interface and extract, validate, transform and load exist as separate stages", "passes": true, "evidence": "./run fast: mypy strict 'no issues found in 32 source files' with CONNECTORS: dict[str, Connector[Any, Any]] = {'csv': CsvConnector()}; src/udp/pipeline/extract.py, validate.py, transform.py, load.py exist and runner.py composes them" },
+        { "claim": "log lines are JSON and carry run_id, source, dataset and step", "passes": true, "evidence": "./run fast (69 passed): test_every_log_line_is_json_with_run_context parses every stdout line as JSON, requires run_id/source/dataset/step on run lines, and sees steps extract, validate, transform, load and run; ./run smoke output lines are JSON with those keys" }
       ]
     },
     {

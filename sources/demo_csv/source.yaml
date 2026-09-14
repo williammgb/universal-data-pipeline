@@ -1,0 +1,6 @@
+connection:
+  type: csv
+datasets:
+  - name: customers
+    path: data/customers.csv
+    load_mode: full

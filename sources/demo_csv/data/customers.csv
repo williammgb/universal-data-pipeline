@@ -1,0 +1,21 @@
+Customer ID,First Name,Last Name,City,Signup Date,Lifetime Value,Is Active
+1,Anna,Jansen,Amsterdam,2024-01-15,1520.50,true
+2,Ben,de Vries,Rotterdam,2024-01-22,310.00,true
+3,Chloé,Bakker,Utrecht,2024-02-03,,false
+4,Daan,Visser,"The Hague, Centrum",2024-02-11,89.99,true
+5,Eva,Smit,Eindhoven,2024-02-28,2750.00,true
+6,Finn,Meijer,Groningen,2024-03-05,45.25,false
+7,Gea,de Boer,Tilburg,2024-03-17,610.40,true
+8,Hugo,Mulder,Almere,2024-03-30,1200.00,true
+9,Iris,de Groot,Breda,2024-04-08,75.10,false
+10,Jesse,Bos,Nijmegen,2024-04-19,980.75,true
+11,Katja,Vos,Haarlem,2024-05-02,15.00,true
+12,Lars,Peters,Arnhem,2024-05-14,430.60,false
+13,Mila,Hendriks,Zaanstad,2024-05-27,3120.00,true
+14,Noah,van Leeuwen,Amersfoort,2024-06-09,260.30,true
+15,Olivia,Dekker,Apeldoorn,2024-06-21,50.00,false
+16,Pim,Brouwer,Leiden,2024-07-03,1890.20,true
+17,Quinty,de Wit,Maastricht,2024-07-16,720.00,true
+18,Ruben,Dijkstra,Dordrecht,2024-07-29,99.95,false
+19,Sara,Smits,Zwolle,2024-08-10,540.80,true
+20,Tim,de Graaf,Delft,2024-08-24,1340.00,true
