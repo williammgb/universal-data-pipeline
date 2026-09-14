@@ -37,8 +37,8 @@
     {
       "id": 2,
       "name": "connectors: Excel, database table, REST API",
-      "state": "in-progress",
-      "commit": null,
+      "state": "done",
+      "commit": "42b3ef00566a5baca55a7db63738fa3163fdb474",
       "checks": [
         { "claim": "an Excel source, a database table source and a REST API source each load through YAML only", "passes": true, "evidence": "./run smoke (56s): 16 'run finished' lines with status succeeded — demo_csv 20, demo_excel 30, demo_db 1000, demo_api 5 datasets x 2000 — in the app container and again on Windows; ./run full printed '146 passed in 126.81s', including demo_db and demo_api loaded twice against the source Postgres and mock API, a 500,000-row source table and a 50,000-row xlsx each loaded twice; ./run fast (128 passed) test_demo_sources loads all three through run_source from their source.yaml only" },
         { "claim": "adding the connectors changed no file under src/udp/pipeline/", "passes": true, "evidence": "`git diff --quiet 1f6145e -- src/udp/pipeline` exit 0 and `git status --porcelain src/udp/pipeline` printed nothing, on the tree committed for slice 2" },
