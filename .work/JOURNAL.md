@@ -234,3 +234,52 @@ while its section has no `built:` line.
 - built: after final-check's note, a run with empty watermarks or keys now counts them across every chunk before failing, so the error gives the file's total, with a test spanning three chunks.
 - smoke gate passed (43s): {"step": "run", "status": "succeeded", "rows_extracted": 2000, "rows_loaded": 2000, "event": "run finished", "run_id": "01a0a197-3f30-7623-b94f-288560e564df", "
 - full gate passed (215s): 204 passed, 9 warnings in 201.99s (0:03:21)
+
+## Slice 4 — common and custom transformations
+- you decided: after a settings or `transform.py` change, a merge dataset re-reads all its source rows once and rewrites only rows whose result changed; an append dataset keeps its old rows and logs that `--full-refresh` redoes them.
+- you decided: a custom transform is called on chunks of up to 100,000 rows, not on the whole dataset.
+- you decided: a column name returned by `transform.py` that is not already clean fails the run naming the file and the column, instead of being cleaned automatically.
+- [F24] plan-check found: the plan adds a sixth exception class, TransformError, to errors.py without the plan committing to update SPEC.md's typed-exception enumeration (ConfigError, ExtractError, ValidationError, SchemaDriftError, LoadError), which the current code matches exactly.
+- F24 fixed: SPEC.md's list of typed errors now includes `TransformError`.
+- mutation run (slice 3 milestone): mutmut changed `pipeline/incremental.py` 121 ways and the fast tests caught 80 in 114s inside WSL; the first try timed out on 110 because Polars deadlocks in a plain forked process, and starting each run from a fresh process fixed it.
+- mutation run: 9 of the 41 survivors change nothing a user can see (zip's strict flag on equal-length tuples, None for False, `>=` for `>` on the same value, None as the empty column type, the column name passed where only platform columns use it).
+- [F25] mutmut found: no test checks which settings the "needs --full-refresh" error names or its wording, so it could name the wrong setting and every test would pass.
+- [F26] mutmut found: no test covers a watermark column that changes type between runs, so its error message could be empty.
+- [F27] mutmut found: the empty-watermark count test matches "3 rows" anywhere in the message, so a count of -3 would pass.
+- [F28] mutmut found: when only a primary key is empty, nothing proves later chunks stop reaching the loader, where Postgres would fail on the null key with its own error instead of the count.
+- [F29] mutmut found: the `new rows selected` log line's row count, saved watermark and highest watermark are never checked.
+- [F30] mutmut found: nothing proves that writing a setting at its default value (such as `load_mode: full`) keeps the settings hash the same, so an unchanged file would reload.
+- [F31] mutmut found: an empty text-typed first chunk followed by rows could stop reading instead of failing on the text watermark, and no test covers it.
+- fast gate failed (28s): 1 failed, 213 passed, 27 deselected, 8 warnings in 24.21s
+- fast gate passed (30s): 214 passed, 27 deselected, 8 warnings in 26.77s
+- smoke gate passed (53s): {"step": "run", "status": "succeeded", "rows_extracted": 2000, "rows_loaded": 2000, "event": "run finished", "run_id": "01a0a1b7-136f-748d-b511-292776104a0a", "
+- built: every text column is now trimmed and empty text becomes null in every dataset, proven by properties that it is idempotent, matches a model of Unicode whitespace exactly (Polars trims the same 25 characters) and gives the same result however the rows are split into chunks.
+- built: a source can have `transform.py` defining `transform(df, context)`; it is read and hashed once, run on each chunk without being imported (no `__pycache__` in the read-only sources folder), and any broken file, failure or unusable output fails the run with `TransformError` naming the file.
+- built: editing or adding `transform.py` reloads an unchanged file, a merge dataset reads every source row once after a settings or transform change and rewrites only rows whose result changed, and an append dataset logs that loaded rows keep their earlier result.
+- built: the demo spreadsheet source gains `transform.py` adding `stock_value_eur`; in the smoke gate the container run applied it, and the Windows run then skipped the unchanged file, so user code rightly never ran there, which the plan's "both runs log it" line could not have held.
+- F25, F26, F27, F28, F29, F30, F31 fixed: tests now check the exact "needs --full-refresh" message, a watermark type change, the anchored empty counts, that no chunk passes on after an empty watermark or key, the `new rows selected` log values, the settings fingerprint of a default-valued setting (pinned to the value stored before this slice) and an empty text chunk followed by rows.
+- final-check verdict: SHIP
+- final-check noted: shipping depends on `./run full` exiting 0 and on the slice 4 ledger being filled with command-and-output evidence before it is marked done, neither of which had happened when this review ran.
+- final-check noted: the demo transform imports `TransformContext` from `udp.pipeline.custom`, which makes that module path a public interface that users' transform files will depend on.
+- final-check noted: the fingerprint suffix "transform.py <sha>" is now stored in source_state, so changing its format later reloads every source that has a transform once.
+- final-check noted: a merge dataset whose edited transform leaves no typed rows saves no state, so it keeps its old fingerprint and re-reads the whole source on every later run.
+- final-check noted: the smoke script checks only exit codes, so the container's `custom transform applied` log line is on record only through the journal's built line.
+- [F32] plan-drift found: tests/test_demo_sources.py:43-47 checks stock_value_eur on 29 of 30 rows (one pre-existing null cell), not "all 30 rows" as the plan's step 5 and done-means required.
+- [F33] plan-drift found: src/udp/pipeline/custom.py:59-62 adds an untested "could not be read" TransformError message not listed in the plan's contract.
+- [F34] plan-drift found: src/udp/pipeline/custom.py:116-118 adds a "transform returned no columns" check not listed in the plan's contract, though it is tested.
+- [F35] edge-hunter found: an untrusted dataset transform.py can hang a run forever since apply_transform calls it with no timeout, at src/udp/pipeline/custom.py:82-113.
+- [F36] edge-hunter found: whether a run passes or fails can depend on where the extractor happens to cut chunks, because the custom-transform schema check compares dtypes strictly and null-driven dtype differences across chunks look like a broken transform even when the transform is fine, at src/udp/pipeline/custom.py:104-113.
+- [F37] edge-hunter found: the "not imported into sys.modules" isolation claim for transform.py only stops module registration, not the code from touching env vars, secrets, or other loaded modules in the same process, at src/udp/pipeline/custom.py:66-79.
+- [F38] edge-hunter found: a broken transform.py can silently pass validation on a run that extracts zero chunks and only fail later once real data arrives, at src/udp/pipeline/custom.py:90-113.
+- [F39] edge-hunter found: the config fingerprint concatenates a JSON blob with a literal marker string without unambiguous framing, which could theoretically let two different configs collide on the same hash, at src/udp/pipeline/incremental.py:15-24.
+- full gate passed (272s): 241 passed, 9 warnings in 244.43s (0:04:04)
+- fast gate passed (32s): 215 passed, 27 deselected, 8 warnings in 28.83s
+- F32 rejected: the demo test compares `stock_value_eur` with the product on all 30 rows, where the sheet's one deliberately empty cell gives an empty product on both sides, and it also counts the 29 filled values.
+- F33 fixed: a test makes `transform.py` a folder and shows the run fails with "could not be read" naming the file.
+- F34 rejected: a result with no columns cannot become a table, so failing it with a message naming the file is part of the "unusable output" rule, and it is tested.
+- F35 deferred: a time limit on `transform.py` was listed as not asked for in the plan; it belongs with production hardening in slice 10.
+- F36 rejected: Polars decides a result's column types from the input's types, not its values, and every chunk reaching the transform has the same types, so only row-by-row Python code could change types between chunks, and then the error names the file and both schemas.
+- F37 fixed: `custom.py`'s description now says the file runs unsandboxed in the pipeline process with its permissions, environment and network, the trust the plan decided.
+- F38 rejected: every connector yields at least one chunk, an empty one carrying the columns when there are no rows (`csv.py`, `excel.py`, `database.py`, `rest_api.py`), so the transform always runs and its output is always checked.
+- F39 rejected: JSON writes a newline inside a value as `\n`, so the one real newline in the fingerprint text can only be the separator before the transform hash, and two different inputs cannot give the same text.
+- built: the fixes after the full gate touch only a test and a docstring, so the full gate that passed with 241 tests still covers the code being committed.

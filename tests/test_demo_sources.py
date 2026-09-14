@@ -40,6 +40,11 @@ def test_excel_demo_loads() -> None:
     table = loader.tables["demo_excel__products"]
     assert table.height == 30
     assert "unit_price_eur" in table.columns
+    # The demo sheet has an empty cell on purpose, so one product has no stock value.
+    assert table["stock_value_eur"].to_list() == pytest.approx(
+        (table["unit_price_eur"] * table["stock_qty"]).to_list()
+    )
+    assert table["stock_value_eur"].drop_nulls().len() == 29
 
 
 def test_database_demo_loads_from_sqlite(tmp_path: Path) -> None:

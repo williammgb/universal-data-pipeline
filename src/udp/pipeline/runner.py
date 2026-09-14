@@ -11,6 +11,7 @@ from udp.config.source import SourceConfig
 from udp.connectors import CONNECTORS
 from udp.connectors.base import Connector, ExtractRequest, SavedWatermark
 from udp.names import table_name
+from udp.pipeline.custom import TransformContext, apply_transform, find_transform, load_transform
 from udp.pipeline.extract import RowCounter, extract
 from udp.pipeline.incremental import (
     WatermarkTracker,
@@ -109,7 +110,8 @@ def _load_dataset(
     table = table_name(source, dataset.name)
     state = None if full_refresh else transaction.read_state(source, dataset.name)
     file = connector.file_version(request)
-    digest = config_sha256(dataset)
+    transform_file = find_transform(request.source_dir)
+    digest = config_sha256(dataset, transform_file.sha256 if transform_file else None)
 
     if is_unchanged_file(state, file, digest):
         log.info("file unchanged, skipped", step="extract", path=file.path if file else None)
@@ -122,16 +124,32 @@ def _load_dataset(
     saved = state.watermark if state is not None else None
     incremental = dataset.load_mode != "full" and dataset.watermark is not None
     inclusive = dataset.load_mode == "merge"
-    if incremental and saved is not None:
-        request = replace(request, watermark=SavedWatermark(dataset.watermark, saved, inclusive))
+    read_from = saved
+    if incremental and state is not None and state.config_sha256 != digest:
+        if inclusive:
+            # Every row is read once more; the merge rewrites only rows whose result changed.
+            read_from = None
+            log.info("settings or transform.py changed; reading every source row once")
+        else:
+            log.info(
+                "settings or transform.py changed; rows already loaded keep their earlier "
+                "result until --full-refresh"
+            )
+    if incremental and read_from is not None:
+        request = replace(
+            request, watermark=SavedWatermark(dataset.watermark, read_from, inclusive)
+        )
     tracker = WatermarkTracker()
     chunks = transform(validate(extract(connector, request, counter)))
+    if transform_file is not None:
+        context = TransformContext(source, dataset.name, run_id)
+        chunks = apply_transform(chunks, load_transform(transform_file), context, transform_file)
     if incremental and dataset.watermark is not None:
         chunks = new_rows(
             chunks,
             watermark=dataset.watermark,
             primary_key=dataset.primary_key or (),
-            saved=saved,
+            saved=read_from,
             inclusive=inclusive,
             expected_kind=state.watermark_type if state is not None else None,
             tracker=tracker,

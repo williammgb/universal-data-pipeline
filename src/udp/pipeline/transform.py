@@ -41,10 +41,23 @@ def clean_column_names(names: Sequence[str]) -> list[str]:
     return result
 
 
+def tidy_text(chunk: pl.DataFrame) -> pl.DataFrame:
+    """Trim leading and trailing whitespace from every text column, then empty text becomes null.
+
+    Whitespace is what Polars' `str.strip_chars()` removes: the Unicode White_Space characters.
+    Trimming first is what makes this idempotent: "  " becomes "" and then null in one pass.
+    """
+    trimmed = [
+        pl.col(name).str.strip_chars() for name, dtype in chunk.schema.items() if dtype == pl.String
+    ]
+    return chunk.with_columns(pl.when(column != "").then(column) for column in trimmed)
+
+
 def transform(chunks: Iterator[pl.DataFrame]) -> Iterator[pl.DataFrame]:
+    """The common transforms every dataset gets: clean column names, then tidy text."""
     renames: dict[str, str] | None = None
     for chunk in chunks:
         if renames is None:
             renames = dict(zip(chunk.columns, clean_column_names(chunk.columns), strict=True))
             log.info("columns cleaned", columns=list(renames.values()))
-        yield chunk.rename(renames)
+        yield tidy_text(chunk.rename(renames))

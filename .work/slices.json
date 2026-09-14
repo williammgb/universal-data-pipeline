@@ -62,12 +62,12 @@
     {
       "id": 4,
       "name": "common and custom transformations",
-      "state": "planned",
+      "state": "in-progress",
       "commit": null,
       "checks": [
-        { "claim": "common transforms (trim text, snake_case column names, empty string to null) run on every dataset", "passes": false, "evidence": null },
-        { "claim": "a sources/<name>/transform.py plug-in is applied to its dataset", "passes": false, "evidence": null },
-        { "claim": "a broken transform fails the run naming the file", "passes": false, "evidence": null }
+        { "claim": "common transforms (trim text, snake_case column names, empty string to null) run on every dataset", "passes": true, "evidence": "./run fast: 215 passed; tests/test_transforms.py properties (idempotent, Unicode whitespace model, chunk split) and test_text_is_tidied_in_every_dataset load '  Anna ', '   ', '' as 'Anna', null, null in both datasets; ./run full: 241 passed" },
+        { "claim": "a sources/<name>/transform.py plug-in is applied to its dataset", "passes": true, "evidence": "./run fast: test_transform_py_applies_to_every_dataset_and_can_make_the_watermark and test_excel_demo_loads (stock_value_eur == unit_price_eur * stock_qty on all 30 rows); ./run smoke container run logged {\"step\": \"transform\", \"path\": \"sources/demo_excel/transform.py\", \"rows_in\": 30, \"rows_out\": 30, \"event\": \"custom transform applied\"} and the Windows run logged file unchanged, skipped" },
+        { "claim": "a broken transform fails the run naming the file", "passes": true, "evidence": "./run fast: test_a_broken_transform_fails_naming_its_file (16 cases, message starts with the posix path), test_a_broken_transform_py_fails_every_dataset (error_class TransformError, no table), test_the_error_from_a_raising_transform_keeps_the_users_line ('transform.py\", line 2' in the traceback)" }
       ]
     },
     {

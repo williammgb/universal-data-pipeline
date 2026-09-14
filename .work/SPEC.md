@@ -27,7 +27,7 @@ Measured by `env-doctor` on 2026-09-13.
 - known blocker: `docker` on Windows points at stopped Docker Desktop — worked around by `./run` calling `wsl docker ...`; never start Docker Desktop for this project
 - known blocker: the WSL distro shuts down ~15s after the last `wsl.exe` command ends, stopping every container (measured in slice 0) — worked around by `./run` holding one idle `wsl.exe` session open for the life of a stack
 - known blocker: from Windows, `localhost` to a port published in WSL tries IPv6 first and hangs ~130s (measured in slice 0) — worked around by always using `127.0.0.1`
-- known blocker: mutmut 3 needs `fork` — worked around by running mutation tests inside WSL only
+- known blocker: mutmut 3 needs `fork` — worked around by running mutation tests inside WSL only, with `process_isolation=forkserver` and `forkserver_warmup=none` (a plain fork deadlocks Polars: 110 of 121 mutants timed out), preparing the `/tmp` copy in the same WSL session because `/tmp` is wiped when the distro stops
 
 ## Stack
 - language: Python 3.14 via uv
@@ -66,7 +66,7 @@ Measured by `env-doctor` on 2026-09-13.
 - transactions: chunks COPY into temp table; merge/replace + watermark update + run stats commit in ONE transaction per run
 - concurrency: Postgres advisory lock per dataset; overlapping run recorded as `skipped`
 - retries: transient extract errors (network, connection) retried 3× with increasing wait; failed runs not auto-retried
-- errors: typed exceptions (ConfigError, ExtractError, ValidationError, SchemaDriftError, LoadError) caught only at the runner boundary → run marked `failed` with class, message, traceback; CLI exits non-zero; never swallowed
+- errors: typed exceptions (ConfigError, ExtractError, ValidationError, SchemaDriftError, LoadError, TransformError) caught only at the runner boundary → run marked `failed` with class, message, traceback; CLI exits non-zero; never swallowed
 - column changes: new column added + recorded; removed column kept (nulls); type change fails the run
 - bad records: to `platform.quarantine` (original row as JSON, reason, run id); run fails above per-dataset threshold, default 1%
 - scale target: ≤ 5,000,000 rows (~2 GB) per dataset per run; 100,000-row chunks; pipeline memory under ~1 GB
@@ -110,6 +110,7 @@ Proved by: both gates above
 Measured in slice 1: fast ~20–34s (69 tests), db ~45s, full ~165–225s (million-row CSV loaded twice, Hypothesis ci profile), smoke ~35–55s.
 Measured in slice 2: fast ~28–40s (128 tests), db ~50s, full ~140–225s (adds source Postgres, mock API, 500k-row table, 50k-row xlsx), smoke ~56–130s (four sources, container and Windows).
 Measured in slice 3: fast ~29s (177 tests), db ~38s (adds the killed-run test), full ~247s (1M-row CSV, 500k-row table, 50k-row xlsx and the API each loaded all → nothing → changes), smoke ~40s.
+Measured in slice 4: fast ~30s (215 tests), full ~272s (241 tests), smoke ~53s; mutation run on `pipeline/incremental.py` ~114s in WSL (121 mutants).
 
 ## Slice 1 — MVP: one CSV source, config-driven — done means
 - [ ] `sources/demo_csv/source.yaml` + `udp run demo_csv` loads every CSV row into `datasets.demo_csv__<dataset>` with `_run_id`, `_loaded_at`, `_record_hash`

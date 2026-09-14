@@ -15,9 +15,9 @@ from udp.config.source import load_source
 from udp.connectors import CONNECTORS
 from udp.connectors.base import ExtractRequest
 from udp.connectors.csv import CsvConnection, CsvConnector, CsvDataset
-from udp.errors import ExtractError, ValidationError
+from udp.errors import ExtractError, SchemaDriftError, ValidationError
 from udp.log import configure_logging
-from udp.pipeline.incremental import WatermarkTracker, new_rows
+from udp.pipeline.incremental import WatermarkTracker, config_sha256, new_rows
 from udp.pipeline.runner import RunOutcome, run_source
 
 # --- the new-rows filter -------------------------------------------------------------
@@ -89,12 +89,104 @@ def test_empty_watermarks_and_keys_are_counted_across_every_chunk() -> None:
             )
         )
 
-    with pytest.raises(ValidationError, match="3 rows have an empty watermark column 'wm'"):
+    with pytest.raises(ValidationError, match=r"^3 rows have an empty watermark column 'wm'$"):
         consume(("id",))
     only_keys = [chunk.with_columns(pl.col("wm").fill_null(0)) for chunk in chunks]
     chunks[:] = only_keys
-    with pytest.raises(ValidationError, match="2 rows have an empty primary key 'id'"):
+    with pytest.raises(ValidationError, match=r"^2 rows have an empty primary key 'id'$"):
         consume(("id",))
+
+
+@pytest.mark.parametrize(
+    ("first", "message"),
+    [
+        ({"id": [1, 2], "wm": [None, 2]}, "^1 rows have an empty watermark column 'wm'$"),
+        ({"id": [None, 2], "wm": [1, 2]}, "^1 rows have an empty primary key 'id'$"),
+    ],
+)
+def test_after_an_empty_watermark_or_key_no_chunk_is_passed_on(
+    first: dict[str, list[int | None]], message: str
+) -> None:
+    schema = {"id": pl.Int64, "wm": pl.Int64}
+    chunks = [pl.DataFrame(first, schema=schema), pl.DataFrame({"id": [3], "wm": [3]})]
+    passed_on = []
+
+    with pytest.raises(ValidationError, match=message):
+        for chunk in new_rows(
+            iter(chunks),
+            watermark="wm",
+            primary_key=("id",),
+            saved=None,
+            inclusive=True,
+            expected_kind=None,
+            tracker=WatermarkTracker(),
+        ):
+            passed_on.append(chunk)
+
+    assert passed_on == []
+
+
+def test_a_watermark_column_that_changes_type_needs_a_full_refresh() -> None:
+    chunk = pl.DataFrame({"wm": [date(2024, 1, 1)]})
+
+    with pytest.raises(SchemaDriftError) as caught:
+        list(
+            new_rows(
+                iter([chunk]),
+                watermark="wm",
+                primary_key=(),
+                saved=None,
+                inclusive=False,
+                expected_kind="bigint",
+                tracker=WatermarkTracker(),
+            )
+        )
+
+    assert str(caught.value) == (
+        "watermark column 'wm' was bigint and is now date; "
+        "run with --full-refresh to rebuild the table"
+    )
+
+
+def test_an_empty_first_chunk_does_not_let_a_text_watermark_through() -> None:
+    chunks = [
+        pl.DataFrame(schema={"id": pl.String, "wm": pl.String}),
+        pl.DataFrame({"id": ["1"], "wm": ["soon"]}),
+    ]
+
+    with pytest.raises(ValidationError, match="watermark column 'wm' is text"):
+        list(
+            new_rows(
+                iter(chunks),
+                watermark="wm",
+                primary_key=(),
+                saved=None,
+                inclusive=False,
+                expected_kind=None,
+                tracker=WatermarkTracker(),
+            )
+        )
+
+
+def test_the_filter_logs_what_it_kept(capsys: pytest.CaptureFixture[str]) -> None:
+    configure_logging()
+    chunks = [pl.DataFrame({"wm": [1, 2]}), pl.DataFrame({"wm": [3]})]
+
+    list(
+        new_rows(
+            iter(chunks),
+            watermark="wm",
+            primary_key=(),
+            saved=1,
+            inclusive=False,
+            expected_kind=None,
+            tracker=WatermarkTracker(),
+        )
+    )
+
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    (selected,) = [e for e in events if e["event"] == "new rows selected"]
+    assert (selected["rows"], selected["saved_watermark"], selected["highest"]) == (2, "1", "3")
 
 
 @given(filter_inputs())
@@ -141,6 +233,9 @@ class Shop:
 
     def write(self, rows: list[dict[str, Any]], file: str = "orders.csv") -> None:
         pl.DataFrame(rows).write_csv(self.folder / file)
+
+    def write_transform(self, code: str) -> None:
+        (self.folder / "transform.py").write_bytes(code.encode())
 
     def run(self, full_refresh: bool = False) -> RunOutcome:
         config = load_source(self.sources, "shop", {})
@@ -241,6 +336,120 @@ def test_full_mode_skips_an_unchanged_file_but_reloads_the_same_bytes_at_a_new_p
     assert shop.run().rows_loaded == 3
 
 
+def test_settings_written_at_their_default_keep_the_fingerprint(tmp_path: Path) -> None:
+    # The value every existing platform.source_state row was saved with before transform.py
+    # existed; changing it would reload every unchanged file once.
+    dataset = CsvDataset(name="orders", path="orders.csv")
+    assert config_sha256(dataset, None) == (
+        "ff8f602ea61e3540449fd04e07aab1f66d2a5b7cbe0cd4b582b718b7b3f2abf3"
+    )
+
+    shop = Shop(tmp_path, "")
+    shop.write(ORDERS)
+    shop.run()
+    shop.configure("    load_mode: full\n")
+
+    assert shop.record(shop.run())["rows_loaded"] == 0
+
+
+TOTAL = (
+    "import polars as pl\n\n"
+    "def transform(df, context):\n"
+    "    return df.with_columns(total=pl.col('amount') * {factor})\n"
+)
+TOTAL_CHANGED_FOR_ID_2 = (
+    "import polars as pl\n\n"
+    "def transform(df, context):\n"
+    "    factor = pl.when(pl.col('id') == 2).then(3).otherwise(2)\n"
+    "    return df.with_columns(total=pl.col('amount') * factor)\n"
+)
+
+
+def test_editing_transform_py_reloads_an_unchanged_file(tmp_path: Path) -> None:
+    shop = Shop(tmp_path, "")
+    shop.write(ORDERS)
+    shop.write_transform(TOTAL.format(factor=2))
+    shop.run()
+    assert shop.record(shop.run())["rows_loaded"] == 0
+
+    shop.write_transform(TOTAL.format(factor=3))
+
+    assert shop.run().rows_loaded == 3
+    assert shop.table["total"].to_list() == [30, 60, 90]
+
+
+def test_adding_transform_py_reloads_an_unchanged_file(tmp_path: Path) -> None:
+    shop = Shop(tmp_path, "")
+    shop.write(ORDERS)
+    shop.run()
+    assert shop.record(shop.run())["rows_loaded"] == 0
+
+    shop.write_transform(TOTAL.format(factor=2))
+
+    assert shop.run().rows_loaded == 3
+    assert shop.table["total"].to_list() == [20, 40, 60]
+
+
+def test_merge_after_a_transform_edit_rewrites_only_rows_whose_result_changed(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    configure_logging()
+    shop = Shop(tmp_path, MERGE)
+    shop.write(ORDERS)
+    shop.write_transform(TOTAL.format(factor=2))
+    first = shop.run()
+    shop.write_transform(TOTAL_CHANGED_FOR_ID_2)
+
+    second = shop.run()
+
+    assert (second.status, second.rows_loaded) == ("succeeded", 1)
+    rows = shop.table.sort("id").select("id", "total", "_run_id").rows()
+    assert rows == [
+        (1, 20, str(first.run_id)),
+        (2, 60, str(second.run_id)),
+        (3, 60, str(first.run_id)),
+    ]
+    assert shop.loader.states[("shop", "orders")].watermark == 101
+    logged = capsys.readouterr().out
+    assert "settings or transform.py changed; reading every source row once" in logged
+    assert shop.run().rows_loaded == 0
+
+
+def test_append_after_a_transform_edit_keeps_loaded_rows_and_says_so(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    configure_logging()
+    shop = Shop(tmp_path, "    load_mode: append\n    watermark: updated\n")
+    shop.write(ORDERS)
+    shop.write_transform(TOTAL.format(factor=2))
+    shop.run()
+    shop.write_transform(TOTAL.format(factor=3))
+
+    outcome = shop.run()
+
+    assert (outcome.status, outcome.rows_loaded) == ("succeeded", 0)
+    assert shop.table["total"].to_list() == [20, 40, 60]
+    assert (
+        "rows already loaded keep their earlier result until --full-refresh"
+        in capsys.readouterr().out
+    )
+
+
+def test_a_broken_transform_after_a_load_leaves_table_and_state_unchanged(tmp_path: Path) -> None:
+    shop = Shop(tmp_path, MERGE)
+    shop.write(ORDERS)
+    shop.write_transform(TOTAL.format(factor=2))
+    shop.run()
+    before, state = shop.table, shop.loader.states[("shop", "orders")]
+    shop.write_transform("def transform(df, context):\n    return None\n")
+
+    outcome = shop.run()
+
+    assert shop.record(outcome)["error_class"] == "TransformError"
+    assert shop.table.equals(before)
+    assert shop.loader.states[("shop", "orders")] == state
+
+
 def test_full_refresh_reloads_an_unchanged_file_and_forgets_deleted_rows(tmp_path: Path) -> None:
     shop = Shop(tmp_path, MERGE)
     shop.write(ORDERS)
@@ -255,14 +464,25 @@ def test_full_refresh_reloads_an_unchanged_file_and_forgets_deleted_rows(tmp_pat
 
 
 @pytest.mark.parametrize(
-    "changed",
+    ("changed", "change"),
     [
-        "    load_mode: append\n    watermark: updated\n",
-        "    load_mode: merge\n    watermark: amount\n    primary_key: [id]\n",
-        "    load_mode: merge\n    watermark: updated\n    primary_key: [id, amount]\n",
+        (
+            "    load_mode: append\n    watermark: updated\n",
+            "load_mode from 'merge' to 'append', primary_key from ('id',) to ()",
+        ),
+        (
+            "    load_mode: merge\n    watermark: amount\n    primary_key: [id]\n",
+            "watermark from 'updated' to 'amount'",
+        ),
+        (
+            "    load_mode: merge\n    watermark: updated\n    primary_key: [id, amount]\n",
+            "primary_key from ('id',) to ('id', 'amount')",
+        ),
     ],
 )
-def test_changing_how_a_dataset_loads_needs_a_full_refresh(tmp_path: Path, changed: str) -> None:
+def test_changing_how_a_dataset_loads_needs_a_full_refresh(
+    tmp_path: Path, changed: str, change: str
+) -> None:
     shop = Shop(tmp_path, MERGE)
     shop.write(ORDERS)
     shop.run()
@@ -273,7 +493,10 @@ def test_changing_how_a_dataset_loads_needs_a_full_refresh(tmp_path: Path, chang
 
     record = shop.record(outcome)
     assert (record["status"], record["error_class"]) == ("failed", "ConfigError")
-    assert "--full-refresh" in record["error_message"]
+    assert record["error_message"] == (
+        f"dataset 'orders' changed {change} since its last load; "
+        "run with --full-refresh to rebuild the table"
+    )
     assert shop.table.equals(before)
     assert shop.loader.states[("shop", "orders")] == state
     assert shop.run(full_refresh=True).status == "succeeded"
