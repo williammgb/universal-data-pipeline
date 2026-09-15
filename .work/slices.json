@@ -73,8 +73,8 @@
     {
       "id": 5,
       "name": "metadata, quarantine and data quality",
-      "state": "in-progress",
-      "commit": null,
+      "state": "done",
+      "commit": "9a218dc",
       "checks": [
         { "claim": "schema versions are recorded per dataset", "passes": true, "evidence": "./run full: 467 passed, including test_schema_versions_are_recorded_only_when_columns_change on memory and Postgres and test_csv_demo_loads_declared_types_and_records_its_checks (declared Int64, Date, Decimal(12,2), Boolean in the loaded table)" },
         { "claim": "bad rows go to platform.quarantine and the run fails above the dataset's threshold", "passes": true, "evidence": "./run fast: 435 passed, including test_declared_types_load_and_a_value_that_does_not_fit_is_quarantined (12.345 quarantined as read), test_the_quarantine_limit_decides_the_run_and_a_failed_run_keeps_its_findings ('2 of 100 rows (2.00%) quarantined, above the dataset's limit of 1%', table and state unchanged) and the limit property plus boundary table; ./run full: test_postgres_run_over_its_limit_keeps_table_and_state_and_records_why passed" },
