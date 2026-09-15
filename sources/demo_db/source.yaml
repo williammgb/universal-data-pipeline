@@ -7,3 +7,5 @@ datasets:
     load_mode: merge
     watermark: updated_at
     primary_key: [id]
+    columns:
+      amount: decimal(10,2)

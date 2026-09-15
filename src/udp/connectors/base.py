@@ -8,7 +8,10 @@ from typing import Annotated, Literal, Protocol
 import polars as pl
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
+from udp.config.columns import WATERMARK_DECLARED_TYPES, DeclaredType
+from udp.config.quality import Check
 from udp.names import RESERVED_COLUMNS, name_problem
+from udp.pipeline.transform import clean_column_names
 
 
 def _inside_source_folder(value: str) -> str:
@@ -36,6 +39,31 @@ class DatasetBase(BaseModel):
     load_mode: Literal["full", "append", "merge"] = "full"
     watermark: str | None = Field(default=None, validate_default=True)
     primary_key: list[str] | None = Field(default=None, validate_default=True)
+    columns: dict[str, DeclaredType] = {}
+    checks: list[Check] = []
+    quarantine_threshold_percent: float = Field(default=1, ge=0, le=100)
+
+    @field_validator("columns")
+    @classmethod
+    def _columns_use_stored_names(
+        cls, value: dict[str, str], info: ValidationInfo
+    ) -> dict[str, str]:
+        for name in value:
+            (clean,) = clean_column_names([name])
+            if name in RESERVED_COLUMNS:
+                raise ValueError(f"'{name}' is a platform column")
+            if clean != name:
+                raise ValueError(
+                    f"'{name}' is not a column name as stored; use the cleaned name '{clean}'"
+                )
+        watermark = info.data.get("watermark")
+        declared = value.get(watermark) if watermark is not None else None
+        if declared is not None and declared not in WATERMARK_DECLARED_TYPES:
+            raise ValueError(
+                f"watermark column '{watermark}' is declared {declared}; it must be "
+                "integer, date or timestamp"
+            )
+        return value
 
     @field_validator("name")
     @classmethod

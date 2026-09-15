@@ -51,6 +51,11 @@ def _write_source(sources_dir: Path, name: str, text: str) -> None:
 def test_database_demo_merges_nothing_on_its_second_run() -> None:
     assert _run("demo_db", refresh=True) == 1000
     before = _fingerprint("demo_db__orders", "id")
+    amount_type = _scalar(
+        "SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
+        "WHERE attrelid = 'datasets.demo_db__orders'::regclass AND attname = 'amount'"
+    )
+    assert amount_type == "numeric(10,2)"
 
     assert _run("demo_db") == 0
     assert _count("demo_db__orders") == 1000

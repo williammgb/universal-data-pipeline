@@ -283,3 +283,83 @@ while its section has no `built:` line.
 - F38 rejected: every connector yields at least one chunk, an empty one carrying the columns when there are no rows (`csv.py`, `excel.py`, `database.py`, `rest_api.py`), so the transform always runs and its output is always checked.
 - F39 rejected: JSON writes a newline inside a value as `\n`, so the one real newline in the fingerprint text can only be the separator before the transform hash, and two different inputs cannot give the same text.
 - built: the fixes after the full gate touch only a test and a docstring, so the full gate that passed with 241 tests still covers the code being committed.
+
+## Slice 5 — metadata, quarantine and data quality
+- designer plan: slice 5 — metadata, quarantine and data quality
+- designer chose: declared column types are applied after name cleanup and before `transform.py`, keyed by stored column names, and CSV reads those columns as text so type guessing never rounds a value or fails late.
+- designer chose: a value that cannot be held exactly in its declared type sends its row to quarantine, but a column of a type that can never convert fails the run, since that is a config mistake, not bad data.
+- designer chose: rows failing an error-level row check are quarantined, and table-level error checks fail the run.
+- designer chose: the quarantine limit is judged once all rows have been counted, and going over it rolls back the table and the saved state.
+- designer chose: quarantined rows and check results are saved for failed runs too, in their own transaction after the rollback, so a failure shows its reasons.
+- designer chose: at most 100,000 quarantined rows are kept per run while the exact count goes on the run, which keeps memory bounded when a whole file is bad.
+- designer chose: table-level checks go through four small count-and-max methods on the loader, so the in-memory test loader can match Postgres.
+- designer chose: decimals use a fixed digits-after-the-point type and are stored as Postgres numeric, and they are hashed as text like floats.
+- designer chose: empty leading chunks are held back in the new-rows filter so a header-only file with a declared watermark still loads nothing and saves no state.
+- designer ruled out: running every check as SQL on the finished table, because bad rows would already be in the table and the test loader would need SQL.
+- designer ruled out: writing quarantined rows over a second database connection while rows stream, because it adds a connection and leaves rows behind for killed runs.
+- designer ruled out: copying config into `platform.sources` and `platform.datasets` in this slice, because nothing reads them before the API in slice 7.
+- [F40] plan-check found: the plan runs row-level quality checks (not_null, accepted_values, range, regex) before load, but the spec's fixed pipeline order places all quality checks after load.
+- [F41] plan-check found: the spec says `columns:` types are applied at extraction, but the plan converts them after the common-transforms stage, not inside the connector's extract step.
+- [F42] plan-check found: the spec says quarantined records store the original row as JSON, but the plan defers capturing the true source row and instead stores the row as it exists at the point of rejection (post-cleanup, post-transform).
+- you decided: a quarantined row is stored as it was when rejected (cleaned names, trimmed text, after `transform.py`), with a reason naming the column, not as the original source row.
+- you decided: rows with a value that doesn't fit its declared type, and rows failing an error-level row check (not_null, accepted_values, range, regex), go to quarantine; failed error-level table checks (unique, min_rows, freshness, row_count_change) fail the run.
+- you decided: `columns:` uses the cleaned table names, applied right after name cleanup and before `transform.py`, with CSV reading those columns as text.
+- you decided: a decimal is declared as `decimal(P,S)` with both numbers required, and a value with more digits goes to quarantine.
+- you decided: a `json` column is stored as text checked to be valid JSON, not as `jsonb`.
+- you decided: a `timestamp` column is stored with a time zone in UTC, and values without a zone are read as UTC.
+- you decided: copying source configuration into `platform.sources` and `platform.datasets` waits for slice 7's API.
+- F40, F41, F42 fixed: SPEC.md now gives the pipeline order with row checks before the load and table checks after, declared types applied after name cleanup, and quarantine storing the row as it was when rejected, as decided.
+- fast gate failed (2s): Found 9 errors in 2 files (checked 57 source files)
+- fast gate passed (30s): 215 passed, 27 deselected, 8 warnings in 27.16s
+- fast gate failed (2s): Found 9 errors in 2 files (checked 59 source files)
+- fast gate passed (39s): 434 passed, 32 deselected, 8 warnings in 35.65s
+- db gate passed (40s): 24 passed, 442 deselected, 2 warnings in 18.49s
+- smoke gate passed (39s): {"step": "run", "status": "succeeded", "rows_extracted": 2000, "rows_loaded": 2000, "event": "run finished", "run_id": "01a0a1e6-ebfc-75c5-be9d-a7b91c073eea", "
+- fast gate passed (41s): 434 passed, 32 deselected, 8 warnings in 37.79s
+- built: a dataset can declare `columns:` types (text, integer, decimal(P,S), float, boolean, date, timestamp, json); CSV reads those columns as text, each value is converted exactly or its row goes to `platform.quarantine` as read with a reason naming the column, and a column that can never convert fails the run.
+- built: probing Polars showed two traps the conversion now guards against: casting text to a decimal silently cuts extra digits (12.345 became 12.34), and a time with second 60 rolls over into the next minute.
+- built: the conversion rules are proven against a model written with Python's own parsers, per declared type and source type, plus a table of 100+ near misses; planting five deliberate bugs showed random draws alone missed three of them, which is why the near-miss table exists.
+- built: the near-miss table found that Python accepts 24:00 as the next midnight; the rule allows hours 00 to 23 only, so such text is quarantined.
+- built: `checks:` in source.yaml runs not_null, accepted_values, range and regex on every row (an error-level failure quarantines the row, a NaN fails a range) and unique, min_rows, freshness and row_count_change on the loaded table (an error-level failure fails the run); every result goes to `platform.quality_results`.
+- built: a run fails with `QualityError` when more than its limit (default 1%) of extracted rows are quarantined; the table and state roll back, while its quarantined rows, check results and `rows_quarantined` are still recorded in a separate transaction.
+- built: decimals are stored as `numeric(P,S)` and hashed as text; demo_csv declares four types and five checks, demo_db stores `amount` as `numeric(10,2)`, and migration 0003 adds the quarantine and quality tables with an index on the quarantine's run id.
+- [F43] edge-hunter found: zero extracted rows plus a custom transform.py that fabricates rows which then get quarantined can make counter.rows stay 0 while quarantined_rows is positive, and runner.py's share-percentage line divides by counter.rows unguarded, so instead of a clean QualityError the run should crash with ZeroDivisionError — src/udp/pipeline/runner.py:181-187.
+- [F44] edge-hunter found: check_columns and check_declared_columns validate a checked/declared column's type against only the first chunk's schema, so a leading empty (Null-typed) chunk followed by a later chunk with a genuinely incompatible dtype can skip the one-time validation and hit an unclean error deep in per-chunk conversion instead of a clean ValidationError — src/udp/quality/checks.py:144-146, src/udp/pipe
+- [F45] edge-hunter found: quarantine_threshold_percent at its exact boundary values of 0 and 100 is not exercised by tests, only 50 and 100 with failing runs are — src/udp/quality/quarantine.py:51-53, tests/test_quality.py:209,310.
+- [F46] edge-hunter found: AcceptedValues, Range and Regex row checks against a column whose dtype is Null for the entire dataset silently never fail (_failing returns pl.lit(False) unconditionally for Null), so a check declared on an always-empty column produces no failure signal for the whole run — src/udp/quality/checks.py:112-113.
+- [F47] edge-hunter found: previous_table_rows/newest_value zero-vs-zero handling for RowCountChange and Freshness looks deliberately guarded, flagged only as a lower-confidence adjacent case to the division-by-zero pattern — src/udp/quality/checks.py:222-246.
+- [F48] plan-drift found: `src/udp/connectors/base.py:44-52` adds a reserved-column check to the `columns:` validator that the plan's step 2 validator list didn't name, with a matching test in `tests/test_config.py`.
+- [F49] plan-drift found: the `quality checked` log (`src/udp/quality/checks.py:277-285`) is emitted from `check_dataset`, not from `run_source` as the plan's Runner section attributes it, though the fields and timing match.
+- plan-drift checked: 29 files touched (20 modified, 9 untracked), all named in the plan's file list; no skips/xfails/loosened assertions found in the diff, and the one changed assertion in `test_demo_sources.py` was strengthened, not weakened.
+- final-check verdict: SHIP
+- final-check noted: shipping depends on `./run full` exiting 0 and on slices.json getting real evidence for slice 5's three claims before the closing commit; slice 5 is still `planned` there with no evidence.
+- final-check noted: `ROW_CHECKS` in `config/quality.py` is unused, and `checks.py` spells the same four row checks out twice more; keep one definition.
+- final-check noted: the runner divides by rows extracted when building the limit message, so a run that extracted nothing but quarantined rows added by `transform.py` fails with ZeroDivisionError instead of QualityError.
+- final-check noted: a header-only file on an append or merge dataset returns before the table checks, so `min_rows` never runs for it.
+- final-check noted: row checks and type conversion run before the new-rows filter, so a CSV append or merge dataset quarantines the same bad rows again on every changed-file run.
+- final-check noted: connectors now import `clean_column_names` from `udp.pipeline.transform`; `udp.names` is the natural home and would keep connectors from depending on pipeline.
+- final-check noted: `row_count_change` is only tested at error severity, and the limit property test repeats the implementation's own arithmetic.
+- final-check noted: SPEC.md still says decimals are stored as text "until slice 5" declares plain `decimal`, and a test_incremental.py comment still says slice 5 "will convert" CSV dates.
+- full gate failed (306s): 1 failed, 465 passed, 9 warnings in 280.90s (0:04:40)
+- designer plan: slice 6 — orchestration
+- designer chose: each dataset gets an optional 5-field cron `schedule:` in UTC, read once when the scheduler starts, and each firing re-reads that source.yaml and calls the same runner `udp run` uses.
+- designer chose: whether runs overlap is decided by a Postgres lock per dataset, taken before the run is recorded and released after its final status, so a "running" row whose lock is free always belongs to a dead run.
+- designer chose: the next run of a dataset marks that dataset's leftover "running" rows as failed.
+- designer chose: the schedule check only accepts cron expressions that APScheduler 3 reads the way standard cron does (weekday names only, not both day fields), and a property test compares fire times against a plain cron model.
+- designer chose: adding a schedule does not change a dataset's settings fingerprint, so it never reloads data.
+- designer chose: APScheduler is allowed enough running copies of each job that the lock, not APScheduler, decides and records an overlap.
+- designer ruled out: a lock inside the load transaction, because the run row is saved before that transaction opens, so a dead run couldn't be told apart from one about to start.
+- designer ruled out: APScheduler's one-copy-per-job limit, because it drops overlapping firings without recording anything and can't see a manual run in another process.
+- designer ruled out: a database job store for the scheduler, because the source files are the truth for what runs when.
+- fast gate failed (0s): 2 files would be reformatted, 65 files already formatted
+- built: the full gate's failure was the CSV header read, which still guessed column types and failed on `N/A` about 1 run in 20; the header is now read with every column as text.
+- F43 fixed: the limit message leaves out the percentage when no rows were extracted, with a test where `transform.py` adds a row to an empty file and the run fails with QualityError.
+- F44 rejected: `validate()` already requires every chunk to have the first chunk's column types, so a later chunk cannot bring a different type past the one-time check.
+- F45 rejected: the boundary table already runs limits of 0 and 100 (`1 of 1 at 0%` exceeds, `1 of 1 at 100%` does not), next to the property over the whole 0–100 range.
+- F46 rejected: a null passes every row check except not_null by decision, and a column that is null throughout is exactly what not_null exists to catch.
+- F47 rejected: the finding itself says the zero cases are guarded (no division when the earlier count is 0, a failure message when the column has no values), so there is nothing to fix.
+- F48 rejected: refusing a declared column named like a platform column prevents a clash the plan's type rules implied, and it has a test.
+- F49 rejected: the log line has the planned fields and timing; logging where the counts are gathered is simpler than passing them back to the runner.
+- built: after final-check, the four row checks are listed once in `config/quality.py`, and the stale SPEC decimal line and test comment were corrected.
+- fast gate passed (64s): 435 passed, 32 deselected, 8 warnings in 53.24s
+- full gate passed (465s): 467 passed, 9 warnings in 427.75s (0:07:07)

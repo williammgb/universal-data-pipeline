@@ -10,7 +10,9 @@ import structlog
 from udp.config.source import SourceConfig
 from udp.connectors import CONNECTORS
 from udp.connectors.base import Connector, ExtractRequest, SavedWatermark
+from udp.errors import QualityError
 from udp.names import table_name
+from udp.pipeline.column_types import apply_column_types
 from udp.pipeline.custom import TransformContext, apply_transform, find_transform, load_transform
 from udp.pipeline.extract import RowCounter, extract
 from udp.pipeline.incremental import (
@@ -23,7 +25,16 @@ from udp.pipeline.incremental import (
 from udp.pipeline.load import load
 from udp.pipeline.transform import transform
 from udp.pipeline.validate import validate
-from udp.storage.loader import DatasetState, Loader, LoadTransaction, RunFailure, RunStart
+from udp.quality.checks import check_dataset, check_rows
+from udp.quality.quarantine import threshold_exceeded
+from udp.storage.loader import (
+    DatasetState,
+    Loader,
+    LoadTransaction,
+    RunFailure,
+    RunFindings,
+    RunStart,
+)
 
 log = structlog.get_logger(step="run")
 
@@ -58,6 +69,7 @@ def run_source(
     for dataset in config.datasets:
         run_id = uuid7()
         counter = RowCounter()
+        findings = RunFindings(source, dataset.name)
         with structlog.contextvars.bound_contextvars(
             run_id=str(run_id), source=source, dataset=dataset.name
         ):
@@ -78,15 +90,20 @@ def run_source(
                         run_id,
                         started_at,
                         full_refresh,
+                        findings,
                     )
+                    ended_at = datetime.now(UTC)
+                    transaction.record_findings(run_id, findings, ended_at)
                     transaction.succeed_run(
                         run_id,
-                        ended_at=datetime.now(UTC),
+                        ended_at=ended_at,
                         rows_extracted=counter.rows,
                         rows_loaded=rows,
                     )
             except Exception as error:
-                outcomes.append(_record_failure(loader, run_id, dataset.name, counter, error))
+                outcomes.append(
+                    _record_failure(loader, run_id, dataset.name, counter, error, findings)
+                )
                 continue
             log.info(
                 "run finished", status="succeeded", rows_extracted=counter.rows, rows_loaded=rows
@@ -104,6 +121,7 @@ def _load_dataset(
     run_id: UUID,
     started_at: datetime,
     full_refresh: bool,
+    findings: RunFindings,
 ) -> int:
     """Load one dataset inside the caller's transaction; returns rows loaded."""
     dataset = request.dataset
@@ -141,9 +159,13 @@ def _load_dataset(
         )
     tracker = WatermarkTracker()
     chunks = transform(validate(extract(connector, request, counter)))
+    if dataset.columns:
+        chunks = apply_column_types(chunks, dataset.columns, findings)
     if transform_file is not None:
         context = TransformContext(source, dataset.name, run_id)
         chunks = apply_transform(chunks, load_transform(transform_file), context, transform_file)
+    if dataset.checks:
+        chunks = check_rows(chunks, dataset.checks, findings)
     if incremental and dataset.watermark is not None:
         chunks = new_rows(
             chunks,
@@ -156,11 +178,21 @@ def _load_dataset(
         )
 
     result = load(transaction, table, dataset, chunks, run_id, started_at)
+    limit = dataset.quarantine_threshold_percent
+    if threshold_exceeded(findings.quarantined_rows, counter.rows, limit):
+        # transform.py can add rows, so rows can be quarantined when none were extracted.
+        share = f" ({findings.quarantined_rows * 100 / counter.rows:.2f}%)" if counter.rows else ""
+        raise QualityError(
+            f"{findings.quarantined_rows} of {counter.rows} rows{share} quarantined, "
+            f"above the dataset's limit of {limit:g}%"
+        )
     if incremental and tracker.kind is None:
         # No rows arrived, so the column types are unknown: nothing is saved, and the next
         # run with data builds the table again as a first load.
         log.info("no rows to load; state not saved", step="load")
         return result.rows
+    if dataset.checks or dataset.columns:
+        check_dataset(transaction, table, dataset, findings, started_at)
     version = transaction.record_columns(table, source, dataset.name, run_id, started_at)
     if version is not None:
         log.info("schema version recorded", step="load", version=version)
@@ -188,7 +220,12 @@ def _load_dataset(
 
 
 def _record_failure(
-    loader: Loader, run_id: UUID, dataset: str, counter: RowCounter, error: Exception
+    loader: Loader,
+    run_id: UUID,
+    dataset: str,
+    counter: RowCounter,
+    error: Exception,
+    findings: RunFindings,
 ) -> RunOutcome:
     failure = RunFailure(
         error_class=type(error).__name__,
@@ -202,10 +239,15 @@ def _record_failure(
         error_class=failure.error_class,
         error=failure.message,
     )
+    ended_at = datetime.now(UTC)
     try:
-        loader.fail_run(
-            run_id, ended_at=datetime.now(UTC), rows_extracted=counter.rows, failure=failure
-        )
+        # The load was rolled back; what was quarantined and checked still explains the failure.
+        with loader.transaction() as transaction:
+            transaction.record_findings(run_id, findings, ended_at)
+    except Exception as recording_error:
+        log.error("could not record the failed run's findings", error=str(recording_error))
+    try:
+        loader.fail_run(run_id, ended_at=ended_at, rows_extracted=counter.rows, failure=failure)
     except Exception as recording_error:
         log.error("could not record the failed run", error=str(recording_error))
     return RunOutcome(run_id, dataset, "failed", None)

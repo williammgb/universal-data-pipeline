@@ -1,6 +1,6 @@
 import json
 from collections.abc import Iterator
-from datetime import UTC, date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
 from typing import Any
@@ -658,9 +658,69 @@ def test_bad_watermark_or_key_data_fails_the_run(
     assert message in record["error_message"]
 
 
+TIMESTAMP_MERGE = MERGE + "    columns:\n      updated: timestamp\n"
+
+
+def test_a_csv_timestamp_declared_as_the_watermark_loads_all_then_nothing_then_changes(
+    tmp_path: Path,
+) -> None:
+    shop = Shop(tmp_path, TIMESTAMP_MERGE)
+    rows = [
+        {"id": 1, "amount": 10, "updated": "2024-01-01T10:00:00+02:00"},
+        {"id": 2, "amount": 20, "updated": "2024-01-01 09:00"},
+    ]
+    shop.write(rows)
+
+    assert shop.run().rows_loaded == 2
+    state = shop.loader.states[("shop", "orders")]
+    assert (state.watermark_type, state.watermark) == (
+        "timestamp with time zone",
+        datetime(2024, 1, 1, 9, tzinfo=UTC),
+    )
+    shop.write([*rows, {"id": 3, "amount": 1, "updated": "2023-12-31T00:00:00Z"}])
+    assert shop.run().rows_loaded == 0
+
+    shop.write([rows[0], {"id": 2, "amount": 21, "updated": "2024-01-02T00:00:00Z"}])
+    changed = shop.run()
+
+    assert changed.rows_loaded == 1
+    assert dict(zip(shop.table["id"], shop.table["amount"], strict=True)) == {1: 10, 2: 21}
+
+
+def test_a_header_only_csv_with_a_declared_watermark_saves_no_state(tmp_path: Path) -> None:
+    shop = Shop(tmp_path, TIMESTAMP_MERGE)
+    (shop.folder / "orders.csv").write_text("id,amount,updated\n", encoding="utf-8")
+
+    empty = shop.run()
+
+    assert (empty.status, empty.rows_loaded) == ("succeeded", 0)
+    assert ("shop", "orders") not in shop.loader.states
+    shop.write([{"id": 1, "amount": 10, "updated": "2024-01-01T00:00:00Z"}])
+    assert shop.run().rows_loaded == 1
+    assert shop.loader.states[("shop", "orders")].watermark_type == "timestamp with time zone"
+
+
+def test_declaring_a_new_type_for_a_loaded_column_needs_a_full_refresh(tmp_path: Path) -> None:
+    shop = Shop(tmp_path, MERGE)
+    shop.write([{**row, "amount": f"{row['amount']}.5"} for row in ORDERS])
+    shop.run()
+    assert shop.table.schema["amount"] == pl.Float64
+    shop.configure(MERGE + "    columns:\n      amount: decimal(12,2)\n")
+
+    outcome = shop.run()
+
+    record = shop.record(outcome)
+    assert record["error_class"] == "SchemaDriftError"
+    assert "'amount'" in record["error_message"] and "numeric(12,2)" in record["error_message"]
+    assert shop.run(full_refresh=True).status == "succeeded"
+    assert shop.table.schema["amount"] == pl.Decimal(12, 2)
+    versions = shop.loader.versions[("shop", "orders")]
+    assert len(versions) == 2
+    assert ("amount", "numeric(12,2)") in versions[-1]
+
+
 def test_date_watermark_from_a_spreadsheet_continues_from_the_saved_day(tmp_path: Path) -> None:
-    # CSV dates arrive as text, which slice 5's declared column types will convert;
-    # spreadsheets carry real dates already.
+    # CSV dates arrive as text unless `columns:` declares them; spreadsheets carry real dates.
     folder = tmp_path / "sources" / "sheets"
     folder.mkdir(parents=True)
     (folder / "source.yaml").write_text(

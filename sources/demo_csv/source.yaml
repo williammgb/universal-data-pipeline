@@ -4,3 +4,22 @@ datasets:
   - name: customers
     path: data/customers.csv
     load_mode: full
+    columns:
+      customer_id: integer
+      signup_date: date
+      lifetime_value: decimal(12,2)
+      is_active: boolean
+    checks:
+      - check: not_null
+        column: customer_id
+      - check: unique
+        columns: [customer_id]
+      - check: min_rows
+        rows: 1
+      - check: range
+        column: lifetime_value
+        min: 0
+      - check: regex
+        column: city
+        pattern: "[A-Z][a-z]+"
+        severity: warn

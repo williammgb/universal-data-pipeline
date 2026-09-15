@@ -1,6 +1,8 @@
+import json
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from dataclasses import asdict
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -13,6 +15,7 @@ from udp.storage.loader import (
     DatasetState,
     LoadResult,
     RunFailure,
+    RunFindings,
     RunStart,
     column_changes,
     table_columns,
@@ -28,6 +31,8 @@ class MemoryTransaction:
         self.states: dict[tuple[str, str], DatasetState] = {}
         self.versions: dict[tuple[str, str], list[list[Column]]] = {}
         self.run_updates: dict[UUID, dict[str, Any]] = {}
+        self.quarantine: list[dict[str, Any]] = []
+        self.quality_results: list[dict[str, Any]] = []
 
     def table(self, name: str) -> pl.DataFrame | None:
         found = self.tables.get(name, self._loader.tables.get(name))
@@ -139,18 +144,72 @@ class MemoryTransaction:
         self.versions.setdefault(key, []).append(columns)
         return len(history) + 1
 
+    def _existing(self, table: str) -> pl.DataFrame:
+        frame = self.table(table)
+        if frame is None:
+            raise LoadError(f"datasets.{table} does not exist")
+        return frame
+
+    def table_rows(self, table: str) -> int:
+        return self._existing(table).height
+
+    def duplicate_rows(self, table: str, columns: Sequence[str]) -> int:
+        keyed = self._existing(table).select(columns).drop_nulls()
+        sizes = keyed.group_by(columns).len()
+        return int(sizes.filter(pl.col("len") > 1)["len"].sum())
+
+    def newest_value(self, table: str, column: str) -> date | datetime | None:
+        value = self._existing(table)[column].max()
+        return value if isinstance(value, date) else None
+
+    def previous_table_rows(self, source: str, dataset: str) -> int | None:
+        for result in reversed(self._loader.quality_results):
+            run = self._loader.runs[result["run_id"]]
+            if (
+                (result["source"], result["dataset"]) == (source, dataset)
+                and run["status"] == "succeeded"
+                and result["table_rows"] is not None
+            ):
+                return int(result["table_rows"])
+        return None
+
+    def record_findings(self, run_id: UUID, findings: RunFindings, recorded_at: datetime) -> None:
+        for frame in findings.quarantine:
+            for reason, record in frame.iter_rows():
+                self.quarantine.append(
+                    {
+                        "run_id": run_id,
+                        "source": findings.source,
+                        "dataset": findings.dataset,
+                        "reason": reason,
+                        "record": json.loads(record),
+                        "quarantined_at": recorded_at,
+                    }
+                )
+        for result in findings.results:
+            self.quality_results.append(
+                {
+                    "run_id": run_id,
+                    "source": findings.source,
+                    "dataset": findings.dataset,
+                    **asdict(result),
+                    "checked_at": recorded_at,
+                }
+            )
+        self.run_updates.setdefault(run_id, {})["rows_quarantined"] = findings.quarantined_rows
+
     def succeed_run(
         self, run_id: UUID, *, ended_at: datetime, rows_extracted: int, rows_loaded: int
     ) -> None:
         run = self._loader.runs.get(run_id)
         if run is None or run["status"] != "running":
             raise LoadError(f"run {run_id} is not a running run")
-        self.run_updates[run_id] = {
-            "status": "succeeded",
-            "ended_at": ended_at,
-            "rows_extracted": rows_extracted,
-            "rows_loaded": rows_loaded,
-        }
+        self.run_updates.setdefault(run_id, {}).update(
+            status="succeeded",
+            ended_at=ended_at,
+            rows_extracted=rows_extracted,
+            rows_loaded=rows_loaded,
+        )
 
 
 class MemoryLoader:
@@ -161,6 +220,8 @@ class MemoryLoader:
         self.states: dict[tuple[str, str], DatasetState] = {}
         self.versions: dict[tuple[str, str], list[list[Column]]] = {}
         self.runs: dict[UUID, dict[str, Any]] = {}
+        self.quarantine: list[dict[str, Any]] = []
+        self.quality_results: list[dict[str, Any]] = []
 
     def start_run(self, run: RunStart) -> None:
         self.runs[run.run_id] = {
@@ -176,6 +237,7 @@ class MemoryLoader:
             "error_class": None,
             "error_message": None,
             "error_traceback": None,
+            "rows_quarantined": None,
         }
 
     @contextmanager
@@ -192,6 +254,8 @@ class MemoryLoader:
             self.versions.setdefault(key, []).extend(added)
         for run_id, fields in transaction.run_updates.items():
             self.runs[run_id].update(fields)
+        self.quarantine.extend(transaction.quarantine)
+        self.quality_results.extend(transaction.quality_results)
 
     def fail_run(
         self,

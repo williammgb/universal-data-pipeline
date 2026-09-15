@@ -1,4 +1,5 @@
 from datetime import UTC, date, datetime, time
+from decimal import Decimal
 from hashlib import sha256
 from typing import Any
 from uuid import uuid7
@@ -20,6 +21,15 @@ def test_golden_hash_is_sha256_of_sorted_json() -> None:
         sha256(b'{"id":2,"name":null,"value":"NaN"}').hexdigest(),
     ]
     assert hashes[0] == "777edc5ba1d407689d42730dbd4ad94ced775dbc9db411355e95c4f4d408a10d"
+
+
+def test_golden_hash_writes_decimals_as_text_with_their_scale() -> None:
+    frame = pl.DataFrame({"amount": [Decimal("12.30"), None]}, schema={"amount": pl.Decimal(12, 2)})
+
+    assert record_hashes(frame).to_list() == [
+        sha256(b'{"amount":"12.30"}').hexdigest(),
+        sha256(b'{"amount":null}').hexdigest(),
+    ]
 
 
 def test_golden_hash_pins_the_encoding_of_dates_times_and_booleans() -> None:

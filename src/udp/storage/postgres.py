@@ -1,6 +1,6 @@
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 from itertools import chain
 from typing import Any, Self
 from uuid import UUID
@@ -17,6 +17,7 @@ from udp.storage.loader import (
     DatasetState,
     LoadResult,
     RunFailure,
+    RunFindings,
     RunStart,
     column_changes,
     table_columns,
@@ -232,6 +233,87 @@ class PostgresTransaction:
             [source, dataset, version, Jsonb(columns), run_id, recorded_at],
         )
         return int(version)
+
+    def table_rows(self, table: str) -> int:
+        row = self._conn.execute(
+            sql.SQL("SELECT count(*) FROM {}").format(sql.Identifier("datasets", table))
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def duplicate_rows(self, table: str, columns: Sequence[str]) -> int:
+        not_null = sql.SQL(" AND ").join(
+            sql.SQL("{} IS NOT NULL").format(sql.Identifier(name)) for name in columns
+        )
+        row = self._conn.execute(
+            sql.SQL(
+                "SELECT coalesce(sum(n), 0) FROM (SELECT count(*) AS n FROM {} WHERE {} "
+                "GROUP BY {} HAVING count(*) > 1) AS groups"
+            ).format(sql.Identifier("datasets", table), not_null, _identifiers(columns))
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def newest_value(self, table: str, column: str) -> date | datetime | None:
+        row = self._conn.execute(
+            sql.SQL("SELECT max({}) FROM {}").format(
+                sql.Identifier(column), sql.Identifier("datasets", table)
+            )
+        ).fetchone()
+        value = row[0] if row else None
+        return value if isinstance(value, date) else None
+
+    def previous_table_rows(self, source: str, dataset: str) -> int | None:
+        row = self._conn.execute(
+            "SELECT results.table_rows FROM platform.quality_results AS results "
+            "JOIN platform.pipeline_runs AS runs USING (run_id) "
+            "WHERE results.source = %s AND results.dataset = %s "
+            "AND runs.status = 'succeeded' AND results.table_rows IS NOT NULL "
+            "ORDER BY results.checked_at DESC, results.position DESC LIMIT 1",
+            [source, dataset],
+        ).fetchone()
+        return int(row[0]) if row else None
+
+    def record_findings(self, run_id: UUID, findings: RunFindings, recorded_at: datetime) -> None:
+        if findings.quarantine:
+            copy_statement = (
+                "COPY platform.quarantine "
+                "(run_id, source, dataset, reason, record, quarantined_at) FROM STDIN"
+            )
+            with self._conn.cursor() as cursor, cursor.copy(copy_statement) as copy:
+                for frame in findings.quarantine:
+                    for reason, record in frame.iter_rows():
+                        copy.write_row(
+                            [run_id, findings.source, findings.dataset, reason, record, recorded_at]
+                        )
+        if findings.results:
+            with self._conn.cursor() as cursor:
+                cursor.executemany(
+                    "INSERT INTO platform.quality_results (run_id, source, dataset, position, "
+                    "check_type, columns, severity, passed, failing_rows, table_rows, message, "
+                    "settings, checked_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    [
+                        [
+                            run_id,
+                            findings.source,
+                            findings.dataset,
+                            result.position,
+                            result.check_type,
+                            list(result.columns),
+                            result.severity,
+                            result.passed,
+                            result.failing_rows,
+                            result.table_rows,
+                            result.message,
+                            Jsonb(result.settings),
+                            recorded_at,
+                        ]
+                        for result in findings.results
+                    ],
+                )
+        self._conn.execute(
+            "UPDATE platform.pipeline_runs SET rows_quarantined = %s WHERE run_id = %s",
+            [findings.quarantined_rows, run_id],
+        )
 
     def succeed_run(
         self, run_id: UUID, *, ended_at: datetime, rows_extracted: int, rows_loaded: int

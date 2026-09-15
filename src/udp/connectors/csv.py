@@ -12,6 +12,7 @@ from udp.connectors.base import (
     file_sha256,
 )
 from udp.errors import ExtractError
+from udp.pipeline.transform import clean_column_names
 
 INFER_SCHEMA_ROWS = 10_000
 
@@ -38,8 +39,21 @@ class CsvConnector:
         path = request.source_dir / request.dataset.path
         if not path.is_file():
             raise ExtractError(f"CSV file not found: {path.as_posix()}")
-        frame = pl.scan_csv(path, infer_schema_length=INFER_SCHEMA_ROWS)
         try:
+            text_columns: dict[str, pl.DataType] = {}
+            if request.dataset.columns:
+                # Declared columns are read as text so type guessing never rounds a value or
+                # fails on a late row; the pipeline converts them to their declared type.
+                header = pl.scan_csv(path, infer_schema=False).collect_schema().names()
+                cleaned = clean_column_names(header)
+                text_columns = {
+                    raw: pl.String()
+                    for raw, name in zip(header, cleaned, strict=True)
+                    if name in request.dataset.columns
+                }
+            frame = pl.scan_csv(
+                path, infer_schema_length=INFER_SCHEMA_ROWS, schema_overrides=text_columns
+            )
             yielded = False
             for batch in frame.collect_batches(chunk_size=request.chunk_size):
                 for chunk in batch.iter_slices(request.chunk_size):

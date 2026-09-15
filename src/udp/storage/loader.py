@@ -1,8 +1,8 @@
 from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 from uuid import UUID
 
 import polars as pl
@@ -50,6 +50,8 @@ def column_type(name: str, dtype: pl.DataType) -> str:
         return _PLATFORM_COLUMN_TYPES[name]
     if isinstance(dtype, pl.Datetime):
         return "timestamp with time zone" if dtype.time_zone else "timestamp without time zone"
+    if isinstance(dtype, pl.Decimal):
+        return f"numeric({dtype.precision},{dtype.scale})"
     simple = _SIMPLE_TYPES.get(dtype.base_type())
     if simple is None:
         raise LoadError(f"column '{name}' has type {dtype}, which cannot be stored yet")
@@ -140,6 +142,36 @@ class RunFailure:
     traceback: str
 
 
+@dataclass(frozen=True)
+class CheckResult:
+    """One quality check's outcome in one run; position is its place in the dataset's checks."""
+
+    position: int
+    check_type: str
+    columns: tuple[str, ...]
+    severity: str
+    passed: bool
+    failing_rows: int | None
+    table_rows: int | None
+    message: str
+    settings: dict[str, Any]
+
+
+@dataclass
+class RunFindings:
+    """What a run quarantined and what its checks found, recorded whether it succeeds or not.
+
+    `quarantine` holds frames with a `reason` and a `record` (the row as JSON text); it keeps
+    at most a capped number of rows, while `quarantined_rows` is the exact count.
+    """
+
+    source: str
+    dataset: str
+    quarantined_rows: int = 0
+    quarantine: list[pl.DataFrame] = field(default_factory=list)
+    results: list[CheckResult] = field(default_factory=list)
+
+
 class LoadTransaction(Protocol):
     def read_state(self, source: str, dataset: str) -> DatasetState | None: ...
 
@@ -175,6 +207,23 @@ class LoadTransaction(Protocol):
         self, table: str, source: str, dataset: str, run_id: UUID, recorded_at: datetime
     ) -> int | None:
         """Add a schema version when the table's columns differ from the last one recorded."""
+        ...
+
+    def table_rows(self, table: str) -> int: ...
+
+    def duplicate_rows(self, table: str, columns: Sequence[str]) -> int:
+        """Rows sharing their values in `columns` with another row; rows with a null there
+        are not counted."""
+        ...
+
+    def newest_value(self, table: str, column: str) -> date | datetime | None: ...
+
+    def previous_table_rows(self, source: str, dataset: str) -> int | None:
+        """The table's row count most recently recorded by a succeeded run's checks."""
+        ...
+
+    def record_findings(self, run_id: UUID, findings: RunFindings, recorded_at: datetime) -> None:
+        """Write quarantined rows and check results, and the run's quarantined count."""
         ...
 
     def succeed_run(

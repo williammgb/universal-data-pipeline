@@ -24,3 +24,7 @@ class SchemaDriftError(UdpError):
 
 class TransformError(UdpError):
     """A source's transform.py could not be loaded, failed, or returned unusable data."""
+
+
+class QualityError(UdpError):
+    """Too many rows were quarantined, or an error-level quality check failed."""

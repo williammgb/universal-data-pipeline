@@ -3,7 +3,8 @@ import uuid
 from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -18,12 +19,15 @@ from psycopg.rows import dict_row
 
 from udp.errors import LoadError, SchemaDriftError
 from udp.pipeline.load import with_platform_columns
+from udp.quality.quarantine import quarantine
 from udp.settings import Settings
 from udp.storage.loader import (
+    CheckResult,
     DatasetState,
     Loader,
     LoadResult,
     RunFailure,
+    RunFindings,
     RunStart,
     column_changes,
     column_type,
@@ -38,6 +42,7 @@ class Harness:
     read_columns: Callable[[str], list[str]]
     read_run: Callable[[UUID], dict[str, Any]]
     drop_table: Callable[[str], None]
+    read_findings: Callable[[UUID], tuple[list[dict[str, Any]], list[dict[str, Any]]]]
 
 
 def _memory_harness() -> Iterator[Harness]:
@@ -46,12 +51,19 @@ def _memory_harness() -> Iterator[Harness]:
     def drop_table(table: str) -> None:
         loader.tables.pop(table, None)
 
+    def read_findings(run_id: UUID) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        return (
+            [row for row in loader.quarantine if row["run_id"] == run_id],
+            [row for row in loader.quality_results if row["run_id"] == run_id],
+        )
+
     yield Harness(
         loader=loader,
         read_rows=lambda table, columns: loader.tables[table].select(columns).rows(),
         read_columns=lambda table: loader.tables[table].columns,
         read_run=lambda run_id: loader.runs[run_id],
         drop_table=drop_table,
+        read_findings=read_findings,
     )
 
 
@@ -86,7 +98,19 @@ def _postgres_harness() -> Iterator[Harness]:
             target = sql.Identifier("datasets", table)
             reader.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(target))
 
-        yield Harness(loader, read_rows, read_columns, read_run, drop_table)
+        def read_findings(run_id: UUID) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+            with reader.cursor(row_factory=dict_row) as cursor:
+                quarantine = cursor.execute(
+                    "SELECT * FROM platform.quarantine WHERE run_id = %s ORDER BY quarantine_id",
+                    [run_id],
+                ).fetchall()
+                results = cursor.execute(
+                    "SELECT * FROM platform.quality_results WHERE run_id = %s ORDER BY position",
+                    [run_id],
+                ).fetchall()
+            return quarantine, results
+
+        yield Harness(loader, read_rows, read_columns, read_run, drop_table, read_findings)
 
 
 @pytest.fixture(params=["memory", pytest.param("postgres", marks=pytest.mark.db)])
@@ -508,3 +532,142 @@ def test_saved_state_reads_back_equal(
     with harness.loader.transaction() as transaction:
         assert transaction.read_state(state.source, state.dataset) == state
         assert transaction.read_state(state.source, "never_loaded") is None
+
+
+# --- slice 5: decimals, table checks and findings -------------------------------------------
+
+
+def test_decimals_are_stored_exactly_and_merging_them_again_writes_nothing(
+    harness: Harness,
+) -> None:
+    table = _new_table()
+    frame = pl.DataFrame(
+        {
+            "id": [1, 2, 3],
+            "wm": [1, 1, 1],
+            "amount": [Decimal("12.30"), Decimal("-0.01"), Decimal("9999999999.99")],
+        },
+        schema={"id": pl.Int64, "wm": pl.Int64, "amount": pl.Decimal(12, 2)},
+    )
+    prepared = with_platform_columns(frame, uuid.uuid7(), datetime.now(UTC))
+    assert column_type("amount", pl.Decimal(12, 2)) == "numeric(12,2)"
+    try:
+        # The second merge compares the stored column type with numeric(12,2), so a spelling
+        # that differs from Postgres' own would fail it as a type change.
+        for expected in (3, 0):
+            with harness.loader.transaction() as transaction:
+                result = transaction.merge_rows(
+                    table, iter([prepared]), primary_key=["id"], watermark="wm"
+                )
+            assert result.rows == expected
+        assert sorted(harness.read_rows(table, ["id", "amount"])) == [
+            (1, Decimal("12.30")),
+            (2, Decimal("-0.01")),
+            (3, Decimal("9999999999.99")),
+        ]
+    finally:
+        harness.drop_table(table)
+
+
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(
+    st.integers(1, 3).flatmap(
+        lambda width: st.lists(
+            st.tuples(*[st.one_of(st.none(), st.integers(0, 2)) for _ in range(width)]),
+            min_size=1,
+            max_size=12,
+        )
+    ),
+    st.integers(0, 12),
+)
+def test_duplicate_rows_count_rows_sharing_non_null_keys(
+    harness: Harness, rows: list[tuple[int | None, ...]], split: int
+) -> None:
+    columns = [f"k{index}" for index in range(len(rows[0]))]
+    frame = pl.DataFrame(rows, schema=dict.fromkeys(columns, pl.Int64), orient="row")
+    table = _new_table()
+    counts = Counter(row for row in rows if None not in row)
+    expected = sum(count for count in counts.values() if count > 1)
+    try:
+        for part in (frame[:split], frame[split:]):
+            if part.height:
+                _append(harness, table, part)
+        with harness.loader.transaction() as transaction:
+            assert transaction.duplicate_rows(table, columns) == expected
+            assert transaction.table_rows(table) == frame.height
+    finally:
+        harness.drop_table(table)
+
+
+def test_newest_value_reads_dates_and_both_kinds_of_timestamp(harness: Harness) -> None:
+    table = _new_table()
+    frame = pl.DataFrame(
+        {
+            "day": [date(2024, 1, 2), date(2024, 1, 1), None],
+            "naive": [datetime(2024, 1, 1, 10), datetime(2024, 1, 1, 11), None],
+            "utc": [datetime(2024, 1, 1, 10, tzinfo=UTC), None, None],
+            "empty": pl.Series([None, None, None], dtype=pl.Date),
+        }
+    )
+    try:
+        _replace(harness, table, frame)
+        with harness.loader.transaction() as transaction:
+            assert transaction.newest_value(table, "day") == date(2024, 1, 2)
+            assert transaction.newest_value(table, "naive") == datetime(2024, 1, 1, 11)
+            assert transaction.newest_value(table, "utc") == datetime(2024, 1, 1, 10, tzinfo=UTC)
+            assert transaction.newest_value(table, "empty") is None
+    finally:
+        harness.drop_table(table)
+
+
+def _findings(dataset: str, table_rows: int | None) -> RunFindings:
+    findings = RunFindings("contract_quality", dataset)
+    quarantine(
+        findings,
+        pl.DataFrame({"id": [7], "amount": [1.5], "day": [date(2024, 1, 2)]}),
+        pl.Series(["check 0 range failed on column 'amount'"]),
+    )
+    findings.results.append(
+        CheckResult(
+            position=0,
+            check_type="min_rows",
+            columns=(),
+            severity="warn",
+            passed=False,
+            failing_rows=None,
+            table_rows=table_rows,
+            message="the table has 3 rows, at least 5 required",
+            settings={"rows": 5},
+        )
+    )
+    return findings
+
+
+def test_findings_are_recorded_and_only_succeeded_runs_give_a_previous_count(
+    harness: Harness,
+) -> None:
+    dataset = f"d{uuid.uuid4().hex[:12]}"
+    succeeded, failed = _start_run(harness.loader), _start_run(harness.loader)
+    now = datetime.now(UTC)
+    with harness.loader.transaction() as transaction:
+        assert transaction.previous_table_rows("contract_quality", dataset) is None
+        transaction.record_findings(succeeded, _findings(dataset, 3), now)
+        transaction.succeed_run(succeeded, ended_at=now, rows_extracted=3, rows_loaded=3)
+    with harness.loader.transaction() as transaction:
+        transaction.record_findings(failed, _findings(dataset, 9), now)
+    harness.loader.fail_run(
+        failed, ended_at=now, rows_extracted=9, failure=RunFailure("QualityError", "x", "")
+    )
+
+    quarantined, results = harness.read_findings(succeeded)
+    assert [(row["reason"], row["record"]) for row in quarantined] == [
+        ("check 0 range failed on column 'amount'", {"id": 7, "amount": "1.5", "day": "2024-01-02"})
+    ]
+    assert [
+        (r["position"], r["check_type"], r["severity"], r["passed"], r["table_rows"], r["settings"])
+        for r in results
+    ] == [(0, "min_rows", "warn", False, 3, {"rows": 5})]
+    assert harness.read_run(succeeded)["rows_quarantined"] == 1
+    assert harness.read_run(failed)["rows_quarantined"] == 1
+    with harness.loader.transaction() as transaction:
+        assert transaction.previous_table_rows("contract_quality", dataset) == 3

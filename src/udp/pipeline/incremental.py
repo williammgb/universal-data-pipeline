@@ -77,6 +77,7 @@ def new_rows(
     chunks are only counted, so the error gives the total.
     """
     checked = False
+    held: pl.DataFrame | None = None
     kept = 0
     empty_watermarks = 0
     empty_keys = dict.fromkeys(primary_key, 0)
@@ -85,6 +86,10 @@ def new_rows(
             missing = [name for name in (watermark, *primary_key) if name not in chunk.columns]
             if missing:
                 raise ValidationError(f"column '{missing[0]}' is not in the data")
+            if chunk.height == 0:
+                # Empty chunks before the first row carry no values to check or load.
+                held = chunk
+                continue
         empty_watermarks += chunk[watermark].null_count()
         for name in primary_key:
             empty_keys[name] += chunk[name].null_count()
@@ -92,11 +97,6 @@ def new_rows(
             continue
         if not checked:
             kind = column_type(watermark, chunk.schema[watermark])
-            if kind not in WATERMARK_TYPES and chunk.height == 0:
-                # A file with a header and no rows gives no types to check; its columns
-                # are passed on as empty so they fit whatever the table already holds.
-                yield pl.DataFrame(schema=dict.fromkeys(chunk.columns, pl.Null))
-                continue
             if kind not in WATERMARK_TYPES:
                 raise ValidationError(
                     f"watermark column '{watermark}' is {kind}; it must hold whole numbers, "
@@ -118,6 +118,10 @@ def new_rows(
             chunk = chunk.filter(column >= saved if inclusive else column > saved)
         kept += chunk.height
         yield chunk
+    if not checked and held is not None and not empty_watermarks and not any(empty_keys.values()):
+        # A file with a header and no rows gives no types to check; its columns are passed
+        # on as empty so they fit whatever the table already holds, and no state is saved.
+        yield pl.DataFrame(schema=dict.fromkeys(held.columns, pl.Null))
     if empty_watermarks:
         raise ValidationError(
             f"{empty_watermarks} rows have an empty watermark column '{watermark}'"

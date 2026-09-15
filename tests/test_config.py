@@ -170,6 +170,101 @@ def test_invalid_source_names_file_and_field(tmp_path: Path, text: str, expected
     assert expected in message
 
 
+MERGE_ON_UPDATED = "    load_mode: merge\n    watermark: updated\n    primary_key: [id]\n"
+
+
+@pytest.mark.parametrize(
+    ("settings", "field", "problem"),
+    [
+        ("    columns:\n      Signup Date: date\n", "datasets[0].columns", "'signup_date'"),
+        ("    columns:\n      _run_id: text\n", "datasets[0].columns", "platform column"),
+        ("    columns:\n      amount: decimal\n", "datasets[0].columns.amount", "decimal(12,2)"),
+        ("    columns:\n      amount: decimal(40,2)\n", "datasets[0].columns.amount", "38"),
+        ("    columns:\n      amount: decimal(2,3)\n", "datasets[0].columns.amount", "scale"),
+        ("    columns:\n      amount: money\n", "datasets[0].columns.amount", "unknown type"),
+        (
+            f"{MERGE_ON_UPDATED}    columns:\n      updated: text\n",
+            "datasets[0].columns",
+            "must be integer, date or timestamp",
+        ),
+        (
+            "    checks:\n      - check: regex\n        column: city\n        pattern: '('\n",
+            "datasets[0].checks[0].regex.pattern",
+            "not a valid regular expression",
+        ),
+        (
+            "    checks:\n      - check: range\n        column: amount\n",
+            "datasets[0].checks[0].range",
+            "needs min, max or both",
+        ),
+        (
+            "    checks:\n      - check: range\n        column: amount\n        min: 5\n"
+            "        max: 1\n",
+            "datasets[0].checks[0].range",
+            "min must not be larger than max",
+        ),
+        ("    checks:\n      - check: foo\n", "datasets[0].checks[0]", "foo"),
+        (
+            "    checks:\n      - check: not_null\n        column: id\n        severity: fatal\n",
+            "datasets[0].checks[0].not_null.severity",
+            "'warn' or 'error'",
+        ),
+        (
+            "    checks:\n      - check: accepted_values\n        column: id\n        values: []\n",
+            "datasets[0].checks[0].accepted_values.values",
+            "at least 1",
+        ),
+        (
+            "    checks:\n      - check: freshness\n        column: at\n        max_age: P0D\n",
+            "datasets[0].checks[0].freshness.max_age",
+            "longer than zero",
+        ),
+        (
+            "    quarantine_threshold_percent: 101\n",
+            "datasets[0].quarantine_threshold_percent",
+            "100",
+        ),
+    ],
+)
+def test_invalid_columns_and_checks_name_file_and_field(
+    tmp_path: Path, settings: str, field: str, problem: str
+) -> None:
+    sources_dir = tmp_path / "sources"
+    text = f"connection:\n  type: csv\ndatasets:\n{VALID_DATASET}{settings}"
+    _write_source(sources_dir, "shop", text)
+
+    with pytest.raises(ConfigError) as raised:
+        load_source(sources_dir, "shop")
+
+    message = str(raised.value)
+    assert message.startswith(f"{(sources_dir / 'shop' / 'source.yaml').as_posix()}: {field}: ")
+    assert problem in message
+
+
+def test_columns_and_checks_load() -> None:
+    dataset = CsvDataset.model_validate(
+        {
+            "name": "customers",
+            "path": "data.csv",
+            "columns": {"amount": "decimal( 12 , 2 )", "signup_date": "date"},
+            "checks": [
+                {"check": "unique", "columns": ["id"]},
+                {
+                    "check": "freshness",
+                    "column": "signup_date",
+                    "max_age": "P1D",
+                    "severity": "warn",
+                },
+            ],
+            "quarantine_threshold_percent": 0.5,
+        }
+    )
+
+    assert dataset.columns == {"amount": "decimal(12,2)", "signup_date": "date"}
+    assert [check.check for check in dataset.checks] == ["unique", "freshness"]
+    assert dataset.checks[1].severity == "warn"
+
+
 @pytest.mark.parametrize(
     "path",
     [

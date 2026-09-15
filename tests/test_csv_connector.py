@@ -92,6 +92,29 @@ def test_file_version_of_a_missing_file_names_the_path(tmp_path: Path) -> None:
         CsvConnector().file_version(_request(tmp_path))
 
 
+def test_a_late_non_number_fails_undeclared_but_reads_as_text_when_declared(
+    tmp_path: Path,
+) -> None:
+    rows = [str(i) for i in range(INFER_SCHEMA_ROWS)] + ["N/A"]
+    (tmp_path / "data.csv").write_text(
+        "Customer ID,amount\n" + "".join(f"{row},{i}\n" for i, row in enumerate(rows)),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ExtractError, match=r"data\.csv"):
+        list(_extract(tmp_path, 100_000))
+
+    request = ExtractRequest(
+        source_dir=tmp_path,
+        connection=CsvConnection(type="csv"),
+        dataset=CsvDataset(name="data", path="data.csv", columns={"customer_id": "integer"}),
+        chunk_size=100_000,
+    )
+    (chunk,) = CsvConnector().extract(request)
+    assert chunk.schema == pl.Schema({"Customer ID": pl.String, "amount": pl.Int64})
+    assert chunk["Customer ID"][-1] == "N/A"
+
+
 def test_header_only_file_yields_one_empty_chunk_with_the_schema(tmp_path: Path) -> None:
     (tmp_path / "data.csv").write_text("a,b\n", encoding="utf-8")
 

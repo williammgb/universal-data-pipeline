@@ -18,11 +18,13 @@ def record_hashes(frame: pl.DataFrame) -> pl.Series:
     """SHA-256 of each row's source columns as a JSON object with sorted keys.
 
     Floats are encoded as text first, because JSON has no NaN or infinity and would
-    turn both into null.
+    turn both into null; decimals too, so their digits are kept exactly.
     """
     columns = sorted(name for name in frame.columns if name not in RESERVED_COLUMNS)
     values = [
-        pl.col(name).cast(pl.String) if frame.schema[name].is_float() else pl.col(name)
+        pl.col(name).cast(pl.String)
+        if frame.schema[name].is_float() or isinstance(frame.schema[name], pl.Decimal)
+        else pl.col(name)
         for name in columns
     ]
     encoded = frame.select(pl.struct(values).struct.json_encode()).to_series()
