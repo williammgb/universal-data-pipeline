@@ -64,7 +64,9 @@ Measured by `env-doctor` on 2026-09-13.
 - load modes per dataset: `full` (replace table), `append` (watermark column), `merge` (primary key + watermark column); files tracked by path + content hash
 - re-run with no new source data changes nothing; `--full-refresh` resets state and reloads
 - transactions: chunks COPY into temp table; merge/replace + watermark update + run stats commit in ONE transaction per run
-- concurrency: Postgres advisory lock per dataset; overlapping run recorded as `skipped`
+- concurrency: Postgres session-level advisory lock per dataset, taken before the run row is written and released after its final status; overlapping run recorded as `skipped` and `udp run` still exits 0 (only a failed run exits 1); holding the lock means no other run is alive, so that dataset's leftover `running` rows become `failed` with error class `Interrupted` naming the run that found them
+- schedule (slice 6): optional `schedule:` per dataset, a 5-field cron expression in UTC, read when `udp schedule` starts (restart to pick up changes); only expressions APScheduler 3 reads like cron are accepted: weekdays by name (`mon-fri`, not `1-5`), steps only on numbers, a step no larger than its range, not both day-of-month and day-of-week, a day that exists in a listed month; an invalid source.yaml at scheduler start is logged and the others are scheduled; each firing re-reads its source.yaml and runs only that dataset with trigger `scheduled`; up to 4 runs at once; a missed firing runs once; the schedule is not part of the settings fingerprint
+- table checks (slice 6): also run when nothing is loaded (unchanged file, no new rows), against the table as it stands
 - retries: transient extract errors (network, connection) retried 3× with increasing wait; failed runs not auto-retried
 - errors: typed exceptions (ConfigError, ExtractError, ValidationError, SchemaDriftError, LoadError, TransformError, QualityError) caught only at the runner boundary → run marked `failed` with class, message, traceback; CLI exits non-zero; never swallowed
 - column changes: new column added + recorded; removed column kept (nulls); type change fails the run
@@ -110,6 +112,7 @@ Proved by: both gates above
 Measured in slice 1: fast ~20–34s (69 tests), db ~45s, full ~165–225s (million-row CSV loaded twice, Hypothesis ci profile), smoke ~35–55s.
 Measured in slice 2: fast ~28–40s (128 tests), db ~50s, full ~140–225s (adds source Postgres, mock API, 500k-row table, 50k-row xlsx), smoke ~56–130s (four sources, container and Windows).
 Measured in slice 3: fast ~29s (177 tests), db ~38s (adds the killed-run test), full ~247s (1M-row CSV, 500k-row table, 50k-row xlsx and the API each loaded all → nothing → changes), smoke ~40s.
+Measured in slice 6: fast ~55s warm (461 tests; 76s under load), db ~40s (28 tests), full ~559s while four agents ran alongside (497 tests), smoke ~112s (adds the scheduler container waiting for its first firing).
 Measured in slice 5: fast ~53s (435 tests), db ~40s (24 tests), full ~281–428s (467 tests), smoke ~39s; slice 4 mutation run on `pipeline/incremental.py` ~114s in WSL (121 mutants).
 
 ## Slice 1 — MVP: one CSV source, config-driven — done means

@@ -224,6 +224,15 @@ MERGE_ON_UPDATED = "    load_mode: merge\n    watermark: updated\n    primary_ke
             "datasets[0].quarantine_threshold_percent",
             "100",
         ),
+        ("    schedule: '* * * *'\n", "datasets[0].schedule", "has 4 fields"),
+        ("    schedule: '0 6 * * 1-5'\n", "datasets[0].schedule", "day names like mon-fri"),
+        ("    schedule: '0 6 * * */2'\n", "datasets[0].schedule", "day names like mon-fri"),
+        ("    schedule: '0 0 1 * mon'\n", "datasets[0].schedule", "not both"),
+        ("    schedule: '0 0 30 2 *'\n", "datasets[0].schedule", "never occurs"),
+        ("    schedule: '60 * * * *'\n", "datasets[0].schedule", "minute 60 is outside 0-59"),
+        ("    schedule: '0 0 * * sun-mon'\n", "datasets[0].schedule", "runs backwards"),
+        ("    schedule: '*/60 * * * *'\n", "datasets[0].schedule", "steps further"),
+        ("    schedule: '0 0 * jan-mar/2 *'\n", "datasets[0].schedule", "only step over numbers"),
     ],
 )
 def test_invalid_columns_and_checks_name_file_and_field(

@@ -16,9 +16,10 @@ def config_sha256(dataset: DatasetBase, transform_sha256: str | None) -> str:
     """Fingerprint of everything that decides a dataset's rows besides the data itself.
 
     Settings left at their defaults are not part of it, and a source without transform.py
-    gets the same fingerprint it had before custom transforms existed.
+    gets the same fingerprint it had before custom transforms existed. The schedule decides
+    when rows are read, not which, so it is left out too.
     """
-    payload = dataset.model_dump_json(exclude_defaults=True)
+    payload = dataset.model_dump_json(exclude_defaults=True, exclude={"schedule"})
     if transform_sha256 is not None:
         payload += f"\ntransform.py {transform_sha256}"
     return sha256(payload.encode()).hexdigest()

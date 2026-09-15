@@ -10,6 +10,7 @@ from udp.config.secrets import read_environment
 from udp.config.source import load_source
 from udp.errors import ConfigError
 from udp.log import configure_logging
+from udp.orchestration.scheduler import serve
 from udp.pipeline.runner import run_source
 from udp.settings import Settings
 from udp.storage.postgres import PostgresLoader
@@ -41,7 +42,11 @@ def run(
         typer.Option("--full-refresh", help="Delete each dataset's table and load it again."),
     ] = False,
 ) -> None:
-    """Load every dataset of a source. Exit 0 all succeeded, 1 a run failed, 2 invalid config."""
+    """Load every dataset of a source.
+
+    Exit 0 when every run succeeded or was skipped because another run of its dataset was in
+    progress, 1 when a run failed, 2 on invalid config.
+    """
     configure_logging()
     settings = Settings()  # type: ignore[call-arg]
     try:
@@ -55,8 +60,16 @@ def run(
         outcomes = run_source(
             source, config, settings.sources_dir, loader, full_refresh=full_refresh
         )
-    if any(outcome.status != "succeeded" for outcome in outcomes):
+    if any(outcome.status == "failed" for outcome in outcomes):
         raise typer.Exit(1)
+
+
+@app.command()
+def schedule() -> None:
+    """Run every dataset that has a `schedule:` on its cron schedule, in UTC, until stopped."""
+    configure_logging()
+    settings = Settings()  # type: ignore[call-arg]
+    serve(settings.sources_dir, settings.database_url, read_environment(Path(".env")))
 
 
 @app.command()

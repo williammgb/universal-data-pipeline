@@ -22,6 +22,7 @@ from udp.pipeline.load import with_platform_columns
 from udp.quality.quarantine import quarantine
 from udp.settings import Settings
 from udp.storage.loader import (
+    INTERRUPTED,
     CheckResult,
     DatasetState,
     Loader,
@@ -317,6 +318,94 @@ def test_runs_record_success_and_failure(harness: Harness) -> None:
         "file not found",
     )
     harness.drop_table(table)
+
+
+LOCK_STEPS = st.lists(st.tuples(st.booleans(), st.sampled_from(["d0", "d1", "d2"])), max_size=12)
+
+
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(LOCK_STEPS)
+def test_a_dataset_lock_is_taken_exactly_when_nobody_holds_it(
+    harness: Harness, steps: list[tuple[bool, str]]
+) -> None:
+    source = f"lock{uuid.uuid4().hex[:12]}"
+    held: set[str] = set()
+
+    for lock, dataset in steps:
+        if lock:
+            assert harness.loader.lock_dataset(source, dataset) == (dataset not in held)
+            held.add(dataset)
+        else:
+            harness.loader.unlock_dataset(source, dataset)
+            held.discard(dataset)
+    for dataset in held:
+        harness.loader.unlock_dataset(source, dataset)
+
+
+RUN_STATUSES = ["running", "succeeded", "failed", "skipped"]
+
+
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(
+    st.lists(
+        st.tuples(
+            st.sampled_from(["this", "other source", "other dataset"]),
+            st.sampled_from(RUN_STATUSES),
+        ),
+        max_size=8,
+    )
+)
+def test_only_the_datasets_running_runs_become_interrupted(
+    harness: Harness, runs: list[tuple[str, str]]
+) -> None:
+    source, other = f"runs{uuid.uuid4().hex[:12]}", f"other{uuid.uuid4().hex[:12]}"
+    places = {"this": (source, "t"), "other source": (other, "t"), "other dataset": (source, "u")}
+    loader = harness.loader
+    created = []
+    for place, status in runs:
+        run = RunStart(uuid.uuid7(), *places[place], "manual", datetime.now(UTC))
+        if status == "skipped":
+            loader.skip_run(run, ended_at=datetime.now(UTC))
+        else:
+            loader.start_run(run)
+        if status == "succeeded":
+            with loader.transaction() as transaction:
+                transaction.succeed_run(
+                    run.run_id, ended_at=datetime.now(UTC), rows_extracted=0, rows_loaded=0
+                )
+        if status == "failed":
+            failure = RunFailure("ExtractError", "file not found", "Traceback ...")
+            loader.fail_run(
+                run.run_id, ended_at=datetime.now(UTC), rows_extracted=0, failure=failure
+            )
+        created.append((run.run_id, place, status))
+    found_by = uuid.uuid7()
+
+    count = loader.fail_interrupted_runs(source, "t", found_by=found_by, ended_at=datetime.now(UTC))
+
+    interrupted = [(p, s) for _, p, s in created].count(("this", "running"))
+    assert count == interrupted
+    for run_id, place, status in created:
+        record = harness.read_run(run_id)
+        if (place, status) == ("this", "running"):
+            assert (record["status"], record["error_class"]) == ("failed", INTERRUPTED)
+            assert str(found_by) in record["error_message"]
+            assert record["ended_at"] is not None
+        else:
+            assert record["status"] == status
+            assert record["error_class"] != INTERRUPTED
+
+
+@pytest.mark.db
+def test_a_postgres_lock_holds_across_connections_until_its_holder_closes() -> None:
+    url = Settings().database_url  # type: ignore[call-arg]
+    source = f"lock{uuid.uuid4().hex[:12]}"
+    with PostgresLoader(url) as waiting:
+        with PostgresLoader(url) as holder:
+            assert holder.lock_dataset(source, "t")
+            assert not waiting.lock_dataset(source, "t")
+        assert waiting.lock_dataset(source, "t")
+        waiting.unlock_dataset(source, "t")
 
 
 text = st.one_of(

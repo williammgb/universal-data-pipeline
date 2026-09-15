@@ -4,6 +4,7 @@ datasets:
   - name: customers
     path: data/customers.csv
     load_mode: full
+    schedule: "* * * * *"
     columns:
       customer_id: integer
       signup_date: date

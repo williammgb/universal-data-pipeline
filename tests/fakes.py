@@ -10,6 +10,7 @@ import polars as pl
 
 from udp.errors import LoadError
 from udp.storage.loader import (
+    INTERRUPTED,
     Column,
     ColumnChanges,
     DatasetState,
@@ -18,6 +19,7 @@ from udp.storage.loader import (
     RunFindings,
     RunStart,
     column_changes,
+    interrupted_message,
     table_columns,
 )
 
@@ -222,6 +224,37 @@ class MemoryLoader:
         self.runs: dict[UUID, dict[str, Any]] = {}
         self.quarantine: list[dict[str, Any]] = []
         self.quality_results: list[dict[str, Any]] = []
+        self.locks: set[tuple[str, str]] = set()
+
+    def lock_dataset(self, source: str, dataset: str) -> bool:
+        if (source, dataset) in self.locks:
+            return False
+        self.locks.add((source, dataset))
+        return True
+
+    def unlock_dataset(self, source: str, dataset: str) -> None:
+        self.locks.discard((source, dataset))
+
+    def skip_run(self, run: RunStart, *, ended_at: datetime) -> None:
+        self.start_run(run)
+        self.runs[run.run_id].update(status="skipped", ended_at=ended_at)
+
+    def fail_interrupted_runs(
+        self, source: str, dataset: str, *, found_by: UUID, ended_at: datetime
+    ) -> int:
+        interrupted = [
+            run
+            for run in self.runs.values()
+            if (run["source"], run["dataset"], run["status"]) == (source, dataset, "running")
+        ]
+        for run in interrupted:
+            run.update(
+                status="failed",
+                ended_at=ended_at,
+                error_class=INTERRUPTED,
+                error_message=interrupted_message(found_by),
+            )
+        return len(interrupted)
 
     def start_run(self, run: RunStart) -> None:
         self.runs[run.run_id] = {

@@ -3,6 +3,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 import psycopg
@@ -10,6 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 from udp.cli import app
+from udp.storage.loader import INTERRUPTED
 
 ROWS = 50
 
@@ -32,14 +34,35 @@ def _snapshot() -> tuple[object, ...]:
     return fingerprint, columns, state
 
 
-def _latest_run_status() -> object:
+def _latest_run() -> tuple[Any, ...]:
     with psycopg.connect(os.environ["UDP_DATABASE_URL"]) as conn:
         row = conn.execute(
-            "SELECT status FROM platform.pipeline_runs WHERE source = 'killed' "
-            "ORDER BY started_at DESC LIMIT 1"
+            "SELECT run_id, status, error_class, error_message FROM platform.pipeline_runs "
+            "WHERE source = 'killed' ORDER BY started_at DESC LIMIT 1"
         ).fetchone()
     assert row is not None
-    return row[0]
+    return tuple(row)
+
+
+def _run_status(run_id: object) -> tuple[Any, ...]:
+    with psycopg.connect(os.environ["UDP_DATABASE_URL"]) as conn:
+        row = conn.execute(
+            "SELECT status, error_class FROM platform.pipeline_runs WHERE run_id = %s", [run_id]
+        ).fetchone()
+    assert row is not None
+    return tuple(row)
+
+
+def _dataset_lock_is_held() -> bool:
+    with psycopg.connect(os.environ["UDP_DATABASE_URL"]) as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM pg_locks, "
+            "(SELECT hashtextextended('killed/orders', 0) AS k) AS key "
+            "WHERE locktype = 'advisory' AND objsubid = 1 "
+            "AND classid::bigint = (key.k >> 32) & 4294967295 "
+            "AND objid::bigint = key.k & 4294967295"
+        ).fetchone()
+    return bool(row and row[0])
 
 
 @pytest.mark.db
@@ -54,9 +77,9 @@ def test_killing_a_run_mid_load_leaves_table_columns_and_state_unchanged(tmp_pat
     )
     ids = pl.int_range(ROWS, eager=True)
     pl.DataFrame({"id": ids, "amount": ids * 2, "updated": 1}).write_csv(folder / "orders.csv")
-    result = CliRunner().invoke(
-        app, ["run", "killed", "--full-refresh"], env={"UDP_SOURCES_DIR": str(sources_dir)}
-    )
+    runner = CliRunner()
+    env = {"UDP_SOURCES_DIR": str(sources_dir)}
+    result = runner.invoke(app, ["run", "killed", "--full-refresh"], env=env)
     assert result.exit_code == 0, result.output
     before = _snapshot()
 
@@ -79,10 +102,26 @@ def test_killing_a_run_mid_load_leaves_table_columns_and_state_unchanged(tmp_pat
             assert process.poll() is None, "the stalled run exited before its first chunk"
             assert time.monotonic() < deadline, "the stalled run never reached its first chunk"
             time.sleep(0.2)
-        assert _latest_run_status() == "running"
+        stalled, status, _, _ = _latest_run()
+        assert status == "running"
+
+        overlapping = runner.invoke(app, ["run", "killed"], env=env)
+        assert overlapping.exit_code == 0, overlapping.output
+        assert _latest_run()[1] == "skipped"
     finally:
         process.kill()
         process.wait()
 
     assert _snapshot() == before
-    assert _latest_run_status() == "running"
+    assert _run_status(stalled) == ("running", None)
+    # Postgres frees a killed session's advisory lock a moment after the process is gone.
+    deadline = time.monotonic() + 10
+    while _dataset_lock_is_held():
+        assert time.monotonic() < deadline, "the killed run's dataset lock was never freed"
+        time.sleep(0.2)
+
+    after = runner.invoke(app, ["run", "killed"], env=env)
+
+    assert after.exit_code == 0, after.output
+    assert _latest_run()[1] == "succeeded"
+    assert _run_status(stalled) == ("failed", INTERRUPTED)

@@ -363,3 +363,48 @@ while its section has no `built:` line.
 - built: after final-check, the four row checks are listed once in `config/quality.py`, and the stale SPEC decimal line and test comment were corrected.
 - fast gate passed (64s): 435 passed, 32 deselected, 8 warnings in 53.24s
 - full gate passed (465s): 467 passed, 9 warnings in 427.75s (0:07:07)
+
+## Slice 6 — orchestration
+- you decided: a run left `running` by a killed process becomes `failed` with error class `Interrupted` when the next run of that dataset finds it, with no new status.
+- you decided: `udp run` exits 0 when a dataset was skipped because another run of it is in progress, with a warning in the log; only a failure exits 1.
+- you decided: table checks also run when nothing is loaded (unchanged file, no new rows), against the table as it stands, and an error-level failure fails the run.
+- you decided: an invalid `source.yaml` at scheduler start is logged as an error and the other sources are still scheduled.
+- you decided: the scheduler runs up to 4 different datasets at once.
+- plan-check checked: 14 claims agreed (status/trigger enum supports skipped/scheduled with no migration needed; CLI exit-code change for skipped runs is deliberate and file-listed; advisory-lock skip design matches spec's concurrency decision; cron grammar test cases match stated validator rules; config_sha256 exclusion of schedule matches the pinned-fingerprint test; all gate commands used are ./run fast/db/
+- fast gate failed (3s): Found 3 errors in 2 files (checked 63 source files)
+- fast gate passed (80s): 461 passed, 35 deselected, 8 warnings in 76.46s (0:01:16)
+- db gate passed (67s): 28 passed, 469 deselected, 2 warnings in 39.37s
+- built: a dataset can have a `schedule:` (5-field cron, UTC) checked against the ways APScheduler 3 reads cron differently, and `udp schedule` in a `scheduler` container runs each scheduled dataset through the same runner as `udp run`, with trigger `scheduled`.
+- built: the schedule check is proven against a plain cron model, comparing which expressions are accepted and the next three fire times; the first generator missed a planted off-by-one in the step rule, so it now draws values and steps on and just past each limit, and planted bugs in the step rule, the day-fields rule and the time zone are all caught.
+- built: before a run is recorded the runner takes a Postgres lock for its dataset; a run that can't take it is recorded `skipped` (and `udp run` exits 0), and one that can marks that dataset's leftover `running` rows `failed` with error class `Interrupted`; the killed-run test proves both against a real killed process.
+- built: table checks now also run when an unchanged file is skipped, so a table that went stale fails its freshness check even when nothing new arrives.
+- smoke gate passed (112s): {"step": "run", "status": "succeeded", "rows_extracted": 0, "rows_loaded": 0, "event": "run finished", "source": "demo_csv", "dataset": "customers", "run_id": "
+- final-check verdict: SHIP
+- final-check noted: if taking the dataset lock or cleaning up interrupted runs raises a database error, the run's outcome is failed and logged, but no row is written to pipeline_runs, because fail_run updates a row that was never inserted.
+- final-check noted: demo_csv now runs every minute in any scheduler deployment, and it is the example schedule people will copy.
+- final-check noted: the scheduler handles only KeyboardInterrupt, so a docker stop (SIGTERM) ends it without a "scheduler stopped" log line; cut-off runs are marked Interrupted next time, as the plan deferred.
+- final-check noted: the slice 6 ledger checks are still unticked with no evidence and must be filled in, including the full gate result, when the slice is marked done.
+- final-check noted: the smoke scheduler check fails on any first "run finished" line that is not succeeded, including a skipped one.
+- [F50] plan-drift found: deploy/compose.yaml uses `app: &app` merged via `<<: *app` for the scheduler service instead of the dedicated `x-app` anchor the plan specified, though the resulting config is equivalent.
+- plan-drift checked: 22 files diffed against the plan's file list (all named, none extra beyond the auto-generated JOURNAL.md), and the two rewritten test bodies in test_killed_run.py and test_quality.py strengthen assertions rather than weaken them, with no skip/xfail added anywhere.
+- [F51] edge-hunter found: unlock_dataset raising inside run_source's finally block is not caught anywhere, so a Loader that violates the "never raises" contract crashes the whole source's remaining runs instead of just logging and moving on — this is a property (unlock must never raise) that no test actually challenges.
+- [F52] edge-hunter found: if recording a skipped or interrupted run fails partway (after the lock is taken but before start_run/skip_run's insert lands), the later failure-handler updates a run_id that was never inserted, so the run shows up as "failed" in the returned outcomes but has no row at all in pipeline_runs — a silent audit gap.
+- [F53] edge-hunter found: the scheduler's worker pool is sized to RUNS_AT_ONCE (4) and shared across every scheduled dataset, not per dataset, so once there are more than 4 scheduled datasets, unrelated ones queue behind each other even though nothing about their locks conflicts — likely a scaling surprise, not directly verified.
+- [F54] edge-hunter found: skip_run and fail_interrupted_runs have no error handling of their own on the Postgres path, so a flaky connection during either call falls into the same unrecorded-outcome gap described above, and this specific call site isn't exercised by any existing test.
+- F50 rejected: making the existing `app` service the anchor gives the same scheduler settings as a separate `x-app` block with one less name to keep in step.
+- F51 rejected: `unlock_dataset` is specified never to raise, and both loaders keep that promise (Postgres catches every database error there); guarding a broken promise again in the runner would hide the bug.
+- F52, F54 deferred: when the database fails while taking the lock or recording a skip, the run is returned and logged as failed but has no row, because the row it would update was never written; slice 10 (production hardening) decides whether such a run gets a row once the database is back.
+- F53 rejected: one pool of 4 threads for all datasets is exactly the decision "up to 4 runs at once"; the `add_jobs` description now says the limit is shared, since it read as if it were per dataset.
+- designer plan: slice 7 — API
+- designer chose: the API reads sources and datasets from `platform.sources` and `platform.datasets`, which every run now fills, so the API never needs source secrets to list anything.
+- designer chose: the copy is the source.yaml as written, with `${NAME}` references left unfilled, so a secret can't reach the database whichever field references it.
+- designer chose: all read queries are plain SQL in one catalog class tested against real Postgres, and the fast gate tests only what needs no database.
+- designer chose: `POST /api/runs` checks the source.yaml right away, then runs it in the API process on a pool of 4 through the same runner, answering at once; the dataset lock still prevents overlaps.
+- designer chose: row values are turned into JSON by one explicit rule (exact decimals as text, NaN and Infinity as text), because the default would crash or quietly write null.
+- designer chose: all routes sit under `/api`, and the container port is published on 127.0.0.1 only until API keys arrive in slice 10.
+- designer ruled out: an in-memory catalog for fast tests, because it would be a second query engine and would test itself instead of the SQL.
+- designer ruled out: handing API-started runs to the scheduler through a request table, because it adds polling and a new status for no safety the lock doesn't already give.
+- designer ruled out: letting pydantic serialize row values, because it silently turns NaN into null.
+- designer ruled out: deleting datasets missing from a run's config, because a scheduler run only carries one dataset and would erase its siblings.
+- full gate passed (579s): 497 passed, 9 warnings in 558.94s (0:09:18)
+- fast gate passed (81s): 461 passed, 36 deselected, 8 warnings in 75.61s (0:01:15)

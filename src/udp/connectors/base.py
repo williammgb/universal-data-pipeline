@@ -10,6 +10,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationInf
 
 from udp.config.columns import WATERMARK_DECLARED_TYPES, DeclaredType
 from udp.config.quality import Check
+from udp.config.schedule import CronSchedule
 from udp.names import RESERVED_COLUMNS, name_problem
 from udp.pipeline.transform import clean_column_names
 
@@ -42,6 +43,7 @@ class DatasetBase(BaseModel):
     columns: dict[str, DeclaredType] = {}
     checks: list[Check] = []
     quarantine_threshold_percent: float = Field(default=1, ge=0, le=100)
+    schedule: CronSchedule | None = None
 
     @field_validator("columns")
     @classmethod

@@ -84,12 +84,12 @@
     {
       "id": 6,
       "name": "orchestration",
-      "state": "planned",
+      "state": "in-progress",
       "commit": null,
       "checks": [
-        { "claim": "the scheduler container runs datasets on their YAML cron", "passes": false, "evidence": null },
-        { "claim": "an overlapping run of the same dataset is recorded as skipped", "passes": false, "evidence": null },
-        { "claim": "manual and scheduled runs use the same runner and the trigger is recorded", "passes": false, "evidence": null }
+        { "claim": "the scheduler container runs datasets on their YAML cron", "passes": true, "evidence": "./run smoke: the scheduler container (udp schedule, demo_csv schedule '* * * * *') logged {\"step\": \"run\", \"status\": \"succeeded\", \"event\": \"run finished\", \"source\": \"demo_csv\", \"dataset\": \"customers\"}; ./run fast: test_a_schedule_is_accepted_exactly_when_cron_reads_it_and_fires_when_cron_would (cron model, next three fire times) and test_each_scheduled_dataset_becomes_a_utc_cron_job; ./run full: 497 passed" },
+        { "claim": "an overlapping run of the same dataset is recorded as skipped", "passes": true, "evidence": "./run fast: test_a_run_started_while_its_dataset_is_loading_is_skipped (skipped with ended_at, outer succeeded) and the lock property on memory; ./run db: 28 passed, including the lock property on Postgres, test_a_run_on_another_postgres_connection_is_skipped_while_the_dataset_loads, and test_killing_a_run_mid_load (udp run exits 0 recording skipped while a stalled process holds the lock; after the kill the stalled run is failed Interrupted)" },
+        { "claim": "manual and scheduled runs use the same runner and the trigger is recorded", "passes": true, "evidence": "./run fast: test_a_firing_runs_only_its_dataset_as_a_scheduled_run (a forced APScheduler job calls run_source for only dataset a, recorded trigger scheduled, status succeeded); udp run passes trigger manual through the same run_source; test_only_a_failed_run_makes_the_command_fail (skipped exits 0, failed exits 1)" }
       ]
     },
     {

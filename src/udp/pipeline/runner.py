@@ -45,7 +45,7 @@ CHUNK_SIZE = 100_000
 class RunOutcome:
     run_id: UUID
     dataset: str
-    status: Literal["succeeded", "failed"]
+    status: Literal["succeeded", "failed", "skipped"]
     rows_loaded: int | None
 
 
@@ -62,7 +62,8 @@ def run_source(
     """Run every dataset of an already-validated source, one run each.
 
     This is the only place pipeline errors are caught: a failed dataset is recorded
-    and logged, and the next dataset still runs.
+    and logged, and the next dataset still runs. A dataset another run is loading is
+    recorded as skipped; its lock is held until its run reaches its final status.
     """
     connector = CONNECTORS[config.connection.type]
     outcomes = []
@@ -70,12 +71,31 @@ def run_source(
         run_id = uuid7()
         counter = RowCounter()
         findings = RunFindings(source, dataset.name)
+        locked = False
         with structlog.contextvars.bound_contextvars(
             run_id=str(run_id), source=source, dataset=dataset.name
         ):
             try:
                 started_at = datetime.now(UTC)
-                loader.start_run(RunStart(run_id, source, dataset.name, trigger, started_at))
+                run = RunStart(run_id, source, dataset.name, trigger, started_at)
+                if not loader.lock_dataset(source, dataset.name):
+                    loader.skip_run(run, ended_at=datetime.now(UTC))
+                    log.warning(
+                        "run finished",
+                        status="skipped",
+                        trigger=trigger,
+                        reason="another run of this dataset is in progress",
+                    )
+                    outcomes.append(RunOutcome(run_id, dataset.name, "skipped", None))
+                    continue
+                locked = True
+                # Holding the lock means no other run is alive, so a `running` row is a dead run.
+                interrupted = loader.fail_interrupted_runs(
+                    source, dataset.name, found_by=run_id, ended_at=started_at
+                )
+                if interrupted:
+                    log.warning("interrupted runs marked failed", count=interrupted)
+                loader.start_run(run)
                 log.info("run started", trigger=trigger, full_refresh=full_refresh)
                 request = ExtractRequest(
                     sources_dir / source, config.connection, dataset, chunk_size
@@ -105,6 +125,9 @@ def run_source(
                     _record_failure(loader, run_id, dataset.name, counter, error, findings)
                 )
                 continue
+            finally:
+                if locked:
+                    loader.unlock_dataset(source, dataset.name)
             log.info(
                 "run finished", status="succeeded", rows_extracted=counter.rows, rows_loaded=rows
             )
@@ -133,6 +156,8 @@ def _load_dataset(
 
     if is_unchanged_file(state, file, digest):
         log.info("file unchanged, skipped", step="extract", path=file.path if file else None)
+        if dataset.checks or dataset.columns:
+            check_dataset(transaction, table, dataset, findings, started_at)
         return 0
     if state is None:
         transaction.drop_table(table)
@@ -186,13 +211,13 @@ def _load_dataset(
             f"{findings.quarantined_rows} of {counter.rows} rows{share} quarantined, "
             f"above the dataset's limit of {limit:g}%"
         )
+    if dataset.checks or dataset.columns:
+        check_dataset(transaction, table, dataset, findings, started_at)
     if incremental and tracker.kind is None:
         # No rows arrived, so the column types are unknown: nothing is saved, and the next
         # run with data builds the table again as a first load.
         log.info("no rows to load; state not saved", step="load")
         return result.rows
-    if dataset.checks or dataset.columns:
-        check_dataset(transaction, table, dataset, findings, started_at)
     version = transaction.record_columns(table, source, dataset.name, run_id, started_at)
     if version is not None:
         log.info("schema version recorded", step="load", version=version)

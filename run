@@ -158,6 +158,26 @@ smoke_sources() {
   for source in $SMOKE_SOURCES; do
     uv run --locked udp run "$source" || return
   done
+  smoke_scheduler
+}
+
+# The scheduler container must start a scheduled run of demo_csv (every minute) and
+# finish it; its first "run finished" line decides, printed so the journal quotes it.
+smoke_scheduler() {
+  compose build scheduler && compose up -d scheduler || return
+  deadline=$(( $(date +%s) + 90 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    logs=$(compose logs --no-log-prefix scheduler 2>/dev/null || true)
+    finished=$(printf '%s\n' "$logs" | grep '"event": "run finished"' | head -n 1 || true)
+    case "$finished" in
+      *'"status": "succeeded"'*) printf '%s\n' "$finished"; return 0 ;;
+      *'"status": '*) printf '%s\n' "$logs"; return 1 ;;
+    esac
+    sleep 1
+  done
+  compose logs scheduler
+  echo "the scheduler finished no run within 90s"
+  return 1
 }
 
 smoke_gate() {

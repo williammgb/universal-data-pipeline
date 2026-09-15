@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+from uuid import uuid7
 
 import psycopg
 import pytest
@@ -9,6 +10,7 @@ from typer.testing import CliRunner
 
 from udp.cli import app
 from udp.names import RESERVED_COLUMNS
+from udp.pipeline.runner import RunOutcome
 
 UNREACHABLE_DATABASE = "postgresql://x:x@127.0.0.1:1/x"
 
@@ -84,6 +86,34 @@ def test_full_refresh_flag_reaches_the_runner(monkeypatch: pytest.MonkeyPatch) -
     assert runner.invoke(app, ["run", "demo_csv", "--full-refresh"], env=env).exit_code == 0
     assert runner.invoke(app, ["run", "demo_csv"], env=env).exit_code == 0
     assert [call["full_refresh"] for call in calls] == [True, False]
+
+
+@pytest.mark.parametrize(("status", "exit_code"), [("skipped", 0), ("failed", 1)])
+def test_only_a_failed_run_makes_the_command_fail(
+    monkeypatch: pytest.MonkeyPatch, status: str, exit_code: int
+) -> None:
+    def fake_run_source(*args: object, **kwargs: object) -> list[RunOutcome]:
+        return [
+            RunOutcome(uuid7(), "customers", "succeeded", 20),
+            RunOutcome(uuid7(), "customers", status, None),  # type: ignore[arg-type]
+        ]
+
+    monkeypatch.setattr("udp.cli.run_source", fake_run_source)
+    env = {"UDP_DATABASE_URL": UNREACHABLE_DATABASE, "UDP_SOURCES_DIR": "sources"}
+
+    assert CliRunner().invoke(app, ["run", "demo_csv"], env=env).exit_code == exit_code
+
+
+def test_schedule_command_serves_the_configured_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr("udp.cli.serve", lambda *args: calls.append(args))
+    env = {"UDP_DATABASE_URL": UNREACHABLE_DATABASE, "UDP_SOURCES_DIR": "sources"}
+
+    result = CliRunner().invoke(app, ["schedule"], env=env)
+
+    assert result.exit_code == 0, result.output
+    ((sources_dir, database_url, _),) = calls
+    assert (sources_dir, database_url) == (Path("sources"), UNREACHABLE_DATABASE)
 
 
 @pytest.mark.db

@@ -12,6 +12,8 @@ from udp.errors import LoadError, SchemaDriftError
 Column = tuple[str, str]
 Watermark = int | date | datetime
 
+INTERRUPTED = "Interrupted"
+
 _PLATFORM_COLUMN_TYPES = {
     "_run_id": "uuid",
     "_loaded_at": "timestamp with time zone",
@@ -231,7 +233,33 @@ class LoadTransaction(Protocol):
     ) -> None: ...
 
 
+def interrupted_message(found_by: UUID) -> str:
+    return f"the run stopped without finishing; found when run {found_by} started"
+
+
 class Loader(Protocol):
+    def lock_dataset(self, source: str, dataset: str) -> bool:
+        """Take the dataset's run lock without waiting; False when any run holds it already,
+        including a run on this same loader. A lock held by a dead process is freed with it."""
+        ...
+
+    def unlock_dataset(self, source: str, dataset: str) -> None:
+        """Release the dataset's run lock. Never raises: a lock that cannot be released is
+        logged, and it is freed when the connection closes."""
+        ...
+
+    def skip_run(self, run: RunStart, *, ended_at: datetime) -> None:
+        """Record a run that did not start because another run held the lock. Commits
+        immediately."""
+        ...
+
+    def fail_interrupted_runs(
+        self, source: str, dataset: str, *, found_by: UUID, ended_at: datetime
+    ) -> int:
+        """Mark the dataset's `running` runs failed with error class Interrupted; call only
+        while holding the dataset's lock. Commits immediately and returns how many."""
+        ...
+
     def start_run(self, run: RunStart) -> None:
         """Record a run as running. Commits immediately."""
         ...

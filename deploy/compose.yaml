@@ -55,7 +55,7 @@ services:
       timeout: 3s
       retries: 30
 
-  app:
+  app: &app
     profiles: ["app"]
     build:
       context: ..
@@ -71,6 +71,13 @@ services:
       postgres:
         condition: service_healthy
     command: ["doctor"]
+
+  # Runs every dataset with a `schedule:` in source.yaml; schedules are read at start.
+  scheduler:
+    <<: *app
+    command: ["schedule"]
+    init: true
+    restart: unless-stopped
 
 volumes:
   pgdata:

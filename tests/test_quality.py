@@ -1,6 +1,6 @@
 import json
 import math
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from decimal import Decimal
 from fractions import Fraction
 from itertools import pairwise
@@ -369,14 +369,51 @@ def test_row_count_change_compares_with_the_last_successful_run(
     assert (second.status, result["table_rows"]) == (status, rows)
 
 
-def test_an_unchanged_file_is_skipped_without_check_results(tmp_path: Path) -> None:
-    shop = Shop(tmp_path, TYPES + "    checks:\n      - check: min_rows\n        rows: 1\n")
+def test_an_unchanged_file_is_not_read_again_but_its_table_is_still_checked(
+    tmp_path: Path,
+) -> None:
+    shop = Shop(
+        tmp_path,
+        TYPES + "    checks:\n      - check: min_rows\n        rows: 1\n"
+        "      - check: not_null\n        column: city\n",
+    )
     shop.write(_customers(3))
-    assert len(shop.results(shop.run())) == 1
+    assert len(shop.results(shop.run())) == 2
 
     skipped = shop.run()
 
-    assert (skipped.status, skipped.rows_loaded, shop.results(skipped)) == ("succeeded", 0, [])
+    assert (skipped.status, skipped.rows_loaded) == ("succeeded", 0)
+    (result,) = shop.results(skipped)
+    assert (result["check_type"], result["passed"], result["table_rows"]) == ("min_rows", True, 3)
+
+
+def test_an_unchanged_file_whose_table_went_stale_fails_its_freshness_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shop = Shop(
+        tmp_path,
+        TYPES + "    checks:\n      - check: freshness\n        column: signup_date\n"
+        "        max_age: P2D\n",
+    )
+    shop.write([f"1,{NOW.date().isoformat()},1.00,true,Delft\n"])
+    assert shop.run().status == "succeeded"
+    table, state = shop.loader.tables["shop__customers"], shop.loader.states[("shop", "customers")]
+
+    class TenDaysLater(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:  # type: ignore[override]
+            return datetime.now(tz) + timedelta(days=10)
+
+    monkeypatch.setattr("udp.pipeline.runner.datetime", TenDaysLater)
+    stale = shop.run()
+
+    record = shop.loader.runs[stale.run_id]
+    assert (record["status"], record["error_class"]) == ("failed", "QualityError")
+    assert "signup_date" in record["error_message"]
+    assert shop.loader.tables["shop__customers"].equals(table)
+    assert shop.loader.states[("shop", "customers")] == state
+    (result,) = shop.results(stale)
+    assert result["passed"] is False
 
 
 @pytest.mark.db

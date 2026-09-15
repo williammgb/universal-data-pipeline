@@ -343,6 +343,8 @@ def test_settings_written_at_their_default_keep_the_fingerprint(tmp_path: Path) 
     assert config_sha256(dataset, None) == (
         "ff8f602ea61e3540449fd04e07aab1f66d2a5b7cbe0cd4b582b718b7b3f2abf3"
     )
+    scheduled = CsvDataset(name="orders", path="orders.csv", schedule="0 6 * * mon-fri")
+    assert config_sha256(scheduled, None) == config_sha256(dataset, None)
 
     shop = Shop(tmp_path, "")
     shop.write(ORDERS)

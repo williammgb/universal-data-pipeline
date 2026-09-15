@@ -7,11 +7,13 @@ from uuid import UUID
 
 import polars as pl
 import psycopg
+import structlog
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from udp.errors import LoadError
 from udp.storage.loader import (
+    INTERRUPTED,
     Column,
     ColumnChanges,
     DatasetState,
@@ -20,10 +22,13 @@ from udp.storage.loader import (
     RunFindings,
     RunStart,
     column_changes,
+    interrupted_message,
     table_columns,
     watermark_from_text,
     watermark_to_text,
 )
+
+log = structlog.get_logger(step="run")
 
 _STAGE = sql.Identifier("udp_stage")
 _STAGE_ROW = sql.Identifier("_stage_row")
@@ -328,11 +333,16 @@ class PostgresTransaction:
 
 
 class PostgresLoader:
-    """Writes to the platform database. Connects on first use."""
+    """Writes to the platform database. Connects on first use.
+
+    Dataset locks are session-level advisory locks on this loader's connection, so they are
+    freed when the connection closes, including when the process dies.
+    """
 
     def __init__(self, database_url: str) -> None:
         self._database_url = database_url
         self._conn: psycopg.Connection | None = None
+        self._held: set[str] = set()
 
     def __enter__(self) -> Self:
         return self
@@ -341,11 +351,60 @@ class PostgresLoader:
         if self._conn is not None:
             self._conn.close()
             self._conn = None
+        self._held.clear()
 
     def _connection(self) -> psycopg.Connection:
         if self._conn is None:
             self._conn = psycopg.connect(self._database_url, autocommit=True)
         return self._conn
+
+    def lock_dataset(self, source: str, dataset: str) -> bool:
+        key = f"{source}/{dataset}"
+        if key in self._held:
+            return False
+        row = (
+            self._connection()
+            .execute("SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", [key])
+            .fetchone()
+        )
+        acquired = bool(row and row[0])
+        if acquired:
+            self._held.add(key)
+        return acquired
+
+    def unlock_dataset(self, source: str, dataset: str) -> None:
+        key = f"{source}/{dataset}"
+        self._held.discard(key)
+        try:
+            row = (
+                self._connection()
+                .execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))", [key])
+                .fetchone()
+            )
+        except psycopg.Error as error:
+            log.warning("could not release the dataset lock", lock=key, error=str(error))
+            return
+        if not (row and row[0]):
+            log.warning("the dataset lock was not held", lock=key)
+
+    def skip_run(self, run: RunStart, *, ended_at: datetime) -> None:
+        self._connection().execute(
+            "INSERT INTO platform.pipeline_runs "
+            "(run_id, source, dataset, trigger, status, started_at, ended_at) "
+            "VALUES (%s, %s, %s, %s, 'skipped', %s, %s)",
+            [run.run_id, run.source, run.dataset, run.trigger, run.started_at, ended_at],
+        )
+
+    def fail_interrupted_runs(
+        self, source: str, dataset: str, *, found_by: UUID, ended_at: datetime
+    ) -> int:
+        updated = self._connection().execute(
+            "UPDATE platform.pipeline_runs SET status = 'failed', ended_at = %s, "
+            "error_class = %s, error_message = %s "
+            "WHERE source = %s AND dataset = %s AND status = 'running'",
+            [ended_at, INTERRUPTED, interrupted_message(found_by), source, dataset],
+        )
+        return updated.rowcount
 
     def start_run(self, run: RunStart) -> None:
         self._connection().execute(
