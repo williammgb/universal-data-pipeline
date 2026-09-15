@@ -84,8 +84,8 @@
     {
       "id": 6,
       "name": "orchestration",
-      "state": "in-progress",
-      "commit": null,
+      "state": "done",
+      "commit": "9820b02",
       "checks": [
         { "claim": "the scheduler container runs datasets on their YAML cron", "passes": true, "evidence": "./run smoke: the scheduler container (udp schedule, demo_csv schedule '* * * * *') logged {\"step\": \"run\", \"status\": \"succeeded\", \"event\": \"run finished\", \"source\": \"demo_csv\", \"dataset\": \"customers\"}; ./run fast: test_a_schedule_is_accepted_exactly_when_cron_reads_it_and_fires_when_cron_would (cron model, next three fire times) and test_each_scheduled_dataset_becomes_a_utc_cron_job; ./run full: 497 passed" },
         { "claim": "an overlapping run of the same dataset is recorded as skipped", "passes": true, "evidence": "./run fast: test_a_run_started_while_its_dataset_is_loading_is_skipped (skipped with ended_at, outer succeeded) and the lock property on memory; ./run db: 28 passed, including the lock property on Postgres, test_a_run_on_another_postgres_connection_is_skipped_while_the_dataset_loads, and test_killing_a_run_mid_load (udp run exits 0 recording skipped while a stalled process holds the lock; after the kill the stalled run is failed Interrupted)" },
