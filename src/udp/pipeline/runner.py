@@ -28,6 +28,7 @@ from udp.pipeline.validate import validate
 from udp.quality.checks import check_dataset, check_rows
 from udp.quality.quarantine import threshold_exceeded
 from udp.storage.loader import (
+    ConfigCopy,
     DatasetState,
     Loader,
     LoadTransaction,
@@ -96,6 +97,22 @@ def run_source(
                 if interrupted:
                     log.warning("interrupted runs marked failed", count=interrupted)
                 loader.start_run(run)
+                loader.record_config(
+                    ConfigCopy(
+                        source=source,
+                        connector_type=config.connection.type,
+                        connection=config.written.connection,
+                        dataset=dataset.name,
+                        table=table_name(source, dataset.name),
+                        load_mode=dataset.load_mode,
+                        primary_key=tuple(dataset.primary_key or ()),
+                        watermark=dataset.watermark,
+                        schedule=dataset.schedule,
+                        definition=config.written.datasets[dataset.name],
+                        run_id=run_id,
+                        recorded_at=started_at,
+                    )
+                )
                 log.info("run started", trigger=trigger, full_refresh=full_refresh)
                 request = ExtractRequest(
                     sources_dir / source, config.connection, dataset, chunk_size

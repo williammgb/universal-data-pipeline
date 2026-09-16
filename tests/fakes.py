@@ -13,6 +13,7 @@ from udp.storage.loader import (
     INTERRUPTED,
     Column,
     ColumnChanges,
+    ConfigCopy,
     DatasetState,
     LoadResult,
     RunFailure,
@@ -225,6 +226,29 @@ class MemoryLoader:
         self.quarantine: list[dict[str, Any]] = []
         self.quality_results: list[dict[str, Any]] = []
         self.locks: set[tuple[str, str]] = set()
+        self.sources: dict[str, dict[str, Any]] = {}
+        self.datasets: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def record_config(self, copy: ConfigCopy) -> None:
+        self.sources[copy.source] = {
+            "source": copy.source,
+            "connector_type": copy.connector_type,
+            "connection": copy.connection,
+            "run_id": copy.run_id,
+            "recorded_at": copy.recorded_at,
+        }
+        self.datasets[(copy.source, copy.dataset)] = {
+            "source": copy.source,
+            "dataset": copy.dataset,
+            "table_name": copy.table,
+            "load_mode": copy.load_mode,
+            "primary_key": list(copy.primary_key),
+            "watermark": copy.watermark,
+            "schedule": copy.schedule,
+            "definition": copy.definition,
+            "run_id": copy.run_id,
+            "recorded_at": copy.recorded_at,
+        }
 
     def lock_dataset(self, source: str, dataset: str) -> bool:
         if (source, dataset) in self.locks:

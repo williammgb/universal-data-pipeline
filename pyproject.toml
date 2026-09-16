@@ -38,6 +38,11 @@ dev = [
 requires = ["uv_build>=0.12,<0.13"]
 build-backend = "uv_build"
 
+[tool.uv]
+# This machine's Application Control policy refuses mypy's published compiled files, so mypy
+# is built from source here; it type-checks the same, just slower.
+no-binary-package = ["mypy"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["--strict-markers"]

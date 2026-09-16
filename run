@@ -61,16 +61,20 @@ USAGE
 
 # Containers run on the Docker engine inside WSL, never Docker Desktop. Each gate
 # gets its own compose project, host port and throwaway password, so a gate never
-# touches a developer's database and no password is ever written down.
+# touches a developer's database and no password is ever written down. The ports sit
+# below 49152: above that is Windows' range for outgoing connections, and a gate lost
+# two runs to "address already in use" when another program got there first.
 stack_project=
 stack_port=
 stack_source_port=
 stack_api_port=
+stack_http_port=
 stack_password=
 
 compose() {
   wsl.exe -e env POSTGRES_PASSWORD="$stack_password" UDP_PG_PORT="$stack_port" \
     UDP_SOURCE_PG_PORT="$stack_source_port" UDP_MOCK_API_PORT="$stack_api_port" \
+    UDP_API_PORT="${stack_http_port:-8000}" \
     docker compose -p "$stack_project" -f deploy/compose.yaml --profile app --profile demo "$@"
 }
 
@@ -88,14 +92,16 @@ keepalive_stop() {
     "kill \$(cat /tmp/$stack_project.keepalive) 2>/dev/null; rm -f /tmp/$stack_project.keepalive"
 }
 
-# stack_start <project> <platform pg port> [<source pg port> <mock api port>]
+# stack_start <project> <platform pg port> [<source pg port> <mock api port> [<udp api port>]]
 # With the extra ports it also starts the source database and the mock API, and
-# exports the demo sources' variables for code running on Windows.
+# exports the demo sources' variables for code running on Windows. The last port is
+# where the platform's own API is published when a gate starts it.
 stack_start() {
   stack_project=$1
   stack_port=$2
   stack_source_port=${3:-}
   stack_api_port=${4:-}
+  stack_http_port=${5:-}
   stack_password=$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
   # 127.0.0.1, not localhost: from Windows, localhost tries IPv6 first, and IPv6
   # to a port published inside WSL hangs for two minutes instead of being refused.
@@ -131,7 +137,7 @@ fast_gate() {
 
 db_gate() {
   code=0
-  stack_start udp-db 55434 &&
+  stack_start udp-db 45434 &&
     migrate &&
     uv run --locked pytest -q -m "db and not scale and not services" "$@" || code=$?
   stack_stop || true
@@ -140,7 +146,7 @@ db_gate() {
 
 full_gate() {
   code=0
-  stack_start udp-gate 55432 55442 55452 &&
+  stack_start udp-gate 45432 45442 45452 &&
     migrate &&
     compose build app &&
     HYPOTHESIS_PROFILE=ci uv run --locked pytest -q "$@" || code=$?
@@ -158,7 +164,35 @@ smoke_sources() {
   for source in $SMOKE_SOURCES; do
     uv run --locked udp run "$source" || return
   done
-  smoke_scheduler
+  smoke_scheduler && smoke_api
+}
+
+# The api container must answer from Windows on its 127.0.0.1-only port, list the demo
+# datasets, and run demo_excel on request; the finished run's line is printed last.
+smoke_api() {
+  compose build api && compose up -d --wait api || { compose logs api; return 1; }
+  base="http://127.0.0.1:$stack_http_port/api"
+  curl -fsS "$base/health" && echo || return
+  curl -fsS "$base/datasets?q=demo_" | grep -q '"dataset":"customers"' ||
+    { echo "the api does not list demo_csv customers"; return 1; }
+  curl -fsS -o /dev/null "$base/docs" || return
+  accepted=$(curl -fsS -X POST -H 'Content-Type: application/json' \
+    -d '{"source":"demo_excel"}' "$base/runs") || return
+  echo "$accepted"
+  requested=$(printf '%s' "$accepted" | sed -n 's/.*"requested_at":"\([^"]*\)".*/\1/p')
+  deadline=$(( $(date +%s) + 60 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    runs=$(curl -fsS -G "$base/runs" --data-urlencode "source=demo_excel" \
+      --data-urlencode "trigger=manual" --data-urlencode "since=$requested") || return
+    case "$runs" in
+      *'"status":"succeeded"'*) printf '%s\n' "$runs" | cut -c1-400; return 0 ;;
+      *'"status":"failed"'*|*'"status":"skipped"'*) printf '%s\n' "$runs"; compose logs api; return 1 ;;
+    esac
+    sleep 1
+  done
+  compose logs api
+  echo "the run requested over the api did not succeed within 60s"
+  return 1
 }
 
 # The scheduler container must start a scheduled run of demo_csv (every minute) and
@@ -182,7 +216,7 @@ smoke_scheduler() {
 
 smoke_gate() {
   code=0
-  stack_start udp-smoke 55433 55443 55453 &&
+  stack_start udp-smoke 45433 45443 45453 45463 &&
     migrate &&
     smoke_sources || code=$?
   stack_stop || true

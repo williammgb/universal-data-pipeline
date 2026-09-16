@@ -16,6 +16,7 @@ from udp.storage.loader import (
     INTERRUPTED,
     Column,
     ColumnChanges,
+    ConfigCopy,
     DatasetState,
     LoadResult,
     RunFailure,
@@ -386,6 +387,46 @@ class PostgresLoader:
             return
         if not (row and row[0]):
             log.warning("the dataset lock was not held", lock=key)
+
+    def record_config(self, copy: ConfigCopy) -> None:
+        conn = self._connection()
+        with conn.transaction():
+            conn.execute(
+                "INSERT INTO platform.sources "
+                "(source, connector_type, connection, run_id, recorded_at) "
+                "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (source) DO UPDATE SET "
+                "connector_type = EXCLUDED.connector_type, connection = EXCLUDED.connection, "
+                "run_id = EXCLUDED.run_id, recorded_at = EXCLUDED.recorded_at",
+                [
+                    copy.source,
+                    copy.connector_type,
+                    Jsonb(copy.connection),
+                    copy.run_id,
+                    copy.recorded_at,
+                ],
+            )
+            conn.execute(
+                "INSERT INTO platform.datasets (source, dataset, table_name, load_mode, "
+                "primary_key, watermark, schedule, definition, run_id, recorded_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (source, dataset) DO UPDATE SET "
+                "table_name = EXCLUDED.table_name, load_mode = EXCLUDED.load_mode, "
+                "primary_key = EXCLUDED.primary_key, watermark = EXCLUDED.watermark, "
+                "schedule = EXCLUDED.schedule, definition = EXCLUDED.definition, "
+                "run_id = EXCLUDED.run_id, recorded_at = EXCLUDED.recorded_at",
+                [
+                    copy.source,
+                    copy.dataset,
+                    copy.table,
+                    copy.load_mode,
+                    list(copy.primary_key),
+                    copy.watermark,
+                    copy.schedule,
+                    Jsonb(copy.definition),
+                    copy.run_id,
+                    copy.recorded_at,
+                ],
+            )
 
     def skip_run(self, run: RunStart, *, ended_at: datetime) -> None:
         self._connection().execute(

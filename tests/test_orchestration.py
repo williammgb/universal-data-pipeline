@@ -66,6 +66,9 @@ def _model_field(text: str, low: int, high: int, names: list[str]) -> set[int] |
                 return None
             start, end = start_or_none, end_or_none
             numbers_only = first.isdigit() and (last or "0").isdigit()
+            names_only = first in names and (last or first) in names
+            if last is not None and not (numbers_only or names_only):
+                return None
             if step is not None and (last is None or not numbers_only):
                 return None
         every = 1 if step is None else int(step)

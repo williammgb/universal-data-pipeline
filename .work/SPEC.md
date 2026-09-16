@@ -26,6 +26,7 @@ Measured by `env-doctor` on 2026-09-13.
 - pinned by: `.python-version` + `uv.lock` (Python); `engines` + `engine-strict` + `package-lock.json` (Node, from slice 8); exact Docker image tags
 - known blocker: `docker` on Windows points at stopped Docker Desktop — worked around by `./run` calling `wsl docker ...`; never start Docker Desktop for this project
 - known blocker: the WSL distro shuts down ~15s after the last `wsl.exe` command ends, stopping every container (measured in slice 0) — worked around by `./run` holding one idle `wsl.exe` session open for the life of a stack
+- known blocker: this machine's Application Control policy refuses mypy's published compiled files ("DLL load failed … An Application Control policy has blocked this file", first seen in slice 7) — worked around by `[tool.uv] no-binary-package = ["mypy"]`, which builds mypy from source
 - known blocker: from Windows, `localhost` to a port published in WSL tries IPv6 first and hangs ~130s (measured in slice 0) — worked around by always using `127.0.0.1`
 - known blocker: mutmut 3 needs `fork` — worked around by running mutation tests inside WSL only, with `process_isolation=forkserver` and `forkserver_warmup=none` (a plain fork deadlocks Polars: 110 of 121 mutants timed out), preparing the `/tmp` copy in the same WSL session because `/tmp` is wiped when the distro stops
 
@@ -75,7 +76,8 @@ Measured by `env-doctor` on 2026-09-13.
 - source databases: any SQLAlchemy URL; tested against Postgres and SQLite only
 - API sources: pagination none | page | offset | cursor field | next link; auth none | API-key header | bearer token (from env)
 - dashboard reads the API only, never Postgres directly
-- API auth: none, bound to localhost until slice 10
+- API auth: none, bound to localhost until slice 10 (the `api` container is published on 127.0.0.1 only)
+- API (slice 7): every route under `/api`, docs at `/api/docs`; sources and datasets come from `platform.sources` / `platform.datasets`, which every run (not a skipped one) fills with the source.yaml as written, `${NAME}` references unfilled, so a dataset appears after its first run; row previews page in primary-key order (physical order without a key) with a `has_more` flag and no total; run filters match exactly, `since` inclusive and `until` exclusive on `started_at`, newest first; stored values become JSON by one rule (decimals and NaN/Infinity as text); `POST /api/runs` checks the source.yaml at once (404 unknown source or dataset, 422 invalid config), then runs in the API process on a pool of 4 through the same runner with trigger `manual` and answers 202
 - demo sources for gates: generated files, a second "source" Postgres container, a local mock API container — never public internet in a gate
 
 ## Overturned defaults
@@ -112,6 +114,7 @@ Proved by: both gates above
 Measured in slice 1: fast ~20–34s (69 tests), db ~45s, full ~165–225s (million-row CSV loaded twice, Hypothesis ci profile), smoke ~35–55s.
 Measured in slice 2: fast ~28–40s (128 tests), db ~50s, full ~140–225s (adds source Postgres, mock API, 500k-row table, 50k-row xlsx), smoke ~56–130s (four sources, container and Windows).
 Measured in slice 3: fast ~29s (177 tests), db ~38s (adds the killed-run test), full ~247s (1M-row CSV, 500k-row table, 50k-row xlsx and the API each loaded all → nothing → changes), smoke ~40s.
+Measured in slice 7: fast ~53s warm (487 tests, mypy built from source), db ~125s (35 tests, three properties against Postgres), full ~1261s (530 tests; it grew with the API's three Postgres properties under the ci profile), smoke ~150s (adds the api container and a run requested over HTTP).
 Measured in slice 6: fast ~55s warm (461 tests; 76s under load), db ~40s (28 tests), full ~559s while four agents ran alongside (497 tests), smoke ~112s (adds the scheduler container waiting for its first firing).
 Measured in slice 5: fast ~53s (435 tests), db ~40s (24 tests), full ~281–428s (467 tests), smoke ~39s; slice 4 mutation run on `pipeline/incremental.py` ~114s in WSL (121 mutants).
 

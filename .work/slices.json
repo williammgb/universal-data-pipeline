@@ -95,14 +95,14 @@
     {
       "id": 7,
       "name": "API",
-      "state": "planned",
+      "state": "in-progress",
       "commit": null,
       "checks": [
-        { "claim": "endpoints list and search sources and datasets, and return dataset schema and metadata", "passes": false, "evidence": null },
-        { "claim": "a paginated row preview endpoint returns dataset rows", "passes": false, "evidence": null },
-        { "claim": "runs list with filters and run detail with errors and statistics are served", "passes": false, "evidence": null },
-        { "claim": "quality results are served", "passes": false, "evidence": null },
-        { "claim": "POST triggers a run; a health endpoint and OpenAPI docs exist", "passes": false, "evidence": null }
+        { "claim": "endpoints list and search sources and datasets, and return dataset schema and metadata", "passes": true, "evidence": "./run db: test_a_loaded_source_is_described_by_the_api (source list, source detail, dataset detail with definition as written, numeric(8,2) column, schema version 1, saved watermark and last run) and test_dataset_search_finds_exactly_the_names_containing_the_text, a property against a plain 'q in name' model; ./run smoke: /api/datasets?q=demo_ listed customers from Windows" },
+        { "claim": "a paginated row preview endpoint returns dataset rows", "passes": true, "evidence": "./run db: test_preview_pages_join_back_into_the_whole_table (pages joined equal the whole table, each row once, has_more only on the last page, keyed and unkeyed tables, 0 to 7 rows, decimals, NaN, timestamps and nulls); planting 'always order by ctid' made it fail" },
+        { "claim": "runs list with filters and run detail with errors and statistics are served", "passes": true, "evidence": "./run db: 35 passed, 493 deselected — test_run_filters_and_pages_match_a_simple_model (every filter, newest first, pages join to the model; planting an inclusive 'until' made it fail) and test_a_failed_run_shows_its_error (error class, message and traceback)" },
+        { "claim": "quality results are served", "passes": true, "evidence": "./run db: 35 passed, 493 deselected — test_a_loaded_source_is_described_by_the_api asserts /api/datasets/<source>/customers/quality returns the newest run's results, [('not_null', 'error', True), ('regex', 'warn', False)] for the newest run" },
+        { "claim": "POST triggers a run; a health endpoint and OpenAPI docs exist", "passes": true, "evidence": "./run fast: 486 passed, including the nine-path OpenAPI list, /api/docs 200, health 503 when the database is unreachable, POST 404/422 cases and a background run recorded as manual; ./run db: test_a_run_requested_over_http_is_recorded_as_a_manual_run; ./run smoke: {\"status\":\"ok\"} and a POST run of demo_excel that finished succeeded" }
       ]
     },
     {

@@ -24,6 +24,7 @@ from udp.settings import Settings
 from udp.storage.loader import (
     INTERRUPTED,
     CheckResult,
+    ConfigCopy,
     DatasetState,
     Loader,
     LoadResult,
@@ -44,6 +45,7 @@ class Harness:
     read_run: Callable[[UUID], dict[str, Any]]
     drop_table: Callable[[str], None]
     read_findings: Callable[[UUID], tuple[list[dict[str, Any]], list[dict[str, Any]]]]
+    read_config: Callable[[str], tuple[dict[str, Any] | None, dict[str, dict[str, Any]]]]
 
 
 def _memory_harness() -> Iterator[Harness]:
@@ -58,6 +60,11 @@ def _memory_harness() -> Iterator[Harness]:
             [row for row in loader.quality_results if row["run_id"] == run_id],
         )
 
+    def read_config(source: str) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]]]:
+        return loader.sources.get(source), {
+            dataset: row for (owner, dataset), row in loader.datasets.items() if owner == source
+        }
+
     yield Harness(
         loader=loader,
         read_rows=lambda table, columns: loader.tables[table].select(columns).rows(),
@@ -65,6 +72,7 @@ def _memory_harness() -> Iterator[Harness]:
         read_run=lambda run_id: loader.runs[run_id],
         drop_table=drop_table,
         read_findings=read_findings,
+        read_config=read_config,
     )
 
 
@@ -111,7 +119,19 @@ def _postgres_harness() -> Iterator[Harness]:
                 ).fetchall()
             return quarantine, results
 
-        yield Harness(loader, read_rows, read_columns, read_run, drop_table, read_findings)
+        def read_config(source: str) -> tuple[dict[str, Any] | None, dict[str, dict[str, Any]]]:
+            with reader.cursor(row_factory=dict_row) as cursor:
+                found = cursor.execute(
+                    "SELECT * FROM platform.sources WHERE source = %s", [source]
+                ).fetchone()
+                datasets = cursor.execute(
+                    "SELECT * FROM platform.datasets WHERE source = %s", [source]
+                ).fetchall()
+            return found, {row["dataset"]: row for row in datasets}
+
+        yield Harness(
+            loader, read_rows, read_columns, read_run, drop_table, read_findings, read_config
+        )
 
 
 @pytest.fixture(params=["memory", pytest.param("postgres", marks=pytest.mark.db)])
@@ -340,6 +360,85 @@ def test_a_dataset_lock_is_taken_exactly_when_nobody_holds_it(
             held.discard(dataset)
     for dataset in held:
         harness.loader.unlock_dataset(source, dataset)
+
+
+# YAML can't hold a NUL character, so neither can a copy of it; jsonb refuses one as well.
+JSON_TEXT = st.text(
+    alphabet=st.characters(blacklist_characters="\x00", blacklist_categories=["Cs"]), max_size=8
+)
+JSON_VALUE = st.recursive(
+    st.none() | st.booleans() | st.integers(-(2**53), 2**53) | JSON_TEXT,
+    lambda inner: st.lists(inner, max_size=3) | st.dictionaries(JSON_TEXT, inner, max_size=3),
+    max_leaves=8,
+)
+COPIES = st.lists(
+    st.fixed_dictionaries(
+        {
+            "source": st.sampled_from(["one", "two"]),
+            "dataset": st.sampled_from(["a", "b"]),
+            "primary_key": st.lists(st.sampled_from(["id", "line"]), max_size=2, unique=True),
+            "watermark": st.none() | st.just("updated"),
+            "schedule": st.none() | st.just("0 6 * * mon-fri"),
+            "definition": st.dictionaries(JSON_TEXT, JSON_VALUE, max_size=3),
+            "connection": st.dictionaries(JSON_TEXT, JSON_VALUE, max_size=3),
+        }
+    ),
+    min_size=1,
+    max_size=6,
+)
+
+
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(COPIES)
+def test_the_last_config_copy_of_each_source_and_dataset_is_kept(
+    harness: Harness, copies: list[dict[str, Any]]
+) -> None:
+    names = {name: f"cfg{uuid.uuid4().hex[:12]}" for name in ("one", "two")}
+    expected_sources: dict[str, dict[str, Any]] = {}
+    expected_datasets: dict[str, dict[str, dict[str, Any]]] = {name: {} for name in names.values()}
+    for drawn in copies:
+        source = names[drawn["source"]]
+        run_id = uuid.uuid7()
+        harness.loader.start_run(
+            RunStart(run_id, source, drawn["dataset"], "manual", datetime.now(UTC))
+        )
+        copy = ConfigCopy(
+            source=source,
+            connector_type="csv",
+            connection=drawn["connection"],
+            dataset=drawn["dataset"],
+            table=f"{source}__{drawn['dataset']}",
+            load_mode="merge" if drawn["primary_key"] else "full",
+            primary_key=tuple(drawn["primary_key"]),
+            watermark=drawn["watermark"],
+            schedule=drawn["schedule"],
+            definition=drawn["definition"],
+            run_id=run_id,
+            recorded_at=datetime.now(UTC),
+        )
+        harness.loader.record_config(copy)
+        expected_sources[source] = {"connection": copy.connection, "run_id": run_id}
+        expected_datasets[source][copy.dataset] = {
+            "table_name": copy.table,
+            "load_mode": copy.load_mode,
+            "primary_key": list(copy.primary_key),
+            "watermark": copy.watermark,
+            "schedule": copy.schedule,
+            "definition": copy.definition,
+            "run_id": run_id,
+        }
+
+    for source in names.values():
+        stored, datasets = harness.read_config(source)
+        if source not in expected_sources:
+            assert (stored, datasets) == (None, {})
+            continue
+        assert stored is not None
+        assert {key: stored[key] for key in ("connection", "run_id")} == expected_sources[source]
+        assert {
+            name: {key: row[key] for key in expected_datasets[source][name]}
+            for name, row in datasets.items()
+        } == expected_datasets[source]
 
 
 RUN_STATUSES = ["running", "succeeded", "failed", "skipped"]

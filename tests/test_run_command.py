@@ -116,6 +116,18 @@ def test_schedule_command_serves_the_configured_sources(monkeypatch: pytest.Monk
     assert (sources_dir, database_url) == (Path("sources"), UNREACHABLE_DATABASE)
 
 
+def test_api_command_serves_on_localhost_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr("udp.cli.uvicorn.run", lambda app, **options: calls.append(options))
+    env = {"UDP_DATABASE_URL": UNREACHABLE_DATABASE, "UDP_SOURCES_DIR": "sources"}
+
+    result = CliRunner().invoke(app, ["api"], env=env)
+
+    assert result.exit_code == 0, result.output
+    ((options),) = calls
+    assert (options["host"], options["port"]) == ("127.0.0.1", 8000)
+
+
 @pytest.mark.db
 def test_demo_source_loads_then_skips_the_unchanged_file() -> None:
     runner = CliRunner()

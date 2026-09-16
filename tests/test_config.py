@@ -1,3 +1,5 @@
+import dataclasses
+import json
 import tempfile
 from pathlib import Path
 
@@ -35,6 +37,48 @@ def test_references_are_filled_from_the_environment(tmp_path: Path) -> None:
 
     assert str(config.connection.base_url) == "http://api.test/"
     assert config.connection.auth.token.get_secret_value() == "secret"
+
+
+WIDE_SECRET = st.text(
+    alphabet=st.characters(blacklist_categories=["Cs", "Cc"], blacklist_characters="\\"),
+    min_size=8,
+    max_size=40,
+).filter(lambda text: text.strip() == text)
+# The host and the path must still make a valid URL once filled, so they get plain secrets;
+# the wide secret goes where any text is valid: the token, a whole param and inside a param.
+PLAIN_SECRET = st.text(alphabet="abcdefghijklmnopqrstuvwxyz0123456789", min_size=8, max_size=20)
+
+
+@given(host=PLAIN_SECRET, token=WIDE_SECRET, path=PLAIN_SECRET)
+def test_the_written_copy_of_a_source_holds_no_secret(host: str, token: str, path: str) -> None:
+    text = (
+        "connection:\n  type: rest_api\n  base_url: 'https://${HOST}.test/v1'\n"
+        "  auth:\n    type: bearer\n    token: '${TOKEN}'\n"
+        "datasets:\n  - name: items\n    endpoint: '/items/${PATH}'\n"
+        "    params:\n      key: '${TOKEN}'\n      note: 'k=${TOKEN}#${PATH}'\n"
+    )
+    for secret in (host, token, path):
+        assume(secret not in text)
+    with tempfile.TemporaryDirectory() as folder:
+        _write_source(Path(folder), "api", text)
+        config = load_source(Path(folder), "api", {"HOST": host, "TOKEN": token, "PATH": path})
+
+    assert config.connection.auth.token.get_secret_value() == token
+    written = json.dumps(dataclasses.asdict(config.written), ensure_ascii=False)
+    for secret in (host, token, path):
+        assert secret not in written
+    assert config.written.datasets["items"]["params"]["note"] == "k=${TOKEN}#${PATH}"
+
+
+def test_a_narrowed_config_keeps_its_datasets_written_form() -> None:
+    config = load_source(
+        Path("sources"), "demo_api", {"DEMO_API_URL": "http://x", "DEMO_API_TOKEN": "t"}
+    )
+
+    narrowed = config.model_copy(update={"datasets": [config.datasets[1]]})
+
+    assert narrowed.written.datasets["items_pages"]["endpoint"] == "/bearer/pages"
+    assert narrowed.written.connection["auth"]["token"] == "${DEMO_API_TOKEN}"
 
 
 def test_every_missing_variable_is_reported_with_its_field(tmp_path: Path) -> None:
@@ -233,6 +277,7 @@ MERGE_ON_UPDATED = "    load_mode: merge\n    watermark: updated\n    primary_ke
         ("    schedule: '0 0 * * sun-mon'\n", "datasets[0].schedule", "runs backwards"),
         ("    schedule: '*/60 * * * *'\n", "datasets[0].schedule", "steps further"),
         ("    schedule: '0 0 * jan-mar/2 *'\n", "datasets[0].schedule", "only step over numbers"),
+        ("    schedule: '0 0 * jan-3 *'\n", "datasets[0].schedule", "mixes a name and a number"),
     ],
 )
 def test_invalid_columns_and_checks_name_file_and_field(

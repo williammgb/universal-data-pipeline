@@ -233,6 +233,24 @@ class LoadTransaction(Protocol):
     ) -> None: ...
 
 
+@dataclass(frozen=True)
+class ConfigCopy:
+    """A source's connection and one dataset's settings as written, copied by a run."""
+
+    source: str
+    connector_type: str
+    connection: dict[str, Any]
+    dataset: str
+    table: str
+    load_mode: str
+    primary_key: tuple[str, ...]
+    watermark: str | None
+    schedule: str | None
+    definition: dict[str, Any]
+    run_id: UUID
+    recorded_at: datetime
+
+
 def interrupted_message(found_by: UUID) -> str:
     return f"the run stopped without finishing; found when run {found_by} started"
 
@@ -262,6 +280,11 @@ class Loader(Protocol):
 
     def start_run(self, run: RunStart) -> None:
         """Record a run as running. Commits immediately."""
+        ...
+
+    def record_config(self, copy: ConfigCopy) -> None:
+        """Replace the stored copy of the source's connection and of this dataset's settings.
+        Other datasets' copies are left as they are. Commits immediately."""
         ...
 
     def transaction(self) -> AbstractContextManager[LoadTransaction]:

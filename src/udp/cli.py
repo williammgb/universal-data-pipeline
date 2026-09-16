@@ -1,11 +1,15 @@
+import logging
 from pathlib import Path
 from typing import Annotated
 
 import psycopg
 import structlog
 import typer
+import uvicorn
 
 from udp import __version__
+from udp.api.app import create_app
+from udp.api.catalog import PostgresCatalog
 from udp.config.secrets import read_environment
 from udp.config.source import load_source
 from udp.errors import ConfigError
@@ -70,6 +74,39 @@ def schedule() -> None:
     configure_logging()
     settings = Settings()  # type: ignore[call-arg]
     serve(settings.sources_dir, settings.database_url, read_environment(Path(".env")))
+
+
+class _StructlogHandler(logging.Handler):
+    """Passes uvicorn's own log records on as JSON lines, like every other log line."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        structlog.get_logger(step="api").log(
+            record.levelno, record.getMessage(), logger=record.name
+        )
+
+
+@app.command()
+def api(
+    host: Annotated[str, typer.Option(help="Address to listen on.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option(help="Port to listen on.")] = 8000,
+) -> None:
+    """Serve the HTTP API under /api (documentation at /api/docs) until stopped."""
+    configure_logging()
+    settings = Settings()  # type: ignore[call-arg]
+    url = settings.database_url
+    web = create_app(
+        PostgresCatalog(url),
+        settings.sources_dir,
+        read_environment(Path(".env")),
+        lambda: PostgresLoader(url),
+    )
+    handler = _StructlogHandler(logging.WARNING)
+    for name in ("uvicorn", "uvicorn.error"):
+        server_log = logging.getLogger(name)
+        server_log.handlers = [handler]
+        server_log.propagate = False
+    structlog.get_logger(step="api").info("api starting", host=host, port=port)
+    uvicorn.run(web, host=host, port=port, log_config=None, access_log=False)
 
 
 @app.command()

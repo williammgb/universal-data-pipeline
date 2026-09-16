@@ -1,11 +1,13 @@
+import copy
 import os
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
 import pydantic
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from udp.config.secrets import fill_references
 from udp.connectors import CONNECTORS
@@ -16,11 +18,27 @@ from udp.names import MAX_IDENTIFIER_BYTES, name_problem, table_name
 SOURCE_FILE = "source.yaml"
 
 
+@dataclass(frozen=True)
+class WrittenSource:
+    """A source.yaml as written, with ${NAME} references left unfilled, so it holds no secret.
+
+    `datasets` maps each validated dataset name to that dataset's mapping as written.
+    """
+
+    connection: dict[str, Any]
+    datasets: dict[str, dict[str, Any]]
+
+
 class SourceConfig[C: ConnectionBase, D: DatasetBase](BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     connection: C
     datasets: list[D] = Field(min_length=1)
+    _written: WrittenSource = PrivateAttr(default=WrittenSource({}, {}))
+
+    @property
+    def written(self) -> WrittenSource:
+        return self._written
 
 
 def _location(loc: tuple[int | str, ...]) -> str:
@@ -58,6 +76,7 @@ def load_source(
 
     if not isinstance(data, dict):
         raise fail("expected a mapping with 'connection' and 'datasets'")
+    written = copy.deepcopy(data)
     filled, problems = fill_references(data, env)
     if problems:
         raise fail(*problems)
@@ -89,4 +108,11 @@ def load_source(
             )
     if problems:
         raise fail(*problems)
+    config._written = WrittenSource(
+        connection=written["connection"],
+        datasets={
+            dataset.name: definition
+            for dataset, definition in zip(config.datasets, written["datasets"], strict=True)
+        },
+    )
     return config

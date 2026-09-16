@@ -4,12 +4,14 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+import yaml
 from fakes import MemoryLoader
 
 from udp.config.source import load_source
 from udp.connectors import CONNECTORS
 from udp.connectors.base import ExtractRequest
 from udp.connectors.csv import CsvConnection, CsvConnector, CsvDataset
+from udp.connectors.rest_api import RestApiConnector
 from udp.errors import ConfigError, ExtractError
 from udp.log import configure_logging
 from udp.names import RESERVED_COLUMNS
@@ -162,3 +164,65 @@ def test_every_log_line_is_json_with_run_context(capsys: pytest.CaptureFixture[s
     }
     finished = [line for line in run_lines if line["event"] == "run finished"]
     assert [(line["status"], line["rows_loaded"]) for line in finished] == [("succeeded", 20)]
+
+
+def test_a_run_copies_its_source_settings_as_written() -> None:
+    loader = MemoryLoader()
+
+    assert _run_demo(loader) == ["succeeded"]
+
+    (run_id,) = loader.runs
+    source = loader.sources["demo_csv"]
+    assert (source["connector_type"], source["connection"], source["run_id"]) == (
+        "csv",
+        {"type": "csv"},
+        run_id,
+    )
+    copied = loader.datasets[("demo_csv", "customers")]
+    written = yaml.safe_load((SOURCES / "demo_csv" / "source.yaml").read_text(encoding="utf-8"))
+    assert copied["definition"] == written["datasets"][0]
+    assert (copied["table_name"], copied["schedule"]) == (DEMO_TABLE, "* * * * *")
+
+
+def test_a_run_of_a_source_with_secrets_copies_only_their_references(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The copy is made before extraction, so the unreachable API only needs to fail fast.
+    monkeypatch.setitem(CONNECTORS, "rest_api", RestApiConnector(waits=()))
+    loader = MemoryLoader()
+    env = {"DEMO_API_URL": "http://api.invalid", "DEMO_API_TOKEN": "tok-3f9a1c77e2"}
+    config = load_source(SOURCES, "demo_api", env)
+    narrowed = config.model_copy(update={"datasets": [config.datasets[0]]})
+
+    run_source("demo_api", narrowed, SOURCES, loader)
+
+    copied = json.dumps([loader.sources, list(loader.datasets.values())], default=str)
+    assert "tok-3f9a1c77e2" not in copied
+    assert "api.invalid" not in copied
+    assert loader.sources["demo_api"]["connection"]["auth"]["token"] == "${DEMO_API_TOKEN}"
+
+
+def test_a_skipped_run_copies_nothing() -> None:
+    loader = MemoryLoader()
+    loader.lock_dataset("demo_csv", "customers")
+
+    assert _run_demo(loader) == ["skipped"]
+
+    assert (loader.sources, loader.datasets) == ({}, {})
+
+
+def test_a_run_of_one_dataset_leaves_the_other_datasets_copy(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    _write_source(sources, "shop", "  - name: a\n    path: a.csv\n  - name: b\n    path: b.csv\n")
+    for name in ("a", "b"):
+        (sources / "shop" / f"{name}.csv").write_text("id\n1\n", encoding="utf-8")
+    loader = MemoryLoader()
+    config = load_source(sources, "shop")
+    run_source("shop", config, sources, loader)
+    first_b = loader.datasets[("shop", "b")]
+
+    narrowed = config.model_copy(update={"datasets": [config.datasets[0]]})
+    (outcome,) = run_source("shop", narrowed, sources, loader)
+
+    assert loader.datasets[("shop", "a")]["run_id"] == outcome.run_id
+    assert loader.datasets[("shop", "b")] == first_b

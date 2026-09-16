@@ -43,6 +43,9 @@ def _numbers(text: str, field: str, low: int, high: int, names: tuple[str, ...] 
             last = _value(last_text, field, low, high, names) if dash else first
             if first > last:
                 raise ValueError(f"{field} range '{base}' runs backwards")
+            if dash and (first_text in names) != (last_text in names):
+                # APScheduler reads 'jan-3' as just 'jan', silently dropping the rest.
+                raise ValueError(f"{field} range '{base}' mixes a name and a number")
             if slash and not dash:
                 raise ValueError(f"{field} '{part}' needs * or a range before the /")
             if slash and (first_text in names or last_text in names):

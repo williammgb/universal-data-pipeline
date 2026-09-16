@@ -408,3 +408,63 @@ while its section has no `built:` line.
 - designer ruled out: deleting datasets missing from a run's config, because a scheduler run only carries one dataset and would erase its siblings.
 - full gate passed (579s): 497 passed, 9 warnings in 558.94s (0:09:18)
 - fast gate passed (81s): 461 passed, 36 deselected, 8 warnings in 75.61s (0:01:15)
+
+## Slice 7 — API
+- you decided: the copy of each source's settings in the database is the source.yaml as written, with `${NAME}` references left unfilled, so no secret can be copied.
+- you decided: a run started from the API is recorded with trigger `manual`, like `udp run`.
+- you decided: a run started with `POST /api/runs` executes inside the API process, up to 4 at once, and the request returns immediately.
+- you decided: data preview pages come in primary-key order (physical order without a key) with a "more pages" flag and no total row count.
+- you decided: a dataset appears in the API only after it has run once.
+- you decided: the API's port is published on 127.0.0.1 only.
+- plan-check checked: 17 claims agreed across .work/SPEC.md, .work/PLAN.md, .work/slices.json entry 7, and the committed slice 6 code in src/udp/storage/loader.py, src/udp/pipeline/runner.py, src/udp/orchestration/scheduler.py, src/udp/cli.py, src/udp/config/source.py, src/udp/config/secrets.py, src/udp/connectors/base.py, tests/fakes.py, deploy/compose.yaml, run, and migrations/versions/0001-0003.
+- db gate passed (157s): 35 passed, 493 deselected, 2 warnings in 124.67s (0:02:04)
+- fast gate failed (3s): Found 1 error in 1 file (checked 68 source files)
+- fast gate passed (91s): 485 passed, 43 deselected, 8 warnings in 84.55s (0:01:24)
+- built: every run that isn't skipped now copies its source.yaml as written (with `${NAME}` left unfilled) into `platform.sources` and `platform.datasets`; a property test puts generated secrets into five fields and proves none reaches the copy, and it fails when the filled values are copied instead.
+- built: `udp api` in an `api` container serves nine routes under `/api` from plain SQL: source and dataset lists with search, dataset detail with definition, columns, versions and saved state, paged row previews, quality results, run history with filters, run detail with errors, a health check, and `POST /api/runs`, which runs a source in the background as a manual run.
+- built: the search, preview-paging and run-filter tests compare the API with simple models against real Postgres; planting three bugs showed the run-filter generator first missed an inclusive `until`, so it now draws time bounds from the runs' own start times.
+- smoke gate passed (116s): {"runs":[{"run_id":"01a0a3de-9cb0-73ec-be37-1caa01588b64","status":"succeeded","trigger":"manual","started_at":"2026-09-15T07:01:10.449276Z","ended_at":"2026-09
+- final-check verdict: SHIP
+- final-check noted: shipping assumes the background full gate exits 0, since that done-means item was not visible to this review.
+- final-check noted: a table named platform.datasets next to a schema named datasets is naming that will spread into the API, the dashboard and hand-written SQL, and it is cheap to rename only before this commit.
+- final-check noted: the run_id columns in platform.sources and platform.datasets reference pipeline_runs, which will block deleting old runs later.
+- final-check noted: in json_value the UUID branch is dead because the fallback does the same, and the fallback turns any unlisted type into text without warning.
+- final-check noted: the uvicorn-to-JSON log bridge in cli.py is never run by a test, so the plan's uncertain item about startup errors is still open.
+- final-check noted: cli.py now imports FastAPI and the API app at the top, which adds import time to every udp run.
+- final-check noted: run detail returns full tracebacks without authentication, which SPEC allows until slice 10.
+- [F55] plan-drift found: tests/test_config.py:9-10 — the P1 secret generator only uses the plan's "wide alphabet" (quotes, spaces, `:`, `#`, non-ASCII) for the `token` value; `host` and `path` (feeding `base_url` and `endpoint`/`params`) are drawn from a plain lowercase-alphanumeric strategy instead, so the property no longer proves those positions are secret-free for wide-alphabet secrets.
+- [F56] edge-hunter found: GET /api/sources and /api/datasets serve the raw stored `connection`/`definition` copy, but no test proves a real secret stays as `${ENV_VAR}` rather than its resolved value when a secret-bearing source is actually run and then read back through the API.
+- [F57] edge-hunter found: nothing stops or flags a source.yaml that writes a secret literally instead of through `${NAME}`, so such a literal would be stored and served verbatim by the API with no test covering that path.
+- [F58] edge-hunter found: only `/api/health` degrades gracefully when Postgres is unreachable/exhausted; every other route opens its own unpooled connection with no error handling, so connection exhaustion under load likely surfaces as raw unhandled errors instead of clean responses.
+- [F59] edge-hunter found: an empty `q=""` search parameter is assumed to behave like an omitted `q`, but that equivalence is never actually asserted by a test.
+- [F60] edge-hunter found: `POST /api/runs` has no limit on how many manual runs can be queued at once beyond the fixed 4-worker pool, and behavior under a burst of requests is untested.
+- [F61] edge-hunter found: the dataset/source search filter's case-folding is only exercised with ASCII text, leaving unicode casefolding differences between Python and Postgres unverified.
+- F55 rejected: the host and path must still form a valid URL once filled, so they can only hold plain secrets; the wide-alphabet secret already sits in the token, a whole param and inside a longer param, and the test now says why.
+- F56 fixed: a runner test loads demo_api with a real token and base URL, runs it, and proves the stored copy holds only `${DEMO_API_TOKEN}` and `${DEMO_API_URL}`.
+- F57 rejected: SPEC already rules that secrets never go into source files; a secret typed literally into source.yaml is in the repository before any copy is made, and guessing which text is a secret would refuse legitimate values.
+- F58 deferred: an unreachable or exhausted database gives a plain 500 from FastAPI on the other routes rather than a crash; a connection pool and matching error responses are slice 10, as the plan deferred.
+- F59 fixed: the Postgres API test now asserts that an empty `q` returns the same sources and datasets as no `q`.
+- F60 deferred: capping queued API runs belongs with API keys in slice 10; until then the API is reachable only from this machine.
+- F61 rejected: source and dataset names can only contain a-z, 0-9 and _, so no case-folding difference outside ASCII can change which names match.
+- built: after final-check, `json_value` lost a branch that did the same as its fallback.
+- designer plan: slice 8 — dashboard
+- designer chose: the dashboard is served by the existing API container at the same address, with page addresses that survive a reload, so there is no second service, port or cross-origin setup.
+- designer chose: the dashboard is built inside the Docker image by a pinned Node image, because WSL has no Node and CI must be able to build the same image.
+- designer chose: the dashboard's data types are generated from the API's own description and the fast gate fails when they are stale, so an API change can't silently blank a page.
+- designer chose: zero console errors is proved with the browser tool while the smoke keeps the stack up on request, because SPEC names the browser tool.
+- designer chose: a static preview is published and approved before any UI code, and its decisions are written into the plan so reviewers can check the build against them.
+- designer ruled out: building on Windows and copying the files into the image, because the image would depend on a Windows-only step.
+- designer ruled out: a separate nginx container, because it adds an image, a proxy config and a port for three pages.
+- designer ruled out: hash-style addresses, because a small fallback route gives normal addresses.
+- designer ruled out: a Playwright script in the smoke for now, because it downloads a browser and SPEC asks for the browser tool; slice 9 can add it.
+- designer: Relevant files: `C:\Users\Willi\Maxxing\universal-data-pipeline\.work\SPEC.md`, `C:\Users\Willi\Maxxing\universal-data-pipeline\.work\PLAN.md`, `C:\Users\Willi\Maxxing\universal-data-pipeline\src\udp\api\app.py`, `C:\Users\Willi\Maxxing\universal-data-pipeline\src\udp\api\models.py`, `C:\Users\Willi\Maxxing\universal-data-pipeline\run`, `C:\Users\Willi\Maxxing\universal-data-pipeline\deploy\Docker
+- fast gate passed (101s): 486 passed, 43 deselected, 8 warnings in 94.42s (0:01:34)
+- full gate failed (1043s): 1 failed, 527 passed, 9 warnings in 1018.97s (0:16:58)
+- fast gate failed (2s): ImportError: DLL load failed while importing mypy: An Application Control policy has blocked this file.
+- fast gate passed (100s): 487 passed, 43 deselected, 8 warnings in 53.32s
+- built: the full gate's larger search found a real hole in slice 6's schedule check: a month range mixing a name and a number, like `jan-3`, was accepted although APScheduler reads it as just `jan`; such a range is now refused, in the check, in the model it is proven against, and in the invalid-schedule table.
+- built: two full gate runs died with "address already in use" because the gate's host ports (55432 and up) sit in the range Windows picks outgoing connection ports from, and another program had taken one; every gate now uses ports below 49152.
+- built: this machine's Application Control policy began refusing mypy's published compiled files mid-slice, so the fast gate could not type-check; mypy is now built from source through `[tool.uv] no-binary-package`, which you approved, and the gate is green again.
+- full gate failed (19s): Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint udp-gate-postgres-1 (e030f56ec2fe
+- full gate passed (1374s): 530 passed, 9 warnings in 1261.05s (0:21:01)
+- fast gate passed (116s): 487 passed, 43 deselected, 8 warnings in 108.17s (0:01:48)
