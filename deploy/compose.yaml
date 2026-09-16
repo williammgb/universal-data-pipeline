@@ -86,6 +86,20 @@ services:
       timeout: 3s
       retries: 30
 
+  # Scrapes the api's /api/metrics; its query page is published on this machine only.
+  prometheus:
+    profiles: ["monitoring"]
+    image: prom/prometheus:v3.14.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:${UDP_PROM_PORT:-9090}:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/healthy"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
   # Runs every dataset with a `schedule:` in source.yaml; schedules are read at start.
   scheduler:
     <<: *app

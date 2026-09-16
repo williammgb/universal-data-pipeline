@@ -12,6 +12,8 @@ import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 
+from udp import __version__
+from udp.api.metrics import LastRun, MetricsSnapshot, QualityFailures, RunTotals
 from udp.api.models import (
     CheckResult,
     Column,
@@ -298,6 +300,53 @@ class PostgresCatalog:
             limit=limit,
             offset=offset,
             has_more=len(rows) > limit,
+        )
+
+    def metrics(self) -> MetricsSnapshot:
+        with self._connect() as conn:
+            totals = conn.execute(
+                "SELECT source, dataset, status, count(*) AS runs, "
+                "coalesce(sum(rows_extracted), 0) AS rows_extracted, "
+                "coalesce(sum(rows_loaded), 0) AS rows_loaded, "
+                "coalesce(sum(rows_quarantined), 0) AS rows_quarantined "
+                "FROM platform.pipeline_runs GROUP BY source, dataset, status"
+            ).fetchall()
+            last_runs = conn.execute(
+                "SELECT DISTINCT ON (source, dataset) source, dataset, status, started_at, "
+                "ended_at, (SELECT max(done.ended_at) FROM platform.pipeline_runs AS done "
+                "WHERE done.source = runs.source AND done.dataset = runs.dataset "
+                "AND done.status = 'succeeded') AS succeeded_at "
+                "FROM platform.pipeline_runs AS runs "
+                "ORDER BY source, dataset, started_at DESC, run_id DESC"
+            ).fetchall()
+            # The same run the quality tab shows: each dataset's newest run that has results.
+            quality = conn.execute(
+                "SELECT results.source, results.dataset, results.severity, "
+                "count(*) FILTER (WHERE NOT results.passed) AS failed "
+                "FROM platform.quality_results AS results JOIN ("
+                "  SELECT DISTINCT ON (checked.source, checked.dataset) checked.run_id "
+                "  FROM platform.quality_results AS checked "
+                "  JOIN platform.pipeline_runs AS runs USING (run_id) "
+                "  ORDER BY checked.source, checked.dataset, runs.started_at DESC, runs.run_id DESC"
+                ") AS newest USING (run_id) "
+                "GROUP BY results.source, results.dataset, results.severity"
+            ).fetchall()
+        return MetricsSnapshot(
+            totals=tuple(
+                RunTotals(
+                    source=row["source"],
+                    dataset=row["dataset"],
+                    status=row["status"],
+                    runs=row["runs"],
+                    rows_extracted=int(row["rows_extracted"]),
+                    rows_loaded=int(row["rows_loaded"]),
+                    rows_quarantined=int(row["rows_quarantined"]),
+                )
+                for row in totals
+            ),
+            last_runs=tuple(LastRun(**row) for row in last_runs),
+            quality=tuple(QualityFailures(**row) for row in quality),
+            version=__version__,
         )
 
     def run(self, run_id: UUID) -> RunDetail | None:

@@ -11,10 +11,11 @@ from uuid import UUID
 
 import structlog
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import AwareDatetime
 
 from udp.api.catalog import PostgresCatalog
+from udp.api.metrics import CONTENT_TYPE, render
 from udp.api.models import (
     DatasetDetail,
     DatasetItem,
@@ -94,6 +95,18 @@ def create_app(
             response.status_code = 503
             return Health(status="unavailable")
         return Health(status="ok")
+
+    # Prometheus text, not JSON, so it stays out of the description the dashboard's types use.
+    @app.get("/api/metrics", include_in_schema=False)
+    def metrics() -> PlainTextResponse:
+        try:
+            snapshot = catalog.metrics()
+        except Exception as error:
+            log.warning("database unavailable", error=str(error))
+            return PlainTextResponse(
+                "# the platform database is unavailable\n", 503, media_type=CONTENT_TYPE
+            )
+        return PlainTextResponse(render(snapshot), media_type=CONTENT_TYPE)
 
     @app.get("/api/sources")
     def sources(q: str | None = None) -> list[SourceItem]:

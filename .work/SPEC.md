@@ -46,7 +46,9 @@ Measured by `env-doctor` on 2026-09-13.
 - tests/checks: pytest, Hypothesis, ruff, mypy
 - dashboard: React + Vite + TypeScript + TanStack Query (details fixed in slice 8 after HTML preview)
 - containers: Docker Compose on the WSL docker-ce engine
-- CI: GitHub Actions
+- CI: GitHub Actions; images published to GitHub Container Registry
+- monitoring (slice 9): Prometheus `prom/prometheus:v3.14.0` on a `monitoring` compose profile; no Grafana
+- test and development tools added in slice 9: prometheus-client (tests only, its parser reads our metrics text), playwright (dashboard development only, for the console check)
 
 ## Decisions
 - repository: own git repo in `universal-data-pipeline/`; folder added to Maxxing's `.gitignore`
@@ -77,6 +79,9 @@ Measured by `env-doctor` on 2026-09-13.
 - API sources: pagination none | page | offset | cursor field | next link; auth none | API-key header | bearer token (from env)
 - dashboard reads the API only, never Postgres directly
 - dashboard (slice 8): React + Vite + TypeScript with TanStack Query and React Router, one hand-written stylesheet, no component library; built inside the image by a pinned `node:24.18.0` stage and served by the `api` container itself, so page addresses survive a reload while `/api` keeps its JSON 404; its types are generated from `udp openapi` into `frontend/src/api/schema.ts`, committed, and the fast gate fails when they go stale; times shown in UTC; previews page 50 rows with Previous and Next and no total; the runs list and a run's page refresh every 5 seconds; `SMOKE_HOLD=1 ./run smoke` holds the stack up so the pages can be opened with the browser tool
+- metrics (slice 9): `GET /api/metrics` serves Prometheus text read from the platform tables on each scrape, so runs made by the scheduler, the command line and the API all count; left out of the API's description so the dashboard's types do not change; 503 with a comment line when the database is unreachable; per source and dataset: `udp_runs_total` by status (all four statuses, zeros included), `udp_rows_extracted_total`, `udp_rows_loaded_total`, `udp_rows_quarantined_total`, `udp_last_run_timestamp_seconds`, `udp_last_run_duration_seconds` (once ended), `udp_last_run_status` (1 for the newest run's status, 0 for the other three), `udp_last_success_timestamp_seconds`, `udp_quality_checks_failed` by severity for the newest checked run; plus `udp_build_info{version}`; a Prometheus container on the `monitoring` profile scrapes the api container every 15s, published on 127.0.0.1 only
+- CI (slice 9): `./run` picks the Docker engine once — WSL's where `wsl.exe` exists, the machine's own otherwise — so a pull request runs the same gates; every push runs the fast gate and builds the image with `./run image`; a pull request also runs the whole full gate (120-minute limit); a push to main publishes `ghcr.io/williammgb/universal-data-pipeline` tagged with the commit and `main`; a newer push cancels the run still going
+- console check (slice 9): `frontend/e2e/console-check.mjs` opens every dashboard page in headless chromium and fails on a console error, a page error, a failed or 4xx/5xx request, or a page still loading; the smoke runs it, downloading chromium on the machine running the smoke only (never in setup, the image or CI)
 - API auth: none, bound to localhost until slice 10 (the `api` container is published on 127.0.0.1 only)
 - API (slice 7): every route under `/api`, docs at `/api/docs`; sources and datasets come from `platform.sources` / `platform.datasets`, which every run (not a skipped one) fills with the source.yaml as written, `${NAME}` references unfilled, so a dataset appears after its first run; row previews page in primary-key order (physical order without a key) with a `has_more` flag and no total; run filters match exactly, `since` inclusive and `until` exclusive on `started_at`, newest first; stored values become JSON by one rule (decimals and NaN/Infinity as text); `POST /api/runs` checks the source.yaml at once (404 unknown source or dataset, 422 invalid config), then runs in the API process on a pool of 4 through the same runner with trigger `manual` and answers 202
 - demo sources for gates: generated files, a second "source" Postgres container, a local mock API container — never public internet in a gate
@@ -87,7 +92,7 @@ Measured by `env-doctor` on 2026-09-13.
 ## Constraints
 - adding a connector type, source or transformation must not change files under `src/udp/pipeline/`
 - a dataset table never holds a partial run; the watermark never disagrees with the table
-- all commands go through `./run`; `docker` is always `wsl docker`
+- all commands go through `./run`; on this machine `docker` is always `wsl docker`, and on a machine without WSL (the CI runner) `./run` uses that machine's own `docker`
 - no secrets in YAML, source or committed config
 - UI: publish a static HTML preview Artifact and get approval before building the dashboard
 
@@ -95,7 +100,7 @@ Measured by `env-doctor` on 2026-09-13.
 Fast gate: ./run fast     # after every edit, no services, target <30s — ruff check + ruff format --check + mypy + pytest -m "not db" (unit, fixtures, fake API, in-memory fake loader, Hypothesis dev profile)
 DB tests:  ./run db       # slices touching load/merge/lock SQL — pytest -m db against running compose Postgres
 Full gate: ./run full     # once per slice, background — compose up postgres + source-postgres + mock-api; alembic upgrade; all tests (Hypothesis ci profile); end-to-end: 1M-row CSV, 50k-row xlsx, 500k-row source table, 20-page mock API, each loaded twice (2nd loads 0 rows) then with changed data (only changes load); build app images; compose down
-Smoke:     ./run smoke    # compose up full stack; wait for API health; run demo source; confirm run `succeeded`; from slice 8 open dashboard with browser tool, zero console errors
+Smoke:     ./run smoke    # compose up full stack; wait for API health; run demo source; confirm run `succeeded`; from slice 8 the dashboard with zero console errors, checked from slice 9 by `frontend/e2e/console-check.mjs`; from slice 9 Prometheus on 45473 reports the api up with run series
 Properties: common transforms idempotent; column-name cleanup → valid unique Postgres names for any input; watermark never moves backwards for any batch order; good + quarantined rows = input rows; concatenated chunks = whole file for any chunk size; API pagination always terminates; (full gate) loading same data twice leaves table identical
 Mutation:  mutmut inside WSL, once per milestone (after slices 3, 5, 7), one module (e.g. incremental state) — never in a gate
 
@@ -145,6 +150,6 @@ Proved by: both gates, plus the smoke launch
 ## Open
 - GitHub remote: create private repo `williammgb/universal-data-pipeline` and push? — needed by slice 0 (CI check)
 - real sources the user wants beyond the demo ones — needed by slice 2
-- monitoring stack (Prometheus + Grafana vs. logs-only) — needed by slice 9
-- CI image registry (GitHub Container Registry or none) — needed by slice 9
+- monitoring stack (Prometheus + Grafana vs. logs-only) — resolved in slice 9: Prometheus only
+- CI image registry (GitHub Container Registry or none) — resolved in slice 9: GitHub Container Registry, from main
 - dashboard styling library — needed by slice 8, decided with the preview

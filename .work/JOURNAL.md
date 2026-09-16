@@ -535,3 +535,22 @@ while its section has no `built:` line.
 - fast gate passed (51s): 491 passed, 43 deselected, 8 warnings in 45.37s
 - smoke gate passed (133s): dashboard served at http://127.0.0.1:45463/assets/index-CujWnnVD.js
 - full gate passed (635s): 534 passed, 9 warnings in 574.15s (0:09:34)
+
+## Slice 9 — monitoring and CI/CD
+- you decided: metrics are served by the API at `/api/metrics` and made viewable by a pinned Prometheus container, checked in the smoke through Prometheus's query page, with no Grafana.
+- you decided: a pull request runs the whole full gate, big-volume tests included, and the image is built on every run and pushed to GitHub Container Registry only from main, tagged with the commit.
+- you decided: a branch may be pushed and a real pull request opened to prove the pull-request job passes.
+- you decided: `prometheus-client` (tests only) and `playwright` (dashboard development tool, browsers never downloaded in the image or CI) are approved, and `/api/metrics` stays out of the API's description so the dashboard's types do not change.
+- [F72] plan-check found: returned no journal lines (its reply was 17 characters) — read the reply, or relaunch it if it died
+- F72 rejected: plan-check did return, but through a hand-back message the journal hook cannot read; its one finding is recorded below as F75.
+- [F75] plan-check found: SPEC's constraint "docker is always wsl docker" contradicts the plan's engine switch, which runs plain docker on a CI runner without WSL, and the plan's SPEC updates did not revise that line.
+- F75 fixed: the SPEC constraint now says docker is WSL's on this machine and the machine's own where there is no WSL, which is what the engine switch does.
+- built: proved before building that `prometheus-client` 0.26.0's parser runs, `prom/prometheus:v3.14.0` pulls and starts, and headless chromium from `playwright` 1.63.0 loads a page from a WSL container port on 127.0.0.1 (200, "Welcome to nginx!") once a WSL session is held open.
+- fast gate failed (13s): Found 1 error in 1 file (checked 70 source files)
+- fast gate passed (138s): 497 passed, 44 deselected, 8 warnings in 119.85s (0:01:59)
+- db gate passed (116s): 36 passed, 505 deselected, 2 warnings in 82.02s (0:01:22)
+- smoke gate passed (260s): /runs/01a0ac59-6674-708b-8eca-905057c5c6ef: 0 console errors
+- built: `GET /api/metrics` turns three plain reads of the platform tables into Prometheus text — run counts by status, row counts, the newest run's time, duration and status, the newest success, failed checks by severity, and the version — with properties that parse it back with Prometheus's own parser; planting a missing newline escape, a dropped status and unsorted series each failed the property meant to catch it.
+- built: the smoke starts a pinned Prometheus that scrapes the api container, then asks Prometheus itself whether the api is up and has runs, and then opens all eight dashboard addresses in headless chromium, failing on any console error, page error, failed request or page still loading.
+- built: `./run` picks WSL's Docker where `wsl.exe` exists and the machine's own elsewhere, gains `./run image <tag>`, and CI now builds the image on every push, runs the whole full gate on pull requests and publishes the image to GitHub Container Registry from main.
+- fast gate passed (147s): 497 passed, 44 deselected, 8 warnings in 127.30s (0:02:07)

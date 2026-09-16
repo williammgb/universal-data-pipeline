@@ -16,6 +16,7 @@ from fakes import MemoryLoader
 from fastapi.testclient import TestClient
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from prometheus_client.parser import text_string_to_metric_families
 from psycopg import sql
 
 from udp.api.app import create_app
@@ -116,6 +117,23 @@ def test_health_is_unavailable_when_the_database_cannot_be_reached(
     response = client.get("/api/health")
 
     assert (response.status_code, response.json()) == (503, {"status": "unavailable"})
+
+
+def test_metrics_are_unavailable_when_the_database_cannot_be_reached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def refuse(self: PostgresCatalog) -> None:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(PostgresCatalog, "metrics", refuse)
+    client, _ = _client()
+
+    response = client.get("/api/metrics")
+
+    assert response.status_code == 503
+    assert response.text.startswith("# ")
+    assert list(text_string_to_metric_families(response.text)) == []
+    assert "/api/metrics" not in client.get("/api/openapi.json").json()["paths"]
 
 
 @pytest.mark.parametrize(
@@ -386,6 +404,41 @@ def test_a_loaded_source_is_described_by_the_api(tmp_path: Path) -> None:
     ]
     assert client.get(f"/api/datasets/{source}/missing").status_code == 404
     assert client.get(f"/api/runs/{uuid7()}").status_code == 404
+
+
+@pytest.mark.db
+def test_a_real_run_shows_up_in_the_metrics_prometheus_reads(tmp_path: Path) -> None:
+    source = _prefix()
+    sources = tmp_path / "sources"
+    (sources / source).mkdir(parents=True)
+    (sources / source / "source.yaml").write_text(QUALITY_SOURCE, encoding="utf-8")
+    (sources / source / "customers.csv").write_text(
+        "Customer ID,Amount,City\n1,1.50,Delft\n2,2.25,delft\n", encoding="utf-8"
+    )
+    with PostgresLoader(_url()) as loader:
+        (outcome,) = run_source(source, load_source(sources, source, {}), sources, loader)
+    client, _ = _db_client(sources)
+
+    response = client.get("/api/metrics")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "text/plain; version=0.0.4; charset=utf-8"
+    ours: dict[tuple[str, tuple[tuple[str, str], ...]], float] = {}
+    for family in text_string_to_metric_families(response.text):
+        for sample in family.samples:
+            if sample.labels.get("source") == source:
+                others = tuple(
+                    sorted((k, v) for k, v in sample.labels.items() if k not in {"source"})
+                )
+                ours[(sample.name, others)] = sample.value
+    dataset = ("dataset", "customers")
+    assert ours[("udp_runs_total", (dataset, ("status", "succeeded")))] == 1
+    assert ours[("udp_runs_total", (dataset, ("status", "failed")))] == 0
+    assert ours[("udp_rows_loaded_total", (dataset,))] == outcome.rows_loaded == 2
+    assert ours[("udp_last_run_status", (dataset, ("status", "succeeded")))] == 1
+    assert ours[("udp_quality_checks_failed", (dataset, ("severity", "warn")))] == 1
+    assert ours[("udp_quality_checks_failed", (dataset, ("severity", "error")))] == 0
+    assert ("udp_last_success_timestamp_seconds", (dataset,)) in ours
 
 
 @pytest.mark.db

@@ -4,6 +4,14 @@ on:
   push:
   pull_request:
 
+# A newer push to the same branch or pull request replaces the run still going.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/williammgb/universal-data-pipeline
+
 jobs:
   fast-gate:
     runs-on: ubuntu-24.04
@@ -17,3 +25,36 @@ jobs:
           node-version: "24.18.0"
       - run: ./run setup
       - run: ./run fast
+
+  # The whole full gate, big-volume tests included, on every pull request.
+  full-gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          version: "0.12.5"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
+      - run: ./run setup
+      - run: ./run full
+
+  # Built on every run; published, tagged with the commit and as main, only from main.
+  image:
+    needs: fast-gate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - run: ./run image "$IMAGE:${{ github.sha }}"
+      - if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker tag "$IMAGE:${{ github.sha }}" "$IMAGE:main"
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:main"
