@@ -1,5 +1,13 @@
 FROM ghcr.io/astral-sh/uv:0.12.5 AS uv
 
+# The dashboard is built here, so the machine running the build needs no Node of its own.
+FROM node:24.18.0-trixie-slim AS dashboard
+WORKDIR /frontend
+COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
+RUN npm ci
+COPY frontend ./
+RUN npm run build
+
 FROM python:3.14.4-slim-trixie
 
 COPY --from=uv /uv /usr/local/bin/uv
@@ -17,5 +25,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 COPY src ./src
 RUN uv sync --frozen --no-dev
+
+COPY --from=dashboard /frontend/dist ./frontend/dist
 
 ENTRYPOINT ["udp"]

@@ -9,6 +9,8 @@
 
 .env
 .venv/
+node_modules/
+.playwright-mcp/
 __pycache__/
 *.egg-info/
 build/

@@ -1,3 +1,4 @@
+import json
 import logging
 from pathlib import Path
 from typing import Annotated
@@ -89,8 +90,11 @@ class _StructlogHandler(logging.Handler):
 def api(
     host: Annotated[str, typer.Option(help="Address to listen on.")] = "127.0.0.1",
     port: Annotated[int, typer.Option(help="Port to listen on.")] = 8000,
+    dashboard: Annotated[Path, typer.Option(help="Folder holding the built dashboard.")] = Path(
+        "frontend/dist"
+    ),
 ) -> None:
-    """Serve the HTTP API under /api (documentation at /api/docs) until stopped."""
+    """Serve the dashboard and the HTTP API under /api (documentation at /api/docs)."""
     configure_logging()
     settings = Settings()  # type: ignore[call-arg]
     url = settings.database_url
@@ -99,6 +103,7 @@ def api(
         settings.sources_dir,
         read_environment(Path(".env")),
         lambda: PostgresLoader(url),
+        dashboard,
     )
     handler = _StructlogHandler(logging.WARNING)
     for name in ("uvicorn", "uvicorn.error"):
@@ -107,6 +112,14 @@ def api(
         server_log.propagate = False
     structlog.get_logger(step="api").info("api starting", host=host, port=port)
     uvicorn.run(web, host=host, port=port, log_config=None, access_log=False)
+
+
+@app.command()
+def openapi() -> None:
+    """Print the API's description as JSON; the dashboard's types are generated from it."""
+    unused = "postgresql://openapi:openapi@127.0.0.1:1/openapi"
+    web = create_app(PostgresCatalog(unused), Path("sources"), {}, lambda: PostgresLoader(unused))
+    typer.echo(json.dumps(web.openapi(), indent=2, sort_keys=True))
 
 
 @app.command()

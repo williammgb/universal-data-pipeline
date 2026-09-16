@@ -52,10 +52,11 @@ _DATASET_ITEMS = """
     SELECT d.source, d.dataset, d.table_name, d.load_mode, d.primary_key, d.watermark,
            d.schedule, d.definition, d.recorded_at,
            r.run_id AS last_run_id, r.status AS last_status, r.trigger AS last_trigger,
-           r.started_at AS last_started_at, r.ended_at AS last_ended_at
+           r.started_at AS last_started_at, r.ended_at AS last_ended_at,
+           r.rows_loaded AS last_rows_loaded
     FROM platform.datasets AS d
     LEFT JOIN LATERAL (
-        SELECT run_id, status, trigger, started_at, ended_at
+        SELECT run_id, status, trigger, started_at, ended_at, rows_loaded
         FROM platform.pipeline_runs AS p
         WHERE p.source = d.source AND p.dataset = d.dataset
         ORDER BY p.started_at DESC, p.run_id DESC
@@ -78,6 +79,7 @@ def _dataset_item(row: dict[str, Any]) -> DatasetItem:
             trigger=row["last_trigger"],
             started_at=row["last_started_at"],
             ended_at=row["last_ended_at"],
+            rows_loaded=row["last_rows_loaded"],
         )
     return DatasetItem(
         source=row["source"],

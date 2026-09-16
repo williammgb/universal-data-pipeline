@@ -108,12 +108,12 @@
     {
       "id": 8,
       "name": "dashboard",
-      "state": "planned",
+      "state": "in-progress",
       "commit": null,
       "checks": [
-        { "claim": "an HTML preview Artifact was approved before building", "passes": false, "evidence": null },
-        { "claim": "pages exist for dataset discovery, dataset detail (schema, metadata, preview, quality) and pipeline runs", "passes": false, "evidence": null },
-        { "claim": "the smoke launch opens the dashboard with zero browser console errors", "passes": false, "evidence": null }
+        { "claim": "an HTML preview Artifact was approved before building", "passes": true, "evidence": "grep -n 'preview at https' .work/JOURNAL.md prints line 477, 'you decided: the preview at https://claude.ai/artifact/GkTpeJLtbMiCfnBMtCA7Zp is approved as it stands', answered 'UI preview looks great. everything is as you recommend it. go' before any UI code; grep -n '## Preview decisions' .work/PLAN.md prints line 29, the section recording what it fixed" },
+        { "claim": "pages exist for dataset discovery, dataset detail (schema, metadata, preview, quality) and pipeline runs", "passes": true, "evidence": "./run fast: 491 passed, 43 deselected in 45.37s plus the dashboard's own 20 tests (npm --prefix frontend run check), covering the datasets list, the four dataset tabs, the runs list with its filters kept in the address, and a run's page; ./run smoke: dashboard served at http://127.0.0.1:45463/assets/index-CujWnnVD.js" },
+        { "claim": "the smoke launch opens the dashboard with zero browser console errors", "passes": true, "evidence": "SMOKE_HOLD=1 ./run smoke held the real stack while the browser tool walked /, the four tabs of /datasets/demo_csv/customers, /runs with a filter and one run's page: 'Total messages: 0 (Errors: 0, Warnings: 0)' on every page" }
       ]
     },
     {

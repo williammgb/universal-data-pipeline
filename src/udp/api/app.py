@@ -11,6 +11,7 @@ from uuid import UUID
 
 import structlog
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse
 from pydantic import AwareDatetime
 
 from udp.api.catalog import PostgresCatalog
@@ -47,6 +48,7 @@ def create_app(
     sources_dir: Path,
     env: Mapping[str, str],
     open_loader: Callable[[], AbstractContextManager[Loader]],
+    dashboard_dir: Path | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -178,4 +180,37 @@ def create_app(
             requested_at=requested_at,
         )
 
+    _serve_dashboard(app, dashboard_dir)
     return app
+
+
+def _serve_dashboard(app: FastAPI, dashboard_dir: Path | None) -> None:
+    """Serve the built dashboard for every address that is not part of the API.
+
+    A page address like /datasets/demo_csv/customers is handled by the dashboard itself, so a
+    reload must answer with index.html; a real file is served as itself, and anything under
+    /api keeps the API's JSON 404.
+    """
+    if dashboard_dir is None:
+        return
+    root = dashboard_dir.resolve()
+    index = root / "index.html"
+    if not index.is_file():
+        log.warning("dashboard not built; serving the API only", path=str(root))
+        return
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def dashboard(path: str) -> FileResponse:
+        if path == "api" or path.startswith("api/"):
+            raise HTTPException(404, "not found")
+        try:
+            target = (root / path).resolve()
+            is_file = path != "" and target.is_relative_to(root) and target.is_file()
+        except OSError, ValueError:
+            # A path the filesystem refuses outright, such as one holding a null byte.
+            is_file = False
+        if not is_file:
+            return FileResponse(index, headers={"Cache-Control": "no-cache"})
+        # Built file names carry a content hash, so they never change under a caller.
+        cache = "max-age=31536000, immutable" if path.startswith("assets/") else "no-cache"
+        return FileResponse(target, headers={"Cache-Control": cache})

@@ -51,6 +51,7 @@ usage() {
 usage: ./run <task> [args]
 
   setup   install the pinned toolchain and the locked dependencies
+  types   regenerate the dashboard's types from the API's description
   fast    the fast gate — under ~60s, no external services, no real data volume
   db      only the database tests, against a throwaway migrated Postgres
   full    the full gate — real size, real dependencies, allowed to be slow
@@ -132,7 +133,34 @@ fast_gate() {
   uv run --locked ruff check . &&
     uv run --locked ruff format --check . &&
     uv run --locked mypy &&
-    uv run --locked pytest -q -m "not db" "$@"
+    types_are_current &&
+    checks_together "$@"
+}
+
+# The dashboard's checks and the Python tests have nothing to say to each other, so they run
+# at the same time, which is what keeps the gate under two minutes; see SPEC for the measured
+# figures. The gate's duration is dominated by the Python tests.
+checks_together() {
+  mkdir -p .work/gates
+  npm --prefix frontend run --silent check > .work/gates/frontend.log 2>&1 &
+  dashboard=$!
+  code=0
+  uv run --locked pytest -q -m "not db" "$@" > .work/gates/pytest.log 2>&1 || code=$?
+  wait "$dashboard" || code=1
+  # The dashboard's output first, so the line the journal quotes is the test count.
+  cat .work/gates/frontend.log .work/gates/pytest.log
+  return "$code"
+}
+
+# The dashboard's types are generated from the API's own description and committed. Regenerate
+# them into .work and compare: a renamed field then fails the gate instead of blanking a page.
+types_are_current() {
+  mkdir -p .work/gates/types
+  uv run --locked udp openapi > .work/gates/openapi.json &&
+    npm --prefix frontend run --silent types:gate > /dev/null &&
+    cmp -s .work/gates/types/schema.ts frontend/src/api/schema.ts && return 0
+  echo "the dashboard's types no longer match the API — run ./run types" >&2
+  return 1
 }
 
 db_gate() {
@@ -164,7 +192,38 @@ smoke_sources() {
   for source in $SMOKE_SOURCES; do
     uv run --locked udp run "$source" || return
   done
-  smoke_scheduler && smoke_api
+  smoke_scheduler && smoke_api && smoke_dashboard
+}
+
+# The dashboard must come back from the same address as the API: its own addresses answer with
+# the page, its built files with themselves, and anything under /api stays the API's.
+smoke_dashboard() {
+  base="http://127.0.0.1:$stack_http_port"
+  page=$(curl -fsS "$base/") || return
+  printf '%s' "$page" | grep -q 'id="root"' || { echo "the dashboard page has no root"; return 1; }
+  asset=$(printf '%s' "$page" | sed -n 's/.*src="\(\/assets\/[^"]*\.js\)".*/\1/p' | head -n 1)
+  [ -n "$asset" ] || { echo "the dashboard page names no script"; return 1; }
+  curl -fsS -o /dev/null "$base$asset" || return
+  curl -fsS "$base/datasets/demo_csv/customers" | grep -q 'id="root"' ||
+    { echo "a dataset address does not return the dashboard"; return 1; }
+  curl -s -o /dev/null -w '%{http_code}' "$base/api/nope" | grep -q '^404$' ||
+    { echo "an unknown api address is not a 404"; return 1; }
+  echo "dashboard served at $base$asset"
+  smoke_hold
+}
+
+# With SMOKE_HOLD=1 the stack stays up so the pages can be opened with the browser tool.
+smoke_hold() {
+  [ "${SMOKE_HOLD:-}" = "1" ] || return 0
+  rm -f .work/gates/smoke.release
+  echo "dashboard ready: http://127.0.0.1:$stack_http_port/"
+  deadline=$(( $(date +%s) + 600 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    [ -f .work/gates/smoke.release ] && { echo "released"; return 0; }
+    sleep 2
+  done
+  echo "nobody released the stack within 600s"
+  return 0
 }
 
 # The api container must answer from Windows on its 127.0.0.1-only port, list the demo
@@ -228,7 +287,12 @@ task="${1:-}"
 filtered=$#
 
 case "$task" in
-  setup) uv sync --frozen ;;
+  setup) uv sync --frozen && npm ci --prefix frontend ;;
+  types)
+    mkdir -p .work/gates
+    uv run --locked udp openapi > .work/gates/openapi.json &&
+      npm --prefix frontend run types
+    ;;
   fast)  gate fast fast_gate "$@" ;;
   db)    gate db db_gate "$@" ;;
   full)  gate full full_gate "$@" ;;

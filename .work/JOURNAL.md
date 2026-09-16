@@ -468,3 +468,70 @@ while its section has no `built:` line.
 - full gate failed (19s): Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint udp-gate-postgres-1 (e030f56ec2fe
 - full gate passed (1374s): 530 passed, 9 warnings in 1261.05s (0:21:01)
 - fast gate passed (116s): 487 passed, 43 deselected, 8 warnings in 108.17s (0:01:48)
+
+## Slice 8 — dashboard
+- you decided: the dashboard is served by the existing API container at the same address as `/api`, and is built inside the Docker image by a pinned Node version.
+- you decided: the front-end packages are react, react-dom, react-router and @tanstack/react-query, plus development-only tools, all pinned exactly, with no component or styling library.
+- you decided: styling is one hand-written stylesheet carried over from the approved preview, and the data types are generated from the API's own description, with the fast gate failing when they go stale.
+- you decided: zero console errors is proved with the browser tool while the smoke gate holds the stack up, as the spec asks.
+- you decided: the preview at https://claude.ai/artifact/GkTpeJLtbMiCfnBMtCA7Zp is approved as it stands — a dataset table with a search box and a source filter, a dataset page with four tabs kept in the address, a Run now button, runs filters kept in the address, the runs list and a run's page refreshing every 5 seconds, times in UTC, and previews of 50 rows with Previous and Next, grey `null` cells and long text cut off with the full value on hover.
+- F62 fixed: the plan quoted a fast gate of 81–94s, which were runs under load; it now quotes the 53s measured at the slice 7 commit, so the threshold for splitting the front-end check is a real number.
+- [F62] plan-check found: the plan's Uncertain section claims the fast gate is "already 81–94s warm," but SPEC.md's own most recent measurement (slice 7) records ~53s warm, a mismatch the plan's ~110s decision threshold for splitting the frontend check out of the fast gate relies on.
+- fast gate failed (1s): 2 files would be reformatted, 75 files already formatted
+- fast gate passed (158s): 491 passed, 43 deselected, 8 warnings in 122.95s (0:02:02)
+- db gate passed (75s): 35 passed, 499 deselected, 2 warnings in 55.15s
+- you decided: the dataset list keeps its Rows column, so the API's dataset list now carries the last run's loaded-row count.
+- built: the dashboard is a React app in `frontend/`, built by a pinned Node image inside the container and served by the API itself: its own addresses answer with the page, its built files with themselves, and anything under `/api` keeps the API's JSON 404, with a property over generated addresses proving a file next to the built folder is never served.
+- built: the dashboard's types are generated from `udp openapi` and committed, and the fast gate regenerates and compares them, so a renamed API field fails the gate instead of blanking a page.
+- built: the four pages of the approved preview — datasets, dataset with its four tabs, runs with filters kept in the address, and run detail — with properties proving the filters survive a round trip through the address and that any value the API can send is shown exactly.
+- built: the fast gate now runs the dashboard's checks beside the Python tests, because one after the other they took about 125s together.
+- built: with the smoke stack held up, the browser tool opened the datasets page, all four tabs of demo_csv.customers, the runs list filtered to succeeded, one run's page and a deep address reloaded; every page showed live data and the console reported "Total messages: 0 (Errors: 0, Warnings: 0)".
+- smoke gate passed (78s): dashboard served at http://127.0.0.1:45463/assets/index-B0kN4D5n.js
+- [F63] plan-drift found: frontend/src/pages/parts.tsx is a new shared-components file not named in the plan's file list (plan named only Datasets.tsx, Dataset.tsx, Runs.tsx, Run.tsx under frontend/src/pages/).
+- [F64] plan-drift found: seven untracked .playwright-mcp/page-*.yml browser-tool snapshot files sit in the working tree, uncovered by .gitignore and not named by the plan.
+- F63 rejected: the four pages each need the same status pill, error line and fact box, so those sit in one small `parts.tsx` rather than being written four times; the plan listed the pages, not every file they share.
+- F64 fixed: the browser tool's snapshot files are deleted and `.playwright-mcp/` is now ignored, so a browser pass leaves nothing behind.
+- [F65] edge-hunter found: a malformed run_id in the address bar gets a raw JSON-list error blob instead of a readable message, because the frontend only unwraps string-shaped `detail` fields — same bug hits every native FastAPI 422, not just this one [property] (frontend/src/api/client.ts:32-35, frontend/src/pages/Run.tsx:17-22)
+- [F66] edge-hunter found: the run-detail page (Run.tsx) has no test coverage at all, so its handling of empty quality results, a null error message next to a set error class, and long tracebacks is unverified (frontend/src/pages/pages.test.tsx, frontend/src/pages/Run.tsx:40-44)
+- [F67] edge-hunter found: typing a non-date string into the since/until filter in the address bar breaks the whole Runs table with the same JSON-blob error, because runFilters.parse never validates those fields (frontend/src/runFilters.ts:34-39, src/udp/api/app.py:129-130)
+- [F68] edge-hunter found: starting a run from a dataset's own page never refreshes that dataset's row on the Datasets list page, so its last-run status can stay stale (frontend/src/api/client.ts:115-124)
+- [F69] edge-hunter found: an encoded null byte in a dashboard request path might bypass the traversal guard on Linux even though a quick Windows probe did not reproduce it, so this is a guess worth someone re-checking on the real deploy target (src/udp/api/app.py:206-210)
+- final-check verdict: FIX FIRST — 2 blocking
+- [F70] final-check found: the dashboard's index.html loads fonts from Google on every page view, an undeclared external dependency that breaks the zero-console-errors claim on any host without internet.
+- [F71] final-check found: `run` still claims the fast gate is "under ~60s" and the new comment claims "near 60s", while the only recorded slice-8 run took 158s and no warm measurement exists.
+- final-check noted: slice 8 in `.work/slices.json` is still `planned` with all three checks false, though the evidence for all three already exists in the journal.
+- final-check noted: the fast gate regenerates types with a hand-written `npx` line instead of the package's own `types` script, so the two can drift apart.
+- final-check noted: `allowScripts` in frontend/package.json is dead config — npm does not read it and lavamoat is not installed.
+- final-check noted: `smoke_hold` exits 0 after a 600s wait nobody released, so a held smoke run reports a pass either way.
+- final-check noted: the runs-list From/To inputs read what is typed as UTC, which is right but unlabelled on the fields themselves.
+- full gate failed (530s): 1 failed, 533 passed, 9 warnings in 492.18s (0:08:12)
+- fast gate failed (0s): 1 file would be reformatted, 76 files already formatted
+- designer plan: slice 9 — monitoring and CI/CD
+- designer chose: metrics are computed from the platform tables and served by the API at /api/metrics, so runs made by the scheduler, the command line and the API all show up in one place no matter which process made them.
+- designer chose: the metrics text is written by hand and the tests parse it back with Prometheus's own parser, so "Prometheus can read this" is proven instead of assumed.
+- designer chose: the metrics route is left out of the API's description, so the dashboard's generated types and the fast gate's staleness check are untouched by this slice.
+- designer chose: metrics are made viewable by a pinned Prometheus container on its own compose profile, checked in the smoke through Prometheus's query interface.
+- designer chose: ./run learns one switch between the WSL docker engine and a plain local one, so the same gate a person runs here is the gate that runs on a pull request.
+- designer chose: the pull-request job runs the whole full gate rather than a trimmed one, and the first run measures whether that is affordable.
+- designer chose: the image is built by ./run and pushed to GitHub Container Registry only from main, tagged with the commit.
+- designer chose: the browser console check becomes a script a machine can run, so zero console errors is evidence the smoke produces by itself rather than something a person has to watch.
+- designer ruled out: Grafana, because its contribution is a dashboard file no gate can check, and it adds an image to every smoke run.
+- designer ruled out: a separate Linux-only script for CI, because all commands go through ./run and two copies of a gate drift apart.
+- designer ruled out: counting metrics inside the API process, because the scheduler and the command line make runs the API would never see.
+- designer ruled out: running the whole smoke in CI for now, because a pull request that starts the entire stack doubles an already long wait.
+- fast gate failed (4s): the dashboard's types no longer match the API — run ./run types
+- fast gate passed (47s): [2m   Duration [22m 2.51s[2m (transform 238ms, setup 0ms, collect 892ms, tests 740ms, environment 2.57s, prepare 484ms)[22m
+- F65 fixed: a refused request's list of problems becomes one readable line ("run_id: Input should be a valid UUID"), with a test for a bad run id in the address.
+- F66 fixed: the run page now has tests for a failed run's banner, counts, duration and traceback, and for a run with no checks.
+- F67 fixed: a `since` or `until` in the address that is not a time with a zone is dropped instead of sent, so the runs list still loads; a test types `notadate` and the list appears.
+- F68 fixed: starting a run now also refreshes the datasets list, whose last-run column would otherwise stay stale.
+- F69 fixed: the dashboard route also catches the error a path with a null byte raises on Linux, so it falls back to the page like any other miss.
+- F70 fixed: the dashboard no longer fetches fonts from Google; it uses the faces the computer already has, so it renders the same with no internet at all.
+- F71 fixed: the gate's comment no longer claims a budget it hadn't measured; warm it is 47s, now recorded in SPEC with the db, full and smoke figures.
+- built: after final-check, the fast gate regenerates types through the package's own script instead of a hand-written command line, and it prints the dashboard's output before the Python tests so the journal quotes the test count.
+- F72 rejected: `allowScripts` in the dashboard's package.json was written by npm 11 itself when the esbuild install script was approved, and `npm ci` reads it in the image; removing it would ask for that approval again.
+- F73 deferred: a held smoke run that nobody releases still reports a pass; it is a hand-operated affordance and slice 9's console script removes the need for it.
+- F74 fixed: the runs list's From and To fields say they are UTC, matching the bar.
+- fast gate passed (51s): 491 passed, 43 deselected, 8 warnings in 45.37s
+- smoke gate passed (133s): dashboard served at http://127.0.0.1:45463/assets/index-CujWnnVD.js
+- full gate passed (635s): 534 passed, 9 warnings in 574.15s (0:09:34)

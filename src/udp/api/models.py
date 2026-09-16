@@ -21,6 +21,7 @@ class RunSummary(BaseModel):
     trigger: RunTrigger
     started_at: datetime
     ended_at: datetime | None
+    rows_loaded: int | None = None
 
 
 class SourceItem(BaseModel):

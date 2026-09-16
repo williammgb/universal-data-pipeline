@@ -12,5 +12,8 @@ jobs:
       - uses: astral-sh/setup-uv@v10.1.0
         with:
           version: "0.12.5"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.18.0"
       - run: ./run setup
       - run: ./run fast

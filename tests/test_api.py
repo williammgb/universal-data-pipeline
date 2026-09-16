@@ -6,6 +6,7 @@ from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 from uuid import UUID, uuid4, uuid7
 
 import polars as pl
@@ -182,7 +183,116 @@ def test_a_run_request_starts_the_run_in_the_background_as_a_manual_run() -> Non
     assert ("demo_csv", "customers") in loader.datasets
 
 
+# --- serving the built dashboard -----------------------------------------------------------------
+
+SECRET = "the-secret-next-door-8f21"
+INDEX = '<!doctype html><html><body><div id="root"></div></body></html>'
+ASSET = "console.log('dashboard');"
+
+
+def _dashboard(root: Path) -> Path:
+    built = root / "dist"
+    (built / "assets").mkdir(parents=True, exist_ok=True)
+    (built / "index.html").write_text(INDEX, encoding="utf-8")
+    (built / "assets" / "app-x.js").write_text(ASSET, encoding="utf-8")
+    (root / "secret.txt").write_text(SECRET, encoding="utf-8")
+    return built
+
+
+SEGMENTS = st.sampled_from(
+    [
+        "",
+        "..",
+        "%2e%2e",
+        "%2f",
+        "\\",
+        "api",
+        "apix",
+        "API",
+        "docs",
+        "assets",
+        "app-x.js",
+        "index.html",
+        "secret.txt",
+        "datasets",
+        "demo_csv",
+        "café",
+    ]
+)
+PATHS = st.builds(
+    lambda parts, lead, trail: ("/" if lead else "") + "/".join(parts) + ("/" if trail else ""),
+    st.lists(SEGMENTS, max_size=4),
+    st.booleans(),
+    st.booleans(),
+)
+
+
+@settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
+@given(PATHS)
+def test_any_address_gives_a_page_a_file_or_the_apis_own_404(tmp_path: Path, path: str) -> None:
+    built = _dashboard(tmp_path)
+    app = create_app(
+        PostgresCatalog(UNREACHABLE), SOURCES, {}, lambda: nullcontext(MemoryLoader()), built
+    )
+
+    response = TestClient(app).get(f"/{path.lstrip('/')}")
+
+    assert SECRET not in response.text
+    # The client resolves '..' and the server decodes %2f before either is matched, so judge
+    # the address the server was really asked for, with exactly one leading slash removed.
+    asked = unquote(response.request.url.path)[1:]
+    if asked == "api" or asked.startswith("api/"):
+        assert response.status_code != 200 or asked in ("api/docs", "api/openapi.json")
+        if response.status_code == 404:
+            assert "detail" in response.json()
+    else:
+        assert response.status_code == 200
+        assert response.text in (INDEX, ASSET)
+
+
+def test_the_dashboards_own_files_and_addresses_are_served(tmp_path: Path) -> None:
+    built = _dashboard(tmp_path)
+    client = TestClient(
+        create_app(
+            PostgresCatalog(UNREACHABLE), SOURCES, {}, lambda: nullcontext(MemoryLoader()), built
+        )
+    )
+
+    asset = client.get("/assets/app-x.js")
+
+    assert (asset.status_code, asset.text) == (200, ASSET)
+    assert "javascript" in asset.headers["content-type"]
+    assert asset.headers["cache-control"] == "max-age=31536000, immutable"
+    deep = client.get("/datasets/demo_csv/customers?tab=preview")
+    assert (deep.status_code, deep.text) == (200, INDEX)
+    assert deep.headers["cache-control"] == "no-cache"
+    assert client.get("/api/docs").status_code == 200
+    assert client.get("/api/nope").status_code == 404
+
+
+def test_without_a_built_dashboard_only_the_api_answers(tmp_path: Path) -> None:
+    client = TestClient(
+        create_app(
+            PostgresCatalog(UNREACHABLE),
+            SOURCES,
+            {},
+            lambda: nullcontext(MemoryLoader()),
+            tmp_path / "dist",
+        )
+    )
+
+    assert client.get("/").status_code == 404
+    assert client.get("/api/docs").status_code == 200
+
+
 # --- the catalog against Postgres ---------------------------------------------------------------
+
+
+# Each example opens several fresh connections, as the API itself does, and a few hundred
+# examples use up Windows' range of outgoing ports faster than it releases them ("Address
+# already in use" in the full gate). A pool is slice 10's job; until then these properties
+# run a fixed number of examples instead of the ci profile's 500.
+db_property = settings(max_examples=60, suppress_health_check=[HealthCheck.too_slow])
 
 
 def _url() -> str:
@@ -323,7 +433,7 @@ SEARCHED_DATASETS = ["orders", "order_lines", "ordersx", "a_b", "ab"]
 
 
 @pytest.mark.db
-@settings(suppress_health_check=[HealthCheck.too_slow])
+@db_property
 @given(
     st.lists(
         st.tuples(st.sampled_from(["shop", "sales_eu"]), st.sampled_from(SEARCHED_DATASETS)),
@@ -411,7 +521,7 @@ def stored_tables(draw: st.DrawFn) -> tuple[bool, pl.DataFrame, int]:
 
 
 @pytest.mark.db
-@settings(suppress_health_check=[HealthCheck.too_slow])
+@db_property
 @given(stored_tables())
 def test_preview_pages_join_back_into_the_whole_table(
     generated: tuple[bool, pl.DataFrame, int],
@@ -493,7 +603,7 @@ def run_histories(draw: st.DrawFn) -> tuple[list[dict[str, Any]], dict[str, Any]
 
 
 @pytest.mark.db
-@settings(suppress_health_check=[HealthCheck.too_slow])
+@db_property
 @given(run_histories())
 def test_run_filters_and_pages_match_a_simple_model(
     generated: tuple[list[dict[str, Any]], dict[str, Any]],

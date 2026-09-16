@@ -5,6 +5,7 @@ from uuid import uuid7
 
 import psycopg
 import pytest
+from fastapi import FastAPI
 from psycopg.rows import dict_row
 from typer.testing import CliRunner
 
@@ -116,9 +117,18 @@ def test_schedule_command_serves_the_configured_sources(monkeypatch: pytest.Monk
     assert (sources_dir, database_url) == (Path("sources"), UNREACHABLE_DATABASE)
 
 
-def test_api_command_serves_on_localhost_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_api_command_serves_the_built_dashboard_on_localhost_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[dict[str, object]] = []
+    dashboards: list[object] = []
     monkeypatch.setattr("udp.cli.uvicorn.run", lambda app, **options: calls.append(options))
+
+    def remember(*args: object) -> FastAPI:
+        dashboards.append(args[-1])
+        return FastAPI()
+
+    monkeypatch.setattr("udp.cli.create_app", remember)
     env = {"UDP_DATABASE_URL": UNREACHABLE_DATABASE, "UDP_SOURCES_DIR": "sources"}
 
     result = CliRunner().invoke(app, ["api"], env=env)
@@ -126,6 +136,16 @@ def test_api_command_serves_on_localhost_by_default(monkeypatch: pytest.MonkeyPa
     assert result.exit_code == 0, result.output
     ((options),) = calls
     assert (options["host"], options["port"]) == ("127.0.0.1", 8000)
+    assert dashboards == [Path("frontend/dist")]
+
+
+def test_openapi_command_prints_the_api_description_without_a_database() -> None:
+    result = CliRunner().invoke(app, ["openapi"], env={"UDP_DATABASE_URL": None})
+
+    assert result.exit_code == 0, result.output
+    description = json.loads(result.stdout)
+    assert "/api/runs" in description["paths"]
+    assert description["paths"]["/api/runs"]["post"]["responses"]["202"]
 
 
 @pytest.mark.db
