@@ -95,8 +95,8 @@
     {
       "id": 7,
       "name": "API",
-      "state": "in-progress",
-      "commit": null,
+      "state": "done",
+      "commit": "148ba76",
       "checks": [
         { "claim": "endpoints list and search sources and datasets, and return dataset schema and metadata", "passes": true, "evidence": "./run db: test_a_loaded_source_is_described_by_the_api (source list, source detail, dataset detail with definition as written, numeric(8,2) column, schema version 1, saved watermark and last run) and test_dataset_search_finds_exactly_the_names_containing_the_text, a property against a plain 'q in name' model; ./run smoke: /api/datasets?q=demo_ listed customers from Windows" },
         { "claim": "a paginated row preview endpoint returns dataset rows", "passes": true, "evidence": "./run db: test_preview_pages_join_back_into_the_whole_table (pages joined equal the whole table, each row once, has_more only on the last page, keyed and unkeyed tables, 0 to 7 rows, decimals, NaN, timestamps and nulls); planting 'always order by ctid' made it fail" },
