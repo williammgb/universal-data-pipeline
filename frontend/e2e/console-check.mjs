@@ -53,7 +53,7 @@ try {
     }
     await page.close();
 
-    console.log(`${address}: ${problems.length} console errors`);
+    console.log(`${address}: ${problems.length} errors (console, page, requests)`);
     for (const problem of problems) console.log(`  ${problem}`);
     failed ||= problems.length > 0;
   }

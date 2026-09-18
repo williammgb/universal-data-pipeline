@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from datetime import datetime
 
 RUN_STATUSES = ("running", "succeeded", "failed", "skipped")
+# A run is written as running and then changed to how it ended, so only ended runs are counted:
+# a counter that dropped when a run finished would read to Prometheus as a restart.
+ENDED_STATUSES = ("succeeded", "failed", "skipped")
 CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 
 
@@ -60,21 +63,24 @@ type Series = dict[tuple[str, ...], str]
 def render(snapshot: MetricsSnapshot) -> str:
     """The snapshot as Prometheus text; the same snapshot in any order gives the same bytes."""
     runs: dict[tuple[str, ...], int] = {}
+    running: dict[tuple[str, ...], int] = {}
     extracted: dict[tuple[str, ...], int] = {}
     loaded: dict[tuple[str, ...], int] = {}
     quarantined: dict[tuple[str, ...], int] = {}
     for total in snapshot.totals:
         dataset = (total.source, total.dataset)
-        for status in RUN_STATUSES:
+        # Every series exists from a dataset's first run, zeros included.
+        for status in ENDED_STATUSES:
             runs.setdefault((*dataset, status), 0)
-        key = (*dataset, total.status)
-        runs[key] = runs.get(key, 0) + total.runs
-        for counts, value in (
-            (extracted, total.rows_extracted),
-            (loaded, total.rows_loaded),
-            (quarantined, total.rows_quarantined),
-        ):
-            counts[dataset] = counts.get(dataset, 0) + value
+        for counts in (running, extracted, loaded, quarantined):
+            counts.setdefault(dataset, 0)
+        if total.status not in ENDED_STATUSES:
+            running[dataset] += total.runs
+            continue
+        runs[(*dataset, total.status)] += total.runs
+        extracted[dataset] += total.rows_extracted
+        loaded[dataset] += total.rows_loaded
+        quarantined[dataset] += total.rows_quarantined
 
     started: Series = {}
     duration: Series = {}
@@ -142,28 +148,35 @@ def render(snapshot: MetricsSnapshot) -> str:
         _family(
             "udp_rows_extracted_total",
             "counter",
-            "Rows read from the source, over every run of a dataset.",
+            "Rows read from the source, over every ended run of a dataset.",
             dataset_labels,
             _text(extracted),
         ),
         _family(
             "udp_rows_loaded_total",
             "counter",
-            "Rows written to the dataset's table, over every run.",
+            "Rows written to the dataset's table, over every ended run.",
             dataset_labels,
             _text(loaded),
         ),
         _family(
             "udp_rows_quarantined_total",
             "counter",
-            "Rows set aside by quality checks, over every run of a dataset.",
+            "Rows set aside by quality checks, over every ended run of a dataset.",
             dataset_labels,
             _text(quarantined),
         ),
         _family(
+            "udp_runs_running",
+            "gauge",
+            "Runs of a dataset still going.",
+            dataset_labels,
+            _text(running),
+        ),
+        _family(
             "udp_runs_total",
             "counter",
-            "Runs of a dataset, by status.",
+            "Ended runs of a dataset, by how they ended.",
             ("source", "dataset", "status"),
             _text(runs),
         ),

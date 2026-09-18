@@ -554,3 +554,31 @@ while its section has no `built:` line.
 - built: the smoke starts a pinned Prometheus that scrapes the api container, then asks Prometheus itself whether the api is up and has runs, and then opens all eight dashboard addresses in headless chromium, failing on any console error, page error, failed request or page still loading.
 - built: `./run` picks WSL's Docker where `wsl.exe` exists and the machine's own elsewhere, gains `./run image <tag>`, and CI now builds the image on every push, runs the whole full gate on pull requests and publishes the image to GitHub Container Registry from main.
 - fast gate passed (147s): 497 passed, 44 deselected, 8 warnings in 127.30s (0:02:07)
+- [F76] plan-drift found: returned no journal lines (its reply was 27 characters) — read the reply, or relaunch it if it died
+- F76 rejected: plan-drift did return, through a hand-back message the journal hook cannot read; it found all 17 changed files named in the plan, the three known deviations (`succeeded_at`, failed checks from the newest checked run, the v3.14.0 pin) as described, and no weakened test.
+- [F77] final-check found: returned no journal lines (its reply was 2513 characters) — read the reply, or relaunch it if it died
+- F77 rejected: final-check did return, through a hand-back message the journal hook cannot read; its verdict and findings are recorded below as F78–F85.
+- final-check verdict: FIX FIRST — 3 blocking
+- [F78] final-check found: the metrics query's newest-success subquery runs once per stored run and reads all of that dataset's runs each time, so a scrape grows with the square of run history and would pass Prometheus's 10s timeout within days on demo_csv's every-minute schedule.
+- [F79] final-check found: `udp_runs_total` is a counter, but its `running` series drops to 0 when each run finishes, so Prometheus sees a restart and `increase()` counts runs caught mid-run twice.
+- [F80] final-check found: the smoke's Prometheus query was changed after the only smoke run, so the committed `smoke_metrics` has never run.
+- [F81] final-check found: GitHub's standard runner for a private repository is likely 2 cores and 7 GB, not the four cores the plan assumed, so the 120-minute limit and the million-row tests' memory depend on pull request #1's run.
+- [F82] final-check found: a push to a branch with an open pull request runs the fast gate and the image build twice, once per event.
+- [F83] final-check found: the workflow puts the GitHub token and actor straight into the login script instead of passing them through `env`.
+- [F84] final-check found: `udp_last_run_status` can show skipped while a long run holds the dataset's lock, hiding the run still going.
+- [F85] final-check found: the console check calls failed requests and error responses "console errors" in its output line.
+- F78 fixed: the newest success is now its own grouped read, merged per dataset in Python, so a scrape reads the runs table a fixed number of times.
+- F79 fixed: `udp_runs_total` and the row counters count only ended runs (succeeded, failed, skipped), and runs still going are a new gauge `udp_runs_running`; the properties, the pinned example, the db test and SPEC say so.
+- F80 fixed: the smoke runs again after this fix batch, on the committed script.
+- F81 deferred: pull request #1's full-gate job measures time and memory on the real runner; if it cannot finish, the question comes back before the slice closes.
+- F81 fixed: pull request #1 measured it — the runner's full gate ran all 541 tests in 229.92s, the job took 5m13s of its 120-minute limit, and nothing ran out of memory, so the whole gate stays on pull requests.
+- F82 fixed: the workflow runs on pushes to main and on pull requests only, so an open pull request no longer runs every job twice.
+- F83 fixed: the token and actor reach the login step through `env`.
+- F84 fixed: the new `udp_runs_running` gauge shows a run still going whatever the newest run's status says.
+- F85 fixed: the console check's line now reads "N errors (console, page, requests)".
+- fast gate passed (153s): 497 passed, 44 deselected, 8 warnings in 129.79s (0:02:09)
+- full gate passed (972s): 541 passed, 9 warnings in 925.32s (0:15:25)
+- db gate failed (27s):   Caused by: An Application Control policy has blocked this file. (os error 4551)
+- db gate passed (53s): 36 passed, 505 deselected, 2 warnings in 42.88s
+- smoke gate passed (159s): /runs/01a0b3b1-cbaf-77bf-aabc-9ba35795d750: 0 errors (console, page, requests)
+- fast gate passed (49s): 497 passed, 44 deselected, 8 warnings in 40.23s

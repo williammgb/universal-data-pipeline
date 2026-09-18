@@ -434,6 +434,7 @@ def test_a_real_run_shows_up_in_the_metrics_prometheus_reads(tmp_path: Path) -> 
     dataset = ("dataset", "customers")
     assert ours[("udp_runs_total", (dataset, ("status", "succeeded")))] == 1
     assert ours[("udp_runs_total", (dataset, ("status", "failed")))] == 0
+    assert ours[("udp_runs_running", (dataset,))] == 0
     assert ours[("udp_rows_loaded_total", (dataset,))] == outcome.rows_loaded == 2
     assert ours[("udp_last_run_status", (dataset, ("status", "succeeded")))] == 1
     assert ours[("udp_quality_checks_failed", (dataset, ("severity", "warn")))] == 1

@@ -313,12 +313,18 @@ class PostgresCatalog:
             ).fetchall()
             last_runs = conn.execute(
                 "SELECT DISTINCT ON (source, dataset) source, dataset, status, started_at, "
-                "ended_at, (SELECT max(done.ended_at) FROM platform.pipeline_runs AS done "
-                "WHERE done.source = runs.source AND done.dataset = runs.dataset "
-                "AND done.status = 'succeeded') AS succeeded_at "
-                "FROM platform.pipeline_runs AS runs "
+                "ended_at FROM platform.pipeline_runs "
                 "ORDER BY source, dataset, started_at DESC, run_id DESC"
             ).fetchall()
+            # Read on its own: as a column of the query above it would run once per stored run.
+            succeeded = {
+                (row["source"], row["dataset"]): row["ended_at"]
+                for row in conn.execute(
+                    "SELECT source, dataset, max(ended_at) AS ended_at "
+                    "FROM platform.pipeline_runs WHERE status = 'succeeded' "
+                    "GROUP BY source, dataset"
+                ).fetchall()
+            }
             # The same run the quality tab shows: each dataset's newest run that has results.
             quality = conn.execute(
                 "SELECT results.source, results.dataset, results.severity, "
@@ -344,7 +350,10 @@ class PostgresCatalog:
                 )
                 for row in totals
             ),
-            last_runs=tuple(LastRun(**row) for row in last_runs),
+            last_runs=tuple(
+                LastRun(**row, succeeded_at=succeeded.get((row["source"], row["dataset"])))
+                for row in last_runs
+            ),
             quality=tuple(QualityFailures(**row) for row in quality),
             version=__version__,
         )

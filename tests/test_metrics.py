@@ -30,7 +30,11 @@ def snapshots(draw: st.DrawFn) -> MetricsSnapshot:
     sources = draw(st.lists(NAMES, unique=True, max_size=3))
     names = draw(st.lists(NAMES, unique=True, max_size=3))
     datasets = (
-        draw(st.lists(st.tuples(st.sampled_from(sources), st.sampled_from(names)), unique=True))
+        draw(
+            st.lists(
+                st.tuples(st.sampled_from(sources), st.sampled_from(names)), unique=True, max_size=6
+            )
+        )
         if sources and names
         else []
     )
@@ -107,7 +111,10 @@ def test_run_counts_add_up_and_each_dataset_has_exactly_one_last_status(
             added[key] = added.get(key, 0) + value
         return added
 
+    # Runs still going are a gauge; everything counted is a run that has ended, so no counter
+    # can drop when a run finishes.
     expected: dict[str, dict[tuple[str, str], int]] = {
+        "udp_runs_running": {},
         "udp_runs_total": {},
         "udp_rows_extracted_total": {},
         "udp_rows_loaded_total": {},
@@ -115,15 +122,22 @@ def test_run_counts_add_up_and_each_dataset_has_exactly_one_last_status(
     }
     for total in snapshot.totals:
         key = (total.source, total.dataset)
+        ended = total.status != "running"
         for name, value in (
-            ("udp_runs_total", total.runs),
-            ("udp_rows_extracted_total", total.rows_extracted),
-            ("udp_rows_loaded_total", total.rows_loaded),
-            ("udp_rows_quarantined_total", total.rows_quarantined),
+            ("udp_runs_running", 0 if ended else total.runs),
+            ("udp_runs_total", total.runs if ended else 0),
+            ("udp_rows_extracted_total", total.rows_extracted if ended else 0),
+            ("udp_rows_loaded_total", total.rows_loaded if ended else 0),
+            ("udp_rows_quarantined_total", total.rows_quarantined if ended else 0),
         ):
             expected[name][key] = expected[name].get(key, 0) + value
     for name, counts in expected.items():
         assert per_dataset(name) == counts, name
+    assert {labels["status"] for labels, _ in samples.get("udp_runs_total", [])} <= {
+        "succeeded",
+        "failed",
+        "skipped",
+    }
 
     states: dict[tuple[str, str], dict[str, float]] = {}
     for labels, shown in samples.get("udp_last_run_status", []):
@@ -170,6 +184,7 @@ def test_a_known_snapshot_renders_the_expected_text() -> None:
         totals=(
             RunTotals("demo_csv", "customers", "succeeded", 2, 40, 40, 1),
             RunTotals("demo_csv", "customers", "failed", 1, 20, 0, 0),
+            RunTotals("demo_csv", "customers", "running", 1, 7, 7, 7),
         ),
         last_runs=(
             LastRun(
@@ -211,20 +226,23 @@ def test_a_known_snapshot_renders_the_expected_text() -> None:
         "by severity.\n"
         "# TYPE udp_quality_checks_failed gauge\n"
         'udp_quality_checks_failed{source="demo_csv",dataset="customers",severity="warn"} 1\n'
-        "# HELP udp_rows_extracted_total Rows read from the source, over every run of a dataset.\n"
+        "# HELP udp_rows_extracted_total Rows read from the source, over every ended run of a "
+        "dataset.\n"
         "# TYPE udp_rows_extracted_total counter\n"
         'udp_rows_extracted_total{source="demo_csv",dataset="customers"} 60\n'
-        "# HELP udp_rows_loaded_total Rows written to the dataset's table, over every run.\n"
+        "# HELP udp_rows_loaded_total Rows written to the dataset's table, over every ended run.\n"
         "# TYPE udp_rows_loaded_total counter\n"
         'udp_rows_loaded_total{source="demo_csv",dataset="customers"} 40\n'
-        "# HELP udp_rows_quarantined_total Rows set aside by quality checks, over every run of a "
-        "dataset.\n"
+        "# HELP udp_rows_quarantined_total Rows set aside by quality checks, over every ended run "
+        "of a dataset.\n"
         "# TYPE udp_rows_quarantined_total counter\n"
         'udp_rows_quarantined_total{source="demo_csv",dataset="customers"} 1\n'
-        "# HELP udp_runs_total Runs of a dataset, by status.\n"
+        "# HELP udp_runs_running Runs of a dataset still going.\n"
+        "# TYPE udp_runs_running gauge\n"
+        'udp_runs_running{source="demo_csv",dataset="customers"} 1\n'
+        "# HELP udp_runs_total Ended runs of a dataset, by how they ended.\n"
         "# TYPE udp_runs_total counter\n"
         'udp_runs_total{source="demo_csv",dataset="customers",status="failed"} 1\n'
-        'udp_runs_total{source="demo_csv",dataset="customers",status="running"} 0\n'
         'udp_runs_total{source="demo_csv",dataset="customers",status="skipped"} 0\n'
         'udp_runs_total{source="demo_csv",dataset="customers",status="succeeded"} 2\n'
     )
