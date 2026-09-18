@@ -582,3 +582,6 @@ while its section has no `built:` line.
 - db gate passed (53s): 36 passed, 505 deselected, 2 warnings in 42.88s
 - smoke gate passed (159s): /runs/01a0b3b1-cbaf-77bf-aabc-9ba35795d750: 0 errors (console, page, requests)
 - fast gate passed (49s): 497 passed, 44 deselected, 8 warnings in 40.23s
+- built: `./run` starts pytest as `python -m pytest`, because Windows Application Control blocked `.venv/Scripts/pytest.exe` mid-slice ("os error 4551") and stopped the db gate twice while the module form kept working.
+- built: the smoke was run again on the committed script — an earlier run of it had its every check pass and then died with a syntax error, because `run` was edited while the shell was still reading it.
+- built: pull request #1 proved the gates on a machine with no WSL: fast-gate 1m32s, the whole full gate 541 tests in 229.92s inside a 5m39s job, and the image built through `./run image`, all green on the fix batch.
