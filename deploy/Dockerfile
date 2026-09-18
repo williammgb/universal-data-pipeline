@@ -2,6 +2,8 @@ FROM ghcr.io/astral-sh/uv:0.12.5 AS uv
 
 # The dashboard is built here, so the machine running the build needs no Node of its own.
 FROM node:24.18.0-trixie-slim AS dashboard
+# The console check's browsers belong to the machine running the smoke, never to the image.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 WORKDIR /frontend
 COPY frontend/package.json frontend/package-lock.json frontend/.npmrc ./
 RUN npm ci

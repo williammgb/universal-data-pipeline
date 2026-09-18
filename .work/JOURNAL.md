@@ -535,3 +535,53 @@ while its section has no `built:` line.
 - fast gate passed (51s): 491 passed, 43 deselected, 8 warnings in 45.37s
 - smoke gate passed (133s): dashboard served at http://127.0.0.1:45463/assets/index-CujWnnVD.js
 - full gate passed (635s): 534 passed, 9 warnings in 574.15s (0:09:34)
+
+## Slice 9 — monitoring and CI/CD
+- you decided: metrics are served by the API at `/api/metrics` and made viewable by a pinned Prometheus container, checked in the smoke through Prometheus's query page, with no Grafana.
+- you decided: a pull request runs the whole full gate, big-volume tests included, and the image is built on every run and pushed to GitHub Container Registry only from main, tagged with the commit.
+- you decided: a branch may be pushed and a real pull request opened to prove the pull-request job passes.
+- you decided: `prometheus-client` (tests only) and `playwright` (dashboard development tool, browsers never downloaded in the image or CI) are approved, and `/api/metrics` stays out of the API's description so the dashboard's types do not change.
+- [F72] plan-check found: returned no journal lines (its reply was 17 characters) — read the reply, or relaunch it if it died
+- F72 rejected: plan-check did return, but through a hand-back message the journal hook cannot read; its one finding is recorded below as F75.
+- [F75] plan-check found: SPEC's constraint "docker is always wsl docker" contradicts the plan's engine switch, which runs plain docker on a CI runner without WSL, and the plan's SPEC updates did not revise that line.
+- F75 fixed: the SPEC constraint now says docker is WSL's on this machine and the machine's own where there is no WSL, which is what the engine switch does.
+- built: proved before building that `prometheus-client` 0.26.0's parser runs, `prom/prometheus:v3.14.0` pulls and starts, and headless chromium from `playwright` 1.63.0 loads a page from a WSL container port on 127.0.0.1 (200, "Welcome to nginx!") once a WSL session is held open.
+- fast gate failed (13s): Found 1 error in 1 file (checked 70 source files)
+- fast gate passed (138s): 497 passed, 44 deselected, 8 warnings in 119.85s (0:01:59)
+- db gate passed (116s): 36 passed, 505 deselected, 2 warnings in 82.02s (0:01:22)
+- smoke gate passed (260s): /runs/01a0ac59-6674-708b-8eca-905057c5c6ef: 0 console errors
+- built: `GET /api/metrics` turns three plain reads of the platform tables into Prometheus text — run counts by status, row counts, the newest run's time, duration and status, the newest success, failed checks by severity, and the version — with properties that parse it back with Prometheus's own parser; planting a missing newline escape, a dropped status and unsorted series each failed the property meant to catch it.
+- built: the smoke starts a pinned Prometheus that scrapes the api container, then asks Prometheus itself whether the api is up and has runs, and then opens all eight dashboard addresses in headless chromium, failing on any console error, page error, failed request or page still loading.
+- built: `./run` picks WSL's Docker where `wsl.exe` exists and the machine's own elsewhere, gains `./run image <tag>`, and CI now builds the image on every push, runs the whole full gate on pull requests and publishes the image to GitHub Container Registry from main.
+- fast gate passed (147s): 497 passed, 44 deselected, 8 warnings in 127.30s (0:02:07)
+- [F76] plan-drift found: returned no journal lines (its reply was 27 characters) — read the reply, or relaunch it if it died
+- F76 rejected: plan-drift did return, through a hand-back message the journal hook cannot read; it found all 17 changed files named in the plan, the three known deviations (`succeeded_at`, failed checks from the newest checked run, the v3.14.0 pin) as described, and no weakened test.
+- [F77] final-check found: returned no journal lines (its reply was 2513 characters) — read the reply, or relaunch it if it died
+- F77 rejected: final-check did return, through a hand-back message the journal hook cannot read; its verdict and findings are recorded below as F78–F85.
+- final-check verdict: FIX FIRST — 3 blocking
+- [F78] final-check found: the metrics query's newest-success subquery runs once per stored run and reads all of that dataset's runs each time, so a scrape grows with the square of run history and would pass Prometheus's 10s timeout within days on demo_csv's every-minute schedule.
+- [F79] final-check found: `udp_runs_total` is a counter, but its `running` series drops to 0 when each run finishes, so Prometheus sees a restart and `increase()` counts runs caught mid-run twice.
+- [F80] final-check found: the smoke's Prometheus query was changed after the only smoke run, so the committed `smoke_metrics` has never run.
+- [F81] final-check found: GitHub's standard runner for a private repository is likely 2 cores and 7 GB, not the four cores the plan assumed, so the 120-minute limit and the million-row tests' memory depend on pull request #1's run.
+- [F82] final-check found: a push to a branch with an open pull request runs the fast gate and the image build twice, once per event.
+- [F83] final-check found: the workflow puts the GitHub token and actor straight into the login script instead of passing them through `env`.
+- [F84] final-check found: `udp_last_run_status` can show skipped while a long run holds the dataset's lock, hiding the run still going.
+- [F85] final-check found: the console check calls failed requests and error responses "console errors" in its output line.
+- F78 fixed: the newest success is now its own grouped read, merged per dataset in Python, so a scrape reads the runs table a fixed number of times.
+- F79 fixed: `udp_runs_total` and the row counters count only ended runs (succeeded, failed, skipped), and runs still going are a new gauge `udp_runs_running`; the properties, the pinned example, the db test and SPEC say so.
+- F80 fixed: the smoke runs again after this fix batch, on the committed script.
+- F81 deferred: pull request #1's full-gate job measures time and memory on the real runner; if it cannot finish, the question comes back before the slice closes.
+- F81 fixed: pull request #1 measured it — the runner's full gate ran all 541 tests in 229.92s, the job took 5m13s of its 120-minute limit, and nothing ran out of memory, so the whole gate stays on pull requests.
+- F82 fixed: the workflow runs on pushes to main and on pull requests only, so an open pull request no longer runs every job twice.
+- F83 fixed: the token and actor reach the login step through `env`.
+- F84 fixed: the new `udp_runs_running` gauge shows a run still going whatever the newest run's status says.
+- F85 fixed: the console check's line now reads "N errors (console, page, requests)".
+- fast gate passed (153s): 497 passed, 44 deselected, 8 warnings in 129.79s (0:02:09)
+- full gate passed (972s): 541 passed, 9 warnings in 925.32s (0:15:25)
+- db gate failed (27s):   Caused by: An Application Control policy has blocked this file. (os error 4551)
+- db gate passed (53s): 36 passed, 505 deselected, 2 warnings in 42.88s
+- smoke gate passed (159s): /runs/01a0b3b1-cbaf-77bf-aabc-9ba35795d750: 0 errors (console, page, requests)
+- fast gate passed (49s): 497 passed, 44 deselected, 8 warnings in 40.23s
+- built: `./run` starts pytest as `python -m pytest`, because Windows Application Control blocked `.venv/Scripts/pytest.exe` mid-slice ("os error 4551") and stopped the db gate twice while the module form kept working.
+- built: the smoke was run again on the committed script — an earlier run of it had its every check pass and then died with a syntax error, because `run` was edited while the shell was still reading it.
+- built: pull request #1 proved the gates on a machine with no WSL: fast-gate 1m32s, the whole full gate 541 tests in 229.92s inside a 5m39s job, and the image built through `./run image`, all green on the fix batch.
