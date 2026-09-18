@@ -119,8 +119,8 @@
     {
       "id": 9,
       "name": "monitoring and CI/CD",
-      "state": "in-progress",
-      "commit": null,
+      "state": "done",
+      "commit": "b7b2dee",
       "checks": [
         { "claim": "platform metrics are exposed and viewable", "passes": true, "evidence": "./run fast: 497 passed, 44 deselected in 40.23s, including three properties that parse the rendered text with Prometheus's own parser (planting a missing newline escape, a dropped status and unsorted series each failed the property meant to catch it); ./run db: 36 passed, 505 deselected in 42.88s, with a scrape after a real run reporting udp_runs_total{status=\"succeeded\"} 1, udp_rows_loaded_total 2 and udp_quality_checks_failed{severity=\"warn\"} 1; ./run smoke exit 0: a real Prometheus answered up{job=\"udp\"} 1 and udp_runs_total > 0 with value \"2\" from 127.0.0.1:45473" },
         { "claim": "CI runs the full gate on pull requests and builds the images", "passes": true, "evidence": "pull request #1 (github.com/williammgb/universal-data-pipeline/pull/1): full-gate passed in 5m13s running 541 passed, 9 warnings in 229.92s on ubuntu-24.04 with no WSL, fast-gate passed in 1m56s and image passed in 34s building deploy/Dockerfile through ./run image; the push-to-main job then publishes ghcr.io/williammgb/universal-data-pipeline tagged with the commit" }
