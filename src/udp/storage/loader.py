@@ -293,11 +293,11 @@ class Loader(Protocol):
 
     def fail_run(
         self,
-        run_id: UUID,
+        run: RunStart,
         *,
         ended_at: datetime,
         rows_extracted: int | None,
         failure: RunFailure,
     ) -> None:
-        """Record a run as failed. Commits immediately."""
+        """Record a run as failed, writing its row if the run never got one. Commits at once."""
         ...

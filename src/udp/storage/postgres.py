@@ -463,24 +463,34 @@ class PostgresLoader:
 
     def fail_run(
         self,
-        run_id: UUID,
+        run: RunStart,
         *,
         ended_at: datetime,
         rows_extracted: int | None,
         failure: RunFailure,
     ) -> None:
+        # Written rather than updated: a run that failed before `start_run` ever ran has no row
+        # yet, and a failure nobody can see is the worst kind.
         updated = self._connection().execute(
-            "UPDATE platform.pipeline_runs SET status = 'failed', ended_at = %s, "
-            "rows_extracted = %s, error_class = %s, error_message = %s, error_traceback = %s "
-            "WHERE run_id = %s AND status = 'running'",
+            "INSERT INTO platform.pipeline_runs (run_id, source, dataset, trigger, status, "
+            "started_at, ended_at, rows_extracted, error_class, error_message, error_traceback) "
+            "VALUES (%s, %s, %s, %s, 'failed', %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (run_id) DO UPDATE SET status = 'failed', ended_at = EXCLUDED.ended_at, "
+            "rows_extracted = EXCLUDED.rows_extracted, error_class = EXCLUDED.error_class, "
+            "error_message = EXCLUDED.error_message, error_traceback = EXCLUDED.error_traceback "
+            "WHERE pipeline_runs.status = 'running'",
             [
+                run.run_id,
+                run.source,
+                run.dataset,
+                run.trigger,
+                run.started_at,
                 ended_at,
                 rows_extracted,
                 failure.error_class,
                 failure.message,
                 failure.traceback,
-                run_id,
             ],
         )
         if updated.rowcount != 1:
-            raise LoadError(f"run {run_id} is not a running run")
+            raise LoadError(f"run {run.run_id} has already ended")

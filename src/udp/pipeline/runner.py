@@ -76,9 +76,9 @@ def run_source(
         with structlog.contextvars.bound_contextvars(
             run_id=str(run_id), source=source, dataset=dataset.name
         ):
+            started_at = datetime.now(UTC)
+            run = RunStart(run_id, source, dataset.name, trigger, started_at)
             try:
-                started_at = datetime.now(UTC)
-                run = RunStart(run_id, source, dataset.name, trigger, started_at)
                 if not loader.lock_dataset(source, dataset.name):
                     loader.skip_run(run, ended_at=datetime.now(UTC))
                     log.warning(
@@ -138,9 +138,7 @@ def run_source(
                         rows_loaded=rows,
                     )
             except Exception as error:
-                outcomes.append(
-                    _record_failure(loader, run_id, dataset.name, counter, error, findings)
-                )
+                outcomes.append(_record_failure(loader, run, counter, error, findings))
                 continue
             finally:
                 if locked:
@@ -263,8 +261,7 @@ def _load_dataset(
 
 def _record_failure(
     loader: Loader,
-    run_id: UUID,
-    dataset: str,
+    run: RunStart,
     counter: RowCounter,
     error: Exception,
     findings: RunFindings,
@@ -285,11 +282,11 @@ def _record_failure(
     try:
         # The load was rolled back; what was quarantined and checked still explains the failure.
         with loader.transaction() as transaction:
-            transaction.record_findings(run_id, findings, ended_at)
+            transaction.record_findings(run.run_id, findings, ended_at)
     except Exception as recording_error:
         log.error("could not record the failed run's findings", error=str(recording_error))
     try:
-        loader.fail_run(run_id, ended_at=ended_at, rows_extracted=counter.rows, failure=failure)
+        loader.fail_run(run, ended_at=ended_at, rows_extracted=counter.rows, failure=failure)
     except Exception as recording_error:
         log.error("could not record the failed run", error=str(recording_error))
-    return RunOutcome(run_id, dataset, "failed", None)
+    return RunOutcome(run.run_id, run.dataset, "failed", None)

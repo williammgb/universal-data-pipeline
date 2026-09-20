@@ -1,7 +1,7 @@
 import re
 import threading
 from collections.abc import Callable, Iterator
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -21,6 +21,7 @@ from udp.config.source import load_source
 from udp.connectors import CONNECTORS
 from udp.connectors.base import ExtractRequest
 from udp.connectors.csv import CsvConnection, CsvConnector, CsvDataset
+from udp.errors import LoadError
 from udp.orchestration.scheduler import (
     RUNS_AT_ONCE,
     ScheduledDataset,
@@ -30,7 +31,7 @@ from udp.orchestration.scheduler import (
 )
 from udp.pipeline.runner import RunOutcome, run_source
 from udp.settings import Settings
-from udp.storage.loader import INTERRUPTED, RunStart
+from udp.storage.loader import INTERRUPTED, ConfigCopy, RunStart
 from udp.storage.postgres import PostgresLoader
 
 # --- the schedule check against a plain cron model --------------------------------------------
@@ -251,6 +252,66 @@ def _sources(root: Path, scheduled: frozenset[str] = frozenset()) -> Path:
 def _only(sources: Path, dataset: str) -> Any:
     config = load_source(sources, "shop", {})
     return config.model_copy(update={"datasets": [d for d in config.datasets if d.name == dataset]})
+
+
+# Where a run can fall over before it has a row of its own. "none" is the run that works.
+BREAKING_POINTS = ("lock_dataset", "skip_run", "start_run", "record_config", "load", "none")
+
+
+class BreakingLoader(MemoryLoader):
+    """A loader that fails at one chosen step, the way a database outage would."""
+
+    def __init__(self, breaks: str) -> None:
+        super().__init__()
+        self.breaks = breaks
+
+    def _maybe_break(self, step: str) -> None:
+        if self.breaks == step:
+            raise LoadError(f"the database refused {step}")
+
+    def lock_dataset(self, source: str, dataset: str) -> bool:
+        self._maybe_break("lock_dataset")
+        # The skip path only happens when another run holds the lock.
+        if self.breaks == "skip_run":
+            return False
+        return super().lock_dataset(source, dataset)
+
+    def skip_run(self, run: RunStart, *, ended_at: datetime) -> None:
+        self._maybe_break("skip_run")
+        super().skip_run(run, ended_at=ended_at)
+
+    def start_run(self, run: RunStart) -> None:
+        self._maybe_break("start_run")
+        super().start_run(run)
+
+    def record_config(self, copy: ConfigCopy) -> None:
+        self._maybe_break("record_config")
+        super().record_config(copy)
+
+    @contextmanager
+    def transaction(self) -> Iterator[Any]:
+        self._maybe_break("load")
+        with super().transaction() as transaction:
+            yield transaction
+
+
+@given(st.sampled_from(BREAKING_POINTS))
+def test_a_run_always_leaves_exactly_one_ended_row(
+    tmp_path_factory: pytest.TempPathFactory, breaks: str
+) -> None:
+    sources = _sources(tmp_path_factory.mktemp("breaking"))
+    loader = BreakingLoader(breaks)
+
+    (outcome,) = run_source("shop", _only(sources, "a"), sources, loader)
+
+    rows = [run for run in loader.runs.values() if run["run_id"] == outcome.run_id]
+    assert len(rows) == 1, f"{breaks} left {len(rows)} rows"
+    (row,) = rows
+    assert row["status"] in {"succeeded", "failed", "skipped"}, breaks
+    assert row["ended_at"] is not None, breaks
+    assert (row["source"], row["dataset"]) == ("shop", "a")
+    assert outcome.status == row["status"]
+    assert loader.locks == set()
 
 
 class ConnectorStartingARun(CsvConnector):

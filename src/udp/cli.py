@@ -10,6 +10,7 @@ import uvicorn
 
 from udp import __version__
 from udp.api.app import create_app
+from udp.api.auth import parse_keys
 from udp.api.catalog import PostgresCatalog
 from udp.config.secrets import read_environment
 from udp.config.source import load_source
@@ -98,12 +99,18 @@ def api(
     configure_logging()
     settings = Settings()  # type: ignore[call-arg]
     url = settings.database_url
+    keys = parse_keys(settings.api_keys)
+    if not keys:
+        structlog.get_logger(step="api").warning(
+            "no API key set; every address is open to anyone who can reach this port"
+        )
     web = create_app(
         PostgresCatalog(url),
         settings.sources_dir,
         read_environment(Path(".env")),
         lambda: PostgresLoader(url),
         dashboard,
+        keys,
     )
     handler = _StructlogHandler(logging.WARNING)
     for name in ("uvicorn", "uvicorn.error"):

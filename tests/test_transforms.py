@@ -312,6 +312,31 @@ def test_a_broken_transform_fails_naming_its_file(tmp_path: Path, case: str) -> 
     assert not (tmp_path / "shop" / "__pycache__").exists()
 
 
+def test_a_transform_that_outlives_its_budget_fails_the_run(tmp_path: Path) -> None:
+    slow = "import time\n\n\ndef transform(df, context):\n    time.sleep(0.05)\n    return df\n"
+    file = _transform_file(tmp_path / "shop", slow)
+
+    with pytest.raises(TransformError) as caught:
+        list(
+            apply_transform(
+                iter([ROWS, ROWS, ROWS]), load_transform(file), CONTEXT, file, time_limit=0.01
+            )
+        )
+
+    assert "took longer than 0s" in str(caught.value)
+    assert str(caught.value).startswith(f"{(tmp_path / 'shop' / 'transform.py').as_posix()}: ")
+
+
+def test_a_transform_inside_its_budget_is_left_alone(tmp_path: Path) -> None:
+    file = _transform_file(tmp_path / "shop", "def transform(df, context):\n    return df\n")
+
+    chunks = list(
+        apply_transform(iter([ROWS, ROWS]), load_transform(file), CONTEXT, file, time_limit=60)
+    )
+
+    assert [chunk.height for chunk in chunks] == [ROWS.height, ROWS.height]
+
+
 def test_the_error_from_a_raising_transform_keeps_the_users_line(tmp_path: Path) -> None:
     file = _transform_file(tmp_path, BROKEN["raises"][0])
 

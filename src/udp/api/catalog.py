@@ -5,12 +5,14 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date, datetime, time
 from decimal import Decimal
+from threading import Lock
 from typing import Any
 from uuid import UUID
 
 import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from udp import __version__
 from udp.api.metrics import LastRun, MetricsSnapshot, QualityFailures, RunTotals
@@ -98,18 +100,56 @@ def _columns(pairs: list[list[str]]) -> list[Column]:
     return [Column(name=name, type=kind) for name, kind in pairs]
 
 
+POOL_SIZE = 8
+POOL_WAIT_SECONDS = 5.0
+POOL_IDLE_SECONDS = 30.0
+
+
+def _utc(conn: psycopg.Connection[dict[str, Any]]) -> None:
+    """Every connection reads and writes times in UTC, however the server is set up."""
+    conn.execute("SET TIME ZONE 'UTC'")
+
+
 class PostgresCatalog:
-    """Opens one connection per call, so a request never waits on another's connection."""
+    """Reads through a small pool, opened on the first call and closed with the app.
+
+    Opening it lazily keeps `udp openapi` and the tests that never touch a database from
+    connecting to anything at all.
+    """
 
     def __init__(self, database_url: str) -> None:
         self._database_url = database_url
+        self._pool: ConnectionPool[psycopg.Connection[dict[str, Any]]] | None = None
+        self._opening = Lock()
+
+    def _ready(self) -> ConnectionPool[psycopg.Connection[dict[str, Any]]]:
+        with self._opening:
+            if self._pool is None:
+                self._pool = ConnectionPool(
+                    self._database_url,
+                    # Nothing is held while nothing is asked for: an idle API keeps no
+                    # connection, and a machine full of them has none to spare.
+                    min_size=0,
+                    max_size=POOL_SIZE,
+                    max_idle=POOL_IDLE_SECONDS,
+                    timeout=POOL_WAIT_SECONDS,
+                    open=False,
+                    kwargs={"autocommit": True, "connect_timeout": 3, "row_factory": dict_row},
+                    configure=_utc,
+                )
+                self._pool.open()
+            return self._pool
+
+    def close(self) -> None:
+        """Give back every connection; the next read opens the pool again."""
+        with self._opening:
+            pool, self._pool = self._pool, None
+        if pool is not None:
+            pool.close()
 
     @contextmanager
     def _connect(self) -> Iterator[psycopg.Connection[dict[str, Any]]]:
-        with psycopg.connect(
-            self._database_url, autocommit=True, connect_timeout=3, row_factory=dict_row
-        ) as conn:
-            conn.execute("SET TIME ZONE 'UTC'")
+        with self._ready().connection() as conn:
             yield conn
 
     def ping(self) -> None:

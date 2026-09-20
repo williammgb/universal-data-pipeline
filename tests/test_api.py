@@ -1,10 +1,13 @@
 import json
 import math
 from collections import Counter
-from contextlib import nullcontext
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
+from threading import Event
+from time import monotonic, sleep
 from typing import Any
 from urllib.parse import unquote
 from uuid import UUID, uuid4, uuid7
@@ -19,7 +22,7 @@ from hypothesis import strategies as st
 from prometheus_client.parser import text_string_to_metric_families
 from psycopg import sql
 
-from udp.api.app import create_app
+from udp.api.app import RUNS_QUEUED, create_app
 from udp.api.catalog import PostgresCatalog, json_value
 from udp.config.source import load_source
 from udp.pipeline.runner import run_source
@@ -78,9 +81,28 @@ def test_every_stored_value_becomes_strict_json_by_one_rule(value: Any) -> None:
 # --- routes that need no database ---------------------------------------------------------------
 
 
+OPENED: list[PostgresCatalog] = []
+SHARED: dict[str, tuple[TestClient, Any]] = {}
+
+
+@pytest.fixture(autouse=True)
+def _give_back_every_connection() -> Iterator[None]:
+    """A test that makes a catalog leaves its pool behind; Postgres only has so many clients."""
+    yield
+    SHARED.clear()
+    while OPENED:
+        OPENED.pop().close()
+
+
+def _catalog(url: str) -> PostgresCatalog:
+    catalog = PostgresCatalog(url)
+    OPENED.append(catalog)
+    return catalog
+
+
 def _client(sources: Path = SOURCES, loader: MemoryLoader | None = None) -> tuple[TestClient, Any]:
     app = create_app(
-        PostgresCatalog(UNREACHABLE), sources, {}, lambda: nullcontext(loader or MemoryLoader())
+        _catalog(UNREACHABLE), sources, {}, lambda: nullcontext(loader or MemoryLoader())
     )
     return TestClient(app), app
 
@@ -117,6 +139,67 @@ def test_health_is_unavailable_when_the_database_cannot_be_reached(
     response = client.get("/api/health")
 
     assert (response.status_code, response.json()) == (503, {"status": "unavailable"})
+
+
+def test_the_run_queue_is_capped_and_frees_up_again() -> None:
+    release = Event()
+
+    @contextmanager
+    def open_loader() -> Iterator[MemoryLoader]:
+        assert release.wait(10), "the blocked runs were never released"
+        yield MemoryLoader()
+
+    app = create_app(_catalog(UNREACHABLE), SOURCES, {}, open_loader)
+    client = TestClient(app)
+
+    accepted = [
+        client.post("/api/runs", json={"source": "demo_csv"}).status_code
+        for _ in range(RUNS_QUEUED)
+    ]
+    refused = client.post("/api/runs", json={"source": "demo_csv"})
+    release.set()
+
+    assert accepted == [202] * RUNS_QUEUED
+    assert refused.status_code == 429
+    assert "already waiting" in refused.json()["detail"]
+    deadline = monotonic() + 10
+    while app.state.queued and monotonic() < deadline:
+        sleep(0.05)
+    assert app.state.queued == 0
+    assert client.post("/api/runs", json={"source": "demo_csv"}).status_code == 202
+    app.state.runs.shutdown(wait=True)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/sources",
+        "/api/sources/demo_csv",
+        "/api/datasets",
+        "/api/datasets/demo_csv/customers",
+        "/api/datasets/demo_csv/customers/rows",
+        "/api/datasets/demo_csv/customers/quality",
+        "/api/runs",
+        "/api/runs/01a0a3de-9cb0-73ec-be37-1caa01588b64",
+    ],
+)
+def test_every_read_says_the_database_is_unavailable_without_leaking_the_connection(
+    monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    def refuse(*args: object, **kwargs: object) -> None:
+        raise psycopg.OperationalError(
+            f'connection failed: password authentication failed for user "udp" ({UNREACHABLE})'
+        )
+
+    for read in ("sources", "source", "datasets", "dataset", "rows", "quality", "runs", "run"):
+        monkeypatch.setattr(PostgresCatalog, read, refuse)
+    client, _ = _client()
+
+    response = client.get(path)
+
+    assert response.status_code == 503, path
+    assert response.json() == {"detail": "the platform database is unavailable"}
+    assert "udp" not in response.text and "127.0.0.1" not in response.text
 
 
 def test_metrics_are_unavailable_when_the_database_cannot_be_reached(
@@ -249,9 +332,7 @@ PATHS = st.builds(
 @given(PATHS)
 def test_any_address_gives_a_page_a_file_or_the_apis_own_404(tmp_path: Path, path: str) -> None:
     built = _dashboard(tmp_path)
-    app = create_app(
-        PostgresCatalog(UNREACHABLE), SOURCES, {}, lambda: nullcontext(MemoryLoader()), built
-    )
+    app = create_app(_catalog(UNREACHABLE), SOURCES, {}, lambda: nullcontext(MemoryLoader()), built)
 
     response = TestClient(app).get(f"/{path.lstrip('/')}")
 
@@ -271,9 +352,7 @@ def test_any_address_gives_a_page_a_file_or_the_apis_own_404(tmp_path: Path, pat
 def test_the_dashboards_own_files_and_addresses_are_served(tmp_path: Path) -> None:
     built = _dashboard(tmp_path)
     client = TestClient(
-        create_app(
-            PostgresCatalog(UNREACHABLE), SOURCES, {}, lambda: nullcontext(MemoryLoader()), built
-        )
+        create_app(_catalog(UNREACHABLE), SOURCES, {}, lambda: nullcontext(MemoryLoader()), built)
     )
 
     asset = client.get("/assets/app-x.js")
@@ -291,7 +370,7 @@ def test_the_dashboards_own_files_and_addresses_are_served(tmp_path: Path) -> No
 def test_without_a_built_dashboard_only_the_api_answers(tmp_path: Path) -> None:
     client = TestClient(
         create_app(
-            PostgresCatalog(UNREACHABLE),
+            _catalog(UNREACHABLE),
             SOURCES,
             {},
             lambda: nullcontext(MemoryLoader()),
@@ -310,7 +389,9 @@ def test_without_a_built_dashboard_only_the_api_answers(tmp_path: Path) -> None:
 # examples use up Windows' range of outgoing ports faster than it releases them ("Address
 # already in use" in the full gate). A pool is slice 10's job; until then these properties
 # run a fixed number of examples instead of the ci profile's 500.
-db_property = settings(max_examples=60, suppress_health_check=[HealthCheck.too_slow])
+# Back to a full run: these were capped at 60 while every call opened its own connection and
+# exhausted Windows' outgoing ports. The catalog now reads through a pool of 8.
+db_property = settings(max_examples=200, suppress_health_check=[HealthCheck.too_slow])
 
 
 def _url() -> str:
@@ -321,9 +402,17 @@ def _prefix() -> str:
     return f"api_{uuid4().hex[:10]}"
 
 
+def _shared_db_client() -> tuple[TestClient, Any]:
+    """One client for every example of a property: a pool per example runs Postgres out of
+    clients long before a property has finished generating."""
+    if "client" not in SHARED:
+        SHARED["client"] = _db_client()
+    return SHARED["client"]
+
+
 def _db_client(sources: Path = SOURCES) -> tuple[TestClient, Any]:
     url = _url()
-    app = create_app(PostgresCatalog(url), sources, {}, lambda: PostgresLoader(url))
+    app = create_app(_catalog(url), sources, {}, lambda: PostgresLoader(url))
     return TestClient(app), app
 
 
@@ -506,7 +595,7 @@ def test_dataset_search_finds_exactly_the_names_containing_the_text(
     with PostgresLoader(_url()) as loader:
         for source, dataset in datasets:
             _copy(loader, f"{prefix}_{source}", dataset)
-    client, _ = _db_client()
+    client, _ = _shared_db_client()
 
     found = client.get("/api/datasets", params={"q": q}).json()
 
@@ -587,7 +676,7 @@ def test_preview_pages_join_back_into_the_whole_table(
         with loader.transaction() as transaction:
             transaction.replace_table(table, iter([frame]))
         _copy(loader, source, "rows", ("k1", "k2") if keyed else (), table)
-    client, _ = _db_client()
+    client, _ = _shared_db_client()
 
     pages = []
     offset = 0
@@ -687,9 +776,9 @@ def test_run_filters_and_pages_match_a_simple_model(
                     )
             if item["status"] == "failed":
                 failure = RunFailure("ExtractError", "file not found", "Traceback ...")
-                loader.fail_run(run.run_id, ended_at=ended_at, rows_extracted=0, failure=failure)
+                loader.fail_run(run, ended_at=ended_at, rows_extracted=0, failure=failure)
             created.append((run, item["status"]))
-    client, _ = _db_client()
+    client, _ = _shared_db_client()
     source = f"{prefix}_{query['source']}"
     expected = sorted(
         (

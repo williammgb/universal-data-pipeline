@@ -8,3 +8,5 @@ class Settings(BaseSettings):
 
     database_url: str
     sources_dir: Path = Path("sources")
+    # Comma-separated; empty means the API is open, which it says once at startup.
+    api_keys: str = ""

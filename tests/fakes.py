@@ -281,7 +281,11 @@ class MemoryLoader:
         return len(interrupted)
 
     def start_run(self, run: RunStart) -> None:
-        self.runs[run.run_id] = {
+        self.runs[run.run_id] = self._running_row(run)
+
+    @staticmethod
+    def _running_row(run: RunStart) -> dict[str, Any]:
+        return {
             "run_id": run.run_id,
             "source": run.source,
             "dataset": run.dataset,
@@ -316,15 +320,19 @@ class MemoryLoader:
 
     def fail_run(
         self,
-        run_id: UUID,
+        start: RunStart,
         *,
         ended_at: datetime,
         rows_extracted: int | None,
         failure: RunFailure,
     ) -> None:
-        run = self.runs.get(run_id)
-        if run is None or run["status"] != "running":
-            raise LoadError(f"run {run_id} is not a running run")
+        run = self.runs.get(start.run_id)
+        if run is None:
+            # A run that failed before start_run still gets its row: Postgres writes one in the
+            # same statement, so this must not go back through start_run.
+            run = self.runs.setdefault(start.run_id, self._running_row(start))
+        elif run["status"] != "running":
+            raise LoadError(f"run {start.run_id} has already ended")
         run.update(
             status="failed",
             ended_at=ended_at,

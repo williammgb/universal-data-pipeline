@@ -121,11 +121,11 @@ def test_api_command_serves_the_built_dashboard_on_localhost_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict[str, object]] = []
-    dashboards: list[object] = []
+    served: list[tuple[object, ...]] = []
     monkeypatch.setattr("udp.cli.uvicorn.run", lambda app, **options: calls.append(options))
 
     def remember(*args: object) -> FastAPI:
-        dashboards.append(args[-1])
+        served.append(args)
         return FastAPI()
 
     monkeypatch.setattr("udp.cli.create_app", remember)
@@ -136,7 +136,27 @@ def test_api_command_serves_the_built_dashboard_on_localhost_by_default(
     assert result.exit_code == 0, result.output
     ((options),) = calls
     assert (options["host"], options["port"]) == ("127.0.0.1", 8000)
-    assert dashboards == [Path("frontend/dist")]
+    ((*_, dashboard, keys),) = served
+    assert dashboard == Path("frontend/dist")
+    assert keys == ()
+
+
+def test_the_api_command_passes_on_the_configured_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    served: list[tuple[object, ...]] = []
+    monkeypatch.setattr("udp.cli.uvicorn.run", lambda app, **options: None)
+
+    def remember(*args: object) -> FastAPI:
+        served.append(args)
+        return FastAPI()
+
+    monkeypatch.setattr("udp.cli.create_app", remember)
+    env = {"UDP_DATABASE_URL": UNREACHABLE_DATABASE, "UDP_API_KEYS": " one , two ,,"}
+
+    result = CliRunner().invoke(app, ["api"], env=env)
+
+    assert result.exit_code == 0, result.output
+    ((*_, keys),) = served
+    assert keys == ("one", "two")
 
 
 def test_openapi_command_prints_the_api_description_without_a_database() -> None:

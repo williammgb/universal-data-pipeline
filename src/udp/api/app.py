@@ -1,19 +1,22 @@
 """The HTTP API: dataset discovery, previews, quality, run history, and starting runs by hand."""
 
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Lock
 from typing import Annotated, Any
 from uuid import UUID
 
+import psycopg
 import structlog
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from pydantic import AwareDatetime
 
+from udp.api.auth import accepted, needs_a_key, presented
 from udp.api.catalog import PostgresCatalog
 from udp.api.metrics import CONTENT_TYPE, render
 from udp.api.models import (
@@ -40,6 +43,8 @@ from udp.storage.loader import Loader
 
 log = structlog.get_logger(step="api")
 
+RUNS_QUEUED = 16
+
 Limit = Annotated[int, Query(ge=1, le=500)]
 Offset = Annotated[int, Query(ge=0)]
 
@@ -50,12 +55,14 @@ def create_app(
     env: Mapping[str, str],
     open_loader: Callable[[], AbstractContextManager[Loader]],
     dashboard_dir: Path | None = None,
+    api_keys: Sequence[str] = (),
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
         # Runs cut off here are marked Interrupted by the next run of their dataset.
         app.state.runs.shutdown(wait=False, cancel_futures=True)
+        catalog.close()
 
     app = FastAPI(
         title="Universal data platform",
@@ -65,6 +72,20 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.runs = ThreadPoolExecutor(RUNS_AT_ONCE, thread_name_prefix="api-run")
+    # Runs accepted but not finished. Without a cap, a caller in a loop can queue thousands,
+    # and the API would keep saying yes long after nothing can be run.
+    app.state.queued = 0
+    app.state.queue = Lock()
+
+    # Registered before the request log, so the log sits outside it and a refusal is logged
+    # like any other answer. With no keys configured every address stays open.
+    @app.middleware("http")
+    async def check_the_key(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        if needs_a_key(request.url.path) and not accepted(api_keys, presented(request.headers)):
+            return JSONResponse({"detail": "an API key is required"}, status_code=401)
+        return await call_next(request)
 
     @app.middleware("http")
     async def log_request(
@@ -80,6 +101,13 @@ def create_app(
             duration_ms=round((time.perf_counter() - started) * 1000, 1),
         )
         return response
+
+    # The database being unreachable is an answer, not a crash — and the connection string
+    # never reaches the caller, because it carries the password.
+    @app.exception_handler(psycopg.Error)
+    def database_unavailable(request: Request, error: Exception) -> JSONResponse:
+        log.warning("database unavailable", path=request.url.path, error=type(error).__name__)
+        return JSONResponse({"detail": "the platform database is unavailable"}, status_code=503)
 
     def found[T](value: T | None, what: str) -> T:
         if value is None:
@@ -165,6 +193,17 @@ def create_app(
                 run_source(source, config, sources_dir, loader, trigger="manual")
         except Exception as error:
             log.error("run started over the API could not run", source=source, error=repr(error))
+        finally:
+            with app.state.queue:
+                app.state.queued -= 1
+
+    def take_a_place() -> bool:
+        """Claim one of the queue's places, or say the queue is full."""
+        with app.state.queue:
+            if app.state.queued >= RUNS_QUEUED:
+                return False
+            app.state.queued += 1
+            return True
 
     @app.post("/api/runs", status_code=202)
     def start_run(request: RunRequest) -> RunAccepted:
@@ -184,6 +223,8 @@ def create_app(
                     404, f"dataset '{request.dataset}' is not in source '{request.source}'"
                 )
             config = config.model_copy(update={"datasets": chosen})
+        if not take_a_place():
+            raise HTTPException(429, f"{RUNS_QUEUED} runs are already waiting; try again later")
         requested_at = datetime.now(UTC)
         app.state.runs.submit(run_in_background, request.source, config)
         log.info("run requested", source=request.source, dataset=request.dataset)

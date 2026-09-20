@@ -11,6 +11,7 @@ import type {
   RunsPage,
   SourceItem,
 } from "../api/client";
+import { rememberKey } from "../api/key";
 import App from "../App";
 
 const SOURCES: SourceItem[] = [
@@ -326,6 +327,20 @@ describe("the dashboard", () => {
     expect(await screen.findByText("ExtractError")).toBeTruthy();
     expect(asked.some((call) => call.includes("since="))).toBe(false);
     expect(asked.some((call) => call.includes("status=failed"))).toBe(true);
+  });
+
+  it("asks for an API key when the API refuses the request", async () => {
+    window.localStorage.setItem("udp.apiKey", "wrong");
+    serve({
+      "GET /api/datasets": { body: { detail: "an API key is required" }, status: 401 },
+      "GET /api/sources": { body: SOURCES },
+    });
+
+    show("/");
+
+    expect(await screen.findByLabelText("API key")).toBeTruthy();
+    expect(window.localStorage.getItem("udp.apiKey")).toBe(null);
+    rememberKey("");
   });
 
   it("shows what the API said when it cannot answer", async () => {
