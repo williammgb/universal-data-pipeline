@@ -8,7 +8,11 @@ if (!base) {
   process.exit(2);
 }
 
-const latest = await fetch(`${base}/api/runs?limit=1`).then((response) => response.json());
+// The API may need a key; the browser reads it from storage the way a person's browser would.
+const key = process.env.UDP_API_KEY ?? "";
+const latest = await fetch(`${base}/api/runs?limit=1`, {
+  headers: key ? { "X-API-Key": key } : {},
+}).then((response) => response.json());
 const runId = latest.runs?.[0]?.run_id;
 if (!runId) {
   console.error("no run to open: the smoke loads the demo sources before this check");
@@ -32,6 +36,11 @@ let failed = false;
 try {
   for (const address of addresses) {
     const page = await browser.newPage();
+    if (key) {
+      await page.addInitScript((stored) => {
+        window.localStorage.setItem("udp.apiKey", stored);
+      }, key);
+    }
     const problems = [];
     page.on("console", (message) => {
       if (message.type() === "error") problems.push(`console: ${message.text()}`);

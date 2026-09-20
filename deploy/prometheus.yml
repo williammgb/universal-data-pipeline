@@ -5,5 +5,8 @@ global:
 scrape_configs:
   - job_name: udp
     metrics_path: /api/metrics
+    # The metrics need the API key like every other /api address; the file holds only the key.
+    authorization:
+      credentials_file: /etc/prometheus/api.key
     static_configs:
       - targets: ["api:8000"]

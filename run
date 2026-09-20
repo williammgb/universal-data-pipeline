@@ -57,6 +57,7 @@ usage: ./run <task> [args]
   full    the full gate — real size, real dependencies, allowed to be slow
   smoke   start the real entrypoint and prove it comes up
   image   build the container image:  ./run image <tag>
+  memory  load five million rows in a container and print its peak memory (not a gate)
   check   syntax or lint one file:  ./run check path/to/file
 USAGE
 }
@@ -73,6 +74,7 @@ stack_api_port=
 stack_http_port=
 stack_prom_port=
 stack_password=
+stack_key=
 
 # The Docker engine: inside WSL on this Windows machine, the machine's own on a Linux CI runner.
 # Decided once here, so the gate a person runs is the same gate a pull request runs.
@@ -82,8 +84,9 @@ compose() {
   $engine env POSTGRES_PASSWORD="$stack_password" UDP_PG_PORT="$stack_port" \
     UDP_SOURCE_PG_PORT="$stack_source_port" UDP_MOCK_API_PORT="$stack_api_port" \
     UDP_API_PORT="${stack_http_port:-8000}" UDP_PROM_PORT="${stack_prom_port:-9090}" \
+    UDP_API_KEYS="${UDP_API_KEYS:-}" \
     docker compose -p "$stack_project" -f deploy/compose.yaml \
-    --profile app --profile demo --profile monitoring "$@"
+    --profile app --profile demo --profile monitoring --profile scale "$@"
 }
 
 # WSL shuts the distro down about 15 seconds after the last wsl.exe command ends,
@@ -115,6 +118,14 @@ stack_start() {
   stack_http_port=${5:-}
   stack_prom_port=${6:-}
   stack_password=$(od -An -N12 -tx1 /dev/urandom | tr -d ' \n')
+  # One API key per stack, made the same way as the password and never written down anywhere
+  # but the file Prometheus reads. No trailing newline: Prometheus sends the file as it is.
+  stack_key=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
+  mkdir -p .work/gates
+  printf '%s' "$stack_key" > .work/gates/api.key
+  UDP_API_KEYS=$stack_key
+  UDP_API_KEY=$stack_key
+  export UDP_API_KEYS UDP_API_KEY
   # 127.0.0.1, not localhost: from Windows, localhost tries IPv6 first, and IPv6
   # to a port published inside WSL hangs for two minutes instead of being refused.
   UDP_DATABASE_URL="postgresql://udp:$stack_password@127.0.0.1:$stack_port/udp"
@@ -205,7 +216,13 @@ smoke_sources() {
   for source in $SMOKE_SOURCES; do
     uv run --locked udp run "$source" || return
   done
-  smoke_scheduler && smoke_api && smoke_dashboard && smoke_metrics && smoke_console && smoke_hold
+  smoke_scheduler && smoke_api && smoke_dashboard && smoke_metrics && smoke_console &&
+    smoke_backup && smoke_hold
+}
+
+# Everything under /api needs the stack's key; the dashboard's own pages and files do not.
+api_curl() {
+  curl -H "X-API-Key: $stack_key" "$@"
 }
 
 # The dashboard must come back from the same address as the API: its own addresses answer with
@@ -219,7 +236,7 @@ smoke_dashboard() {
   curl -fsS -o /dev/null "$base$asset" || return
   curl -fsS "$base/datasets/demo_csv/customers" | grep -q 'id="root"' ||
     { echo "a dataset address does not return the dashboard"; return 1; }
-  curl -s -o /dev/null -w '%{http_code}' "$base/api/nope" | grep -q '^404$' ||
+  api_curl -s -o /dev/null -w '%{http_code}' "$base/api/nope" | grep -q '^404$' ||
     { echo "an unknown api address is not a 404"; return 1; }
   echo "dashboard served at $base$asset"
 }
@@ -227,7 +244,7 @@ smoke_dashboard() {
 # The api's metrics must be Prometheus text, and a real Prometheus must scrape them: its own
 # query page has to report the api target up and return at least one run series.
 smoke_metrics() {
-  metrics=$(curl -fsS "http://127.0.0.1:$stack_http_port/api/metrics") || return
+  metrics=$(api_curl -fsS "http://127.0.0.1:$stack_http_port/api/metrics") || return
   for name in udp_build_info 'udp_runs_total{'; do
     printf '%s' "$metrics" | grep -qF "$name" || { echo "the metrics have no $name"; return 1; }
   done
@@ -258,6 +275,43 @@ smoke_console() {
   node frontend/e2e/console-check.mjs "http://127.0.0.1:$stack_http_port"
 }
 
+# A backup nobody has restored is a hope, not a backup. The platform database is dumped,
+# restored into a second database beside it, compared row for row, and then run against: an
+# unchanged file must load nothing, which only holds if the saved state came back too.
+smoke_backup() {
+  # MSYS_NO_PATHCONV: without it Git Bash turns the container's /tmp path into a Windows one.
+  dump=/tmp/udp-smoke.dump
+  psql="compose exec -T postgres psql -U udp -tAX"
+  MSYS_NO_PATHCONV=1 compose exec -T postgres pg_dump -U udp -Fc -f "$dump" udp || return
+  $psql -d postgres -c 'DROP DATABASE IF EXISTS udp_restored' > /dev/null || return
+  $psql -d postgres -c 'CREATE DATABASE udp_restored OWNER udp' > /dev/null || return
+  MSYS_NO_PATHCONV=1 compose exec -T postgres pg_restore -U udp -d udp_restored "$dump" || return
+  runs_query="SELECT count(*) FROM platform.pipeline_runs"
+  rows_query="SELECT md5(string_agg(t::text, ',' ORDER BY t::text)) FROM datasets.demo_csv__customers AS t"
+  for query in "$runs_query" "$rows_query"; do
+    before=$($psql -d udp -c "$query") || return
+    after=$($psql -d udp_restored -c "$query") || return
+    [ "$before" = "$after" ] || {
+      echo "the restored database disagrees: '$before' became '$after'"
+      return 1
+    }
+    echo "restored and matching: $before"
+  done
+  # The restored copy is a working platform, not only a pile of rows.
+  restored_run=$(UDP_DATABASE_URL="postgresql://udp:$stack_password@127.0.0.1:$stack_port/udp_restored" \
+    uv run --locked udp run demo_csv 2>&1) || {
+    printf '%s\n' "$restored_run"
+    echo "a run against the restored database failed"
+    return 1
+  }
+  printf '%s\n' "$restored_run"
+  printf '%s' "$restored_run" | grep -q 'file unchanged, skipped' &&
+    printf '%s' "$restored_run" | grep -q '"rows_loaded": 0' || {
+    echo "the run against the restored database did not skip the unchanged file"
+    return 1
+  }
+}
+
 # With SMOKE_HOLD=1 the stack stays up so the pages can be opened with the browser tool.
 smoke_hold() {
   [ "${SMOKE_HOLD:-}" = "1" ] || return 0
@@ -277,17 +331,20 @@ smoke_hold() {
 smoke_api() {
   compose build api && compose up -d --wait api || { compose logs api; return 1; }
   base="http://127.0.0.1:$stack_http_port/api"
+  # The health check is the one address left open, because the container's own probe uses it.
   curl -fsS "$base/health" && echo || return
-  curl -fsS "$base/datasets?q=demo_" | grep -q '"dataset":"customers"' ||
+  curl -s -o /dev/null -w '%{http_code}' "$base/datasets" | grep -q '^401$' ||
+    { echo "the api answered a request that carried no key"; return 1; }
+  api_curl -fsS "$base/datasets?q=demo_" | grep -q '"dataset":"customers"' ||
     { echo "the api does not list demo_csv customers"; return 1; }
-  curl -fsS -o /dev/null "$base/docs" || return
-  accepted=$(curl -fsS -X POST -H 'Content-Type: application/json' \
+  api_curl -fsS -o /dev/null "$base/docs" || return
+  accepted=$(api_curl -fsS -X POST -H 'Content-Type: application/json' \
     -d '{"source":"demo_excel"}' "$base/runs") || return
   echo "$accepted"
   requested=$(printf '%s' "$accepted" | sed -n 's/.*"requested_at":"\([^"]*\)".*/\1/p')
   deadline=$(( $(date +%s) + 60 ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    runs=$(curl -fsS -G "$base/runs" --data-urlencode "source=demo_excel" \
+    runs=$(api_curl -fsS -G "$base/runs" --data-urlencode "source=demo_excel" \
       --data-urlencode "trigger=manual" --data-urlencode "since=$requested") || return
     case "$runs" in
       *'"status":"succeeded"'*) printf '%s\n' "$runs" | cut -c1-400; return 0 ;;
@@ -319,6 +376,32 @@ smoke_scheduler() {
   return 1
 }
 
+# Not a gate, and never in one: loads five million rows inside the app image with a memory
+# limit and reads the container's own peak, because Python cannot see what Polars allocates
+# natively and Windows has no portable peak-memory reading. Run by hand, once per milestone.
+MEMORY_LIMIT_BYTES=1073741824
+
+memory_run() {
+  rows=${1:-5000000}
+  mkdir -p .work/gates .work/scale
+  log=.work/gates/memory.log
+  code=0
+  uv run --locked python tests/scale_csv.py .work/scale "$rows" &&
+    stack_start udp-memory 45435 &&
+    migrate &&
+    compose build scale-load &&
+    { compose run --rm --entrypoint sh scale-load -c \
+      'udp run scale_csv --full-refresh; ran=$?; echo "peak_bytes $(cat /sys/fs/cgroup/memory.peak)"; exit $ran' \
+      && echo 0 > "$log.code" || echo $? > "$log.code"; } 2>&1 | tee "$log"
+  code=$(cat "$log.code" 2>/dev/null || echo 1)
+  stack_stop || true
+  peak=$(grep 'peak_bytes' "$log" | tail -n 1 | tr -dc '0-9')
+  [ -n "$peak" ] || { echo "the container printed no peak memory"; return 1; }
+  echo "peak memory: $(( peak / 1024 / 1024 )) MiB loading $rows rows (limit $(( MEMORY_LIMIT_BYTES / 1024 / 1024 )) MiB)"
+  [ "$code" -eq 0 ] || return "$code"
+  [ "$peak" -le "$MEMORY_LIMIT_BYTES" ] || { echo "over the memory target"; return 1; }
+}
+
 smoke_gate() {
   code=0
   stack_start udp-smoke 45433 45443 45453 45463 45473 &&
@@ -348,6 +431,7 @@ case "$task" in
   db)    gate db db_gate "$@" ;;
   full)  gate full full_gate "$@" ;;
   smoke) gate smoke smoke_gate ;;
+  memory) memory_run "$@" ;;
   check)
     case "${1:-}" in
       *.py) uv run --locked ruff check "$1" ;;

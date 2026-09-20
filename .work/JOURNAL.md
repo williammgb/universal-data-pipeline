@@ -584,4 +584,76 @@ while its section has no `built:` line.
 - fast gate passed (49s): 497 passed, 44 deselected, 8 warnings in 40.23s
 - built: `./run` starts pytest as `python -m pytest`, because Windows Application Control blocked `.venv/Scripts/pytest.exe` mid-slice ("os error 4551") and stopped the db gate twice while the module form kept working.
 - built: the smoke was run again on the committed script — an earlier run of it had its every check pass and then died with a syntax error, because `run` was edited while the shell was still reading it.
-- built: pull request #1 proved the gates on a machine with no WSL: fast-gate 1m32s, the whole full gate 541 tests in 229.92s inside a 5m39s job, and the image built through `./run image`, all green on the fix batch.
+- built: pull request #1 proved the gates on a machine with no WSL (see the slice 10 heading below for what was decided next): fast-gate 1m32s, the whole full gate 541 tests in 229.92s inside a 5m39s job, and the image built through `./run image`, all green on the fix batch.
+
+## Slice 10 — production hardening
+- [F86] designer found: returned no journal lines (its reply was 63 characters) — read the reply, or relaunch it if it died
+- F86 rejected: the designer did return, through a hand-back message the journal hook cannot read; its plan is saved as `.work/PLAN.md` and its choices are below. (An earlier launch of it died on a session rate limit and was relaunched, which is why this slice has one designer run, not two.)
+- designer plan: slice 10 — production hardening
+- designer chose: the API key is checked in one piece of middleware over everything under /api except the health check, so the API's published description, and with it the dashboard's generated types, stay untouched.
+- designer chose: with no key configured the API stays open and warns once at startup, so existing tests, `udp openapi` and local development keep working.
+- designer chose: the five-million-row memory claim is measured inside a memory-limited container by reading the container's own peak usage, in a command run by hand rather than in a gate.
+- designer chose: recording a failed run becomes an insert-or-update, so a run that died before it was ever written still leaves exactly one row.
+- designer chose: the API's reads move to a connection pool, which also removes the reason the three database properties were capped at 60 examples.
+- designer chose: backup and restore is proven by restoring into a second database and running a load against the restored copy, which shows the saved state came back and not only the rows.
+- designer ruled out: per-route dependencies with a declared security scheme for the API key, because that rewrites the generated types to say one thing.
+- designer ruled out: abandoning a worker thread to enforce the transform time limit, because it trades a rare hang for a thread that can keep the process from exiting.
+- designer ruled out: measuring memory in-process on Windows, because Python's own accounting cannot see what Polars allocates natively.
+- you decided: the API key covers every address under `/api` except the health check, so the dashboard holds a key and Prometheus scrapes with one.
+- you decided: with no key configured the API stays open and says so once at startup.
+- you decided: a `transform.py` that runs past its time budget fails the run, checked around each chunk, rather than being abandoned on a side thread.
+- you decided: the five-million-row memory claim is proved by a separate `./run memory` command run on this machine, not by the pull-request gate.
+- you decided: backup and restore is proved in the smoke, by restoring the dump into a second database and running against it.
+- you decided: slice 10 lands as two commits on one branch — the auth and robustness work, then the operations work and the documents.
+- you decided: with a connection pool the three database properties run 200 examples again.
+- you decided: `psycopg`'s pool extra is approved as a dependency.
+- built: `./run memory` writes a five-million-row CSV, loads it inside the app image and reads the container's own peak: 5,000,000 rows extracted and loaded with a peak of 946 MiB, under the 1 GiB target by 8%.
+- built: every compose service carries a cpu and memory limit, with the pipeline's own set just above the measured peak, so a runaway container cannot take the machine down.
+- built: a failed run is now written rather than updated, so a run that died before it was ever recorded still leaves exactly one ended row; a property that breaks the lock, the skip, the start, the config copy or the load proves it, and it caught the fake loader writing no row at all in that case.
+- built: the API reads through a connection pool that holds nothing while idle, answers 503 with a fixed message when the database is unreachable (never the connection string), caps the queue at 16 waiting runs with a 429 past that, and the three database properties are back to 200 examples from 60.
+- built: a `transform.py` that runs past fifteen minutes fails its run, checked around every chunk, because it holds its dataset's lock while it works.
+- built: the API takes keys from `UDP_API_KEYS` and checks them in one piece of middleware over everything under `/api` except the health check, comparing bytes in constant time; with no key set it stays open and says so at startup, and the API's description is unchanged either way.
+- built: the dashboard keeps a key in the browser, sends it with every request, clears it when the API refuses one and asks for another; the smoke's headless browser carries the stack's key the same way, and a call without a key is checked to come back 401.
+- built: the smoke now dumps the platform database, restores it into a second database, compares the run count and the table's contents, and runs demo_csv against the restored copy, which skipped the unchanged file and loaded 0 rows.
+- built: a README that explains the platform and its commands, and `docs/adding-a-source.md`, a walkthrough of a source folder from the connection to the checks, the transform and what the errors mean.
+- [F87] plan-check found: returned no journal lines (its reply was 38 characters) — read the reply, or relaunch it if it died
+- F87 rejected: plan-check did return, through a hand-back message the journal hook cannot read; it checked fifteen claims against the spec and found no contradiction, noting only that the plan's prose says "five deferred items" while listing four, because it counts API keys under the ledger checks instead.
+- fast gate failed (134s): 1 failed, 517 passed, 45 deselected, 8 warnings in 122.10s (0:02:02)
+- fast gate passed (129s): 519 passed, 45 deselected, 8 warnings in 117.65s (0:01:57)
+- db gate failed (189s): 10 failed, 4 passed, 527 deselected, 2 warnings, 23 errors in 159.86s (0:02:39)
+- db gate passed (156s): 37 passed, 527 deselected, 2 warnings in 128.58s (0:02:08)
+- smoke gate failed (214s): pg_dump: error: could not open output file "C:/Users/Willi/AppData/Local/Temp/udp-smoke.dump": No such file or directory
+- smoke gate passed (192s): {"step": "run", "status": "succeeded", "rows_extracted": 0, "rows_loaded": 0, "event": "run finished", "source": "demo_csv", "run_id": "01a0c095-2173-7545-9e54-
+- fast gate failed (0s): 1 file would be reformatted, 82 files already formatted
+- fast gate passed (79s): 519 passed, 45 deselected, 8 warnings in 69.17s (0:01:09)
+- [F88] edge-hunter found: returned no journal lines (its reply was 48 characters) — read the reply, or relaunch it if it died
+- F88 rejected: edge-hunter did return, through a hand-back message the journal hook cannot read; its three findings are recorded below as F89–F91.
+- [F89] edge-hunter found: an `Authorization: Bearer  key` header with two spaces gives a key with a space in front of it, so a correct key is refused with 401.
+- [F90] edge-hunter found: the 900-second transform budget is checked between chunks, so a transform that never returns from one chunk still holds its dataset's lock forever — which is what the comment beside the limit claimed it prevented.
+- [F91] edge-hunter found: a key containing a comma is split into fragments by `parse_keys`, so that key can never be presented successfully.
+- F89 fixed: the key taken from a Bearer header is trimmed, and a test presents "Bearer  spaced " and a header with nothing but spaces.
+- F90 rejected: stopping a transform mid-chunk needs a worker thread nobody can safely abandon, which is the trade-off decided before building; the comment beside the limit now says plainly that a transform which never returns from one chunk still hangs its run.
+- F91 rejected: commas separate keys, so a key cannot contain one; `./run` mints hex keys, the README now says so for keys made by hand, and the rule is in the function's own description.
+- [F92] final-check found: returned no journal lines (its reply was 280 characters) — read the reply, or relaunch it if it died
+- full gate failed (659s): 1 failed, 563 passed, 9 warnings in 637.87s (0:10:37)
+- F92 rejected: final-check did return, through a hand-back message the journal hook cannot read; its verdict and findings are recorded below as F93–F99.
+- final-check verdict: FIX FIRST — 2 blocking
+- [F93] final-check found: the CLI test asserting no keys are passed on reads whatever `UDP_API_KEYS` the environment holds, and `./run` now exports one for every stack, so the full gate fails on it — which it then did, here and on the pull request.
+- [F94] final-check found: the promised database test that every read answers 503 while the database is unreachable landed as a fast test that replaces the catalog's methods, so the real connection pool is never driven at a database that is not there.
+- [F95] final-check found: the pool keeps a connection for up to 30 seconds without checking it, so a database that goes away and comes back inside that window costs the next request one 503; that is neither written down nor tested.
+- [F96] final-check found: the smoke's restore check looked only for `"rows_loaded": 0` and dropped the run's exit code, rather than the `file unchanged, skipped` line the plan promised.
+- [F97] final-check found: `./run memory` used a test that exits the whole script under `set -eu` when the result file is missing, before printing the peak and before stopping the stack.
+- [F98] final-check found: `frontend/src/api/client.ts` carried four hunks of unrelated reformatting in a file a reviewer has to read for the key change.
+- [F99] final-check found: the done-means line asking for `compose config` to show a limit under every service has no evidence line, though every service does carry one when the file is read.
+- F93 fixed: the test spells out an empty `UDP_API_KEYS` instead of inheriting the machine's, so it asks what it means to ask.
+- F94 fixed: a database test now points a real catalog at a real server with no such database — which answers at once, unlike a closed port on Windows — and every read, the health check and the metrics answer 503 without naming the database.
+- F95 fixed: SPEC now says the pool holds a connection up to 30 seconds unchecked and what that costs after a short outage.
+- F96 fixed: the smoke keeps the run's output, fails when the run fails, and checks for both `file unchanged, skipped` and `"rows_loaded": 0`.
+- F97 fixed: `./run memory` reads the result file the way the gates do, so a missing one is a failure rather than a silent exit.
+- F98 fixed: the three reformatted blocks in the dashboard's client are back as they were, leaving only the key changes in that file.
+- F99 fixed: the ledger's evidence for resource limits quotes `compose config` rather than the file.
+- built: after the reviews — the Bearer header is trimmed, a key may not contain a comma (said in the README and the code), no cpu limit is above 2 because Docker refuses a limit larger than the machine and the CI runner has two, and the transform budget's comment says plainly what it does not catch.
+- fast gate passed (107s): 519 passed, 46 deselected, 8 warnings in 96.43s (0:01:36)
+- db gate passed (183s): 38 passed, 527 deselected, 2 warnings in 153.37s (0:02:33)
+- smoke gate passed (181s): {"step": "run", "status": "succeeded", "rows_extracted": 0, "rows_loaded": 0, "event": "run finished", "dataset": "customers", "source": "demo_csv", "run_id": "
+- full gate passed (1331s): 565 passed, 9 warnings in 1304.29s (0:21:44)

@@ -144,9 +144,13 @@ def _new_table() -> str:
 
 
 def _start_run(loader: Loader) -> UUID:
-    run_id = uuid.uuid7()
-    loader.start_run(RunStart(run_id, "contract", "t", "manual", datetime.now(UTC)))
-    return run_id
+    run = _run_start()
+    loader.start_run(run)
+    return run.run_id
+
+
+def _run_start(run_id: UUID | None = None) -> RunStart:
+    return RunStart(run_id or uuid.uuid7(), "contract", "t", "manual", datetime.now(UTC))
 
 
 def _comparable(rows: list[tuple[Any, ...]]) -> Counter[tuple[Any, ...]]:
@@ -298,16 +302,31 @@ def test_unknown_run_rolls_back_the_replace_in_the_same_transaction(harness: Har
     harness.drop_table(table)
 
 
-def test_failing_a_run_that_is_not_running_raises(harness: Harness) -> None:
+def test_failing_a_run_that_has_already_ended_raises(harness: Harness) -> None:
     finished = _start_run(harness.loader)
     failure = RunFailure("ExtractError", "file not found", "Traceback ...")
-    harness.loader.fail_run(finished, ended_at=datetime.now(UTC), rows_extracted=0, failure=failure)
+    harness.loader.fail_run(
+        _run_start(finished), ended_at=datetime.now(UTC), rows_extracted=0, failure=failure
+    )
 
-    for run_id in (uuid.uuid7(), finished):
-        with pytest.raises(LoadError, match="not a running run"):
-            harness.loader.fail_run(
-                run_id, ended_at=datetime.now(UTC), rows_extracted=0, failure=failure
-            )
+    with pytest.raises(LoadError, match="already ended"):
+        harness.loader.fail_run(
+            _run_start(finished), ended_at=datetime.now(UTC), rows_extracted=0, failure=failure
+        )
+
+
+def test_failing_a_run_that_was_never_started_writes_its_row(harness: Harness) -> None:
+    never_started = _run_start()
+    failure = RunFailure("LoadError", "the lock could not be taken", "Traceback ...")
+
+    harness.loader.fail_run(
+        never_started, ended_at=datetime.now(UTC), rows_extracted=None, failure=failure
+    )
+
+    row = harness.read_run(never_started.run_id)
+    assert (row["status"], row["error_class"], row["trigger"]) == ("failed", "LoadError", "manual")
+    assert row["started_at"] == never_started.started_at
+    assert row["ended_at"] is not None
 
 
 def test_runs_record_success_and_failure(harness: Harness) -> None:
@@ -322,7 +341,7 @@ def test_runs_record_success_and_failure(harness: Harness) -> None:
             succeeded, ended_at=datetime.now(UTC), rows_extracted=3, rows_loaded=loaded.rows
         )
     harness.loader.fail_run(
-        failed,
+        _run_start(failed),
         ended_at=datetime.now(UTC),
         rows_extracted=None,
         failure=RunFailure("ExtractError", "file not found", "Traceback ..."),
@@ -474,9 +493,7 @@ def test_only_the_datasets_running_runs_become_interrupted(
                 )
         if status == "failed":
             failure = RunFailure("ExtractError", "file not found", "Traceback ...")
-            loader.fail_run(
-                run.run_id, ended_at=datetime.now(UTC), rows_extracted=0, failure=failure
-            )
+            loader.fail_run(run, ended_at=datetime.now(UTC), rows_extracted=0, failure=failure)
         created.append((run.run_id, place, status))
     found_by = uuid.uuid7()
 
@@ -844,7 +861,10 @@ def test_findings_are_recorded_and_only_succeeded_runs_give_a_previous_count(
     with harness.loader.transaction() as transaction:
         transaction.record_findings(failed, _findings(dataset, 9), now)
     harness.loader.fail_run(
-        failed, ended_at=now, rows_extracted=9, failure=RunFailure("QualityError", "x", "")
+        _run_start(failed),
+        ended_at=now,
+        rows_extracted=9,
+        failure=RunFailure("QualityError", "x", ""),
     )
 
     quarantined, results = harness.read_findings(succeeded)

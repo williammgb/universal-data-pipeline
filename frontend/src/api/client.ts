@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { apiKey, keyWasRefused } from "./key";
 import type { components } from "./schema";
 
 export type SourceItem = components["schemas"]["SourceItem"];
@@ -42,7 +43,18 @@ function readable(detail: unknown): string {
   return JSON.stringify(detail);
 }
 
+/** Every request carries the stored key, if there is one; the API ignores it when it needs none. */
+function headers(extra: Record<string, string> = {}): Record<string, string> {
+  const key = apiKey();
+  return {
+    Accept: "application/json",
+    ...extra,
+    ...(key ? { "X-API-Key": key } : {}),
+  };
+}
+
 async function failure(response: Response): Promise<ApiError> {
+  if (response.status === 401) keyWasRefused();
   let detail = `${response.status} ${response.statusText}`;
   try {
     const body: unknown = await response.json();
@@ -57,7 +69,7 @@ async function failure(response: Response): Promise<ApiError> {
 
 export async function getJson<T>(path: string, params?: URLSearchParams): Promise<T> {
   const query = params && [...params].length > 0 ? `?${params}` : "";
-  const response = await fetch(`/api${path}${query}`, { headers: { Accept: "application/json" } });
+  const response = await fetch(`/api${path}${query}`, { headers: headers() });
   if (!response.ok) throw await failure(response);
   return (await response.json()) as T;
 }
@@ -65,7 +77,7 @@ export async function getJson<T>(path: string, params?: URLSearchParams): Promis
 export async function postJson<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`/api${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    headers: headers({ "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
   if (!response.ok) throw await failure(response);

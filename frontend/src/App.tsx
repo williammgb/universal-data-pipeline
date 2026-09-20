@@ -1,6 +1,8 @@
-import { Component, type ReactNode } from "react";
+import { Component, type ReactNode, useEffect, useState } from "react";
 import { Link, NavLink, Route, Routes } from "react-router";
 
+import { keyIsNeeded, whenKeyIsNeeded } from "./api/key";
+import ApiKey from "./pages/ApiKey";
 import Dataset from "./pages/Dataset";
 import Datasets from "./pages/Datasets";
 import Run from "./pages/Run";
@@ -42,6 +44,9 @@ function NotFound() {
 }
 
 export default function App() {
+  const [needsKey, setNeedsKey] = useState(keyIsNeeded);
+  useEffect(() => whenKeyIsNeeded(setNeedsKey), []);
+
   return (
     <>
       <header className="bar">
@@ -59,13 +64,17 @@ export default function App() {
         <div className="clock">all times UTC</div>
       </header>
       <ErrorBoundary>
-        <Routes>
-          <Route path="/" element={<Datasets />} />
-          <Route path="/datasets/:source/:dataset" element={<Dataset />} />
-          <Route path="/runs" element={<Runs />} />
-          <Route path="/runs/:runId" element={<Run />} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
+        {needsKey ? (
+          <ApiKey />
+        ) : (
+          <Routes>
+            <Route path="/" element={<Datasets />} />
+            <Route path="/datasets/:source/:dataset" element={<Dataset />} />
+            <Route path="/runs" element={<Runs />} />
+            <Route path="/runs/:runId" element={<Run />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        )}
       </ErrorBoundary>
     </>
   );

@@ -11,6 +11,7 @@ It is not sandboxed either: it runs in the pipeline process with the pipeline's 
 environment and network, so writing to `sources/` carries the same trust as editing the repo.
 """
 
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from hashlib import sha256
@@ -30,6 +31,11 @@ from udp.storage.loader import column_type
 log = structlog.get_logger(step="transform")
 
 FILE_NAME = "transform.py"
+# A transform holds its dataset's lock while it runs, so a slow one delays every later run of
+# that dataset. The budget is checked between chunks: a transform that keeps returning slowly
+# is stopped, one that never returns from a single chunk still hangs its run, which would take
+# a worker thread nobody can safely abandon. Fifteen minutes is far past any transform we have.
+TRANSFORM_TIME_LIMIT = 900.0
 
 
 @dataclass(frozen=True)
@@ -87,10 +93,23 @@ def apply_transform(
     function: TransformFunction,
     context: TransformContext,
     file: TransformFile,
+    time_limit: float = TRANSFORM_TIME_LIMIT,
 ) -> Iterator[pl.DataFrame]:
     schema: pl.Schema | None = None
     rows_in = rows_out = 0
+    started = time.monotonic()
+
+    def check_the_clock() -> None:
+        """A transform that keeps taking longer fails the run instead of holding the lock."""
+        spent = time.monotonic() - started
+        if spent > time_limit:
+            raise TransformError(
+                f"{file.name}: transform took longer than {time_limit:.0f}s "
+                f"on dataset '{context.dataset}' ({spent:.0f}s so far)"
+            )
+
     for chunk in chunks:
+        check_the_clock()
         rows_in += chunk.height
         try:
             result = function(chunk, context)
@@ -111,6 +130,7 @@ def apply_transform(
             raise TransformError(
                 f"{file.name}: chunk schema {result.schema} differs from the first chunk's {schema}"
             )
+        check_the_clock()
         rows_out += result.height
         yield result
     log.info("custom transform applied", path=file.name, rows_in=rows_in, rows_out=rows_out)
