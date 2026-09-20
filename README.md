@@ -70,7 +70,7 @@ Read from the environment, or from an uncommitted `.env` beside the project:
 | --- | --- |
 | `UDP_DATABASE_URL` | the platform database, e.g. `postgresql://udp:...@127.0.0.1:5432/udp` |
 | `UDP_SOURCES_DIR` | where the source folders live (default `sources`) |
-| `UDP_API_KEYS` | comma-separated API keys; empty means the API is open, and it says so at startup |
+| `UDP_API_KEYS` | comma-separated API keys; empty means the API is open, and it says so at startup. A key may not contain a comma or begin or end with a space — the separator and the trimming would eat it. |
 
 A source's own secrets are never written in its YAML: it holds `${NAME}` references, filled from
 the environment when the source is read, and the copy stored in the database keeps them unfilled.

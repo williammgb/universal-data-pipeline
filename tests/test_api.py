@@ -532,6 +532,23 @@ def test_a_real_run_shows_up_in_the_metrics_prometheus_reads(tmp_path: Path) -> 
 
 
 @pytest.mark.db
+def test_every_read_answers_503_when_the_database_is_really_not_there() -> None:
+    # A real pool at a real server with no such database: it answers at once, unlike a closed
+    # port on Windows, so this drives the pool itself rather than a stand-in for it.
+    missing = _url().rsplit("/", 1)[0] + "/no_such_database"
+    app = create_app(_catalog(missing), SOURCES, {}, lambda: nullcontext(MemoryLoader()))
+    client = TestClient(app)
+
+    for path in ("/api/sources", "/api/datasets", "/api/runs"):
+        response = client.get(path)
+        assert response.status_code == 503, path
+        assert response.json() == {"detail": "the platform database is unavailable"}
+        assert "no_such_database" not in response.text and "udp" not in response.text
+    assert client.get("/api/health").json() == {"status": "unavailable"}
+    assert client.get("/api/metrics").status_code == 503
+
+
+@pytest.mark.db
 def test_a_failed_run_shows_its_error(tmp_path: Path) -> None:
     source = _prefix()
     sources = tmp_path / "sources"

@@ -31,8 +31,10 @@ from udp.storage.loader import column_type
 log = structlog.get_logger(step="transform")
 
 FILE_NAME = "transform.py"
-# A transform holds its dataset's lock while it runs, so one that never finishes would block
-# every later run of that dataset. Fifteen minutes is far past any transform we have.
+# A transform holds its dataset's lock while it runs, so a slow one delays every later run of
+# that dataset. The budget is checked between chunks: a transform that keeps returning slowly
+# is stopped, one that never returns from a single chunk still hangs its run, which would take
+# a worker thread nobody can safely abandon. Fifteen minutes is far past any transform we have.
 TRANSFORM_TIME_LIMIT = 900.0
 
 

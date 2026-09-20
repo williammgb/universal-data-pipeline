@@ -129,7 +129,13 @@ def test_api_command_serves_the_built_dashboard_on_localhost_by_default(
         return FastAPI()
 
     monkeypatch.setattr("udp.cli.create_app", remember)
-    env = {"UDP_DATABASE_URL": UNREACHABLE_DATABASE, "UDP_SOURCES_DIR": "sources"}
+    # UDP_API_KEYS is set for the machine's own gates, so it is spelled out here rather than
+    # inherited: this test is about what the command passes on when nothing is configured.
+    env = {
+        "UDP_DATABASE_URL": UNREACHABLE_DATABASE,
+        "UDP_SOURCES_DIR": "sources",
+        "UDP_API_KEYS": "",
+    }
 
     result = CliRunner().invoke(app, ["api"], env=env)
 

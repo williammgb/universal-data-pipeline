@@ -2,7 +2,9 @@ name: udp
 
 # Every service carries a cpu and memory limit, so one runaway container cannot take the
 # machine down with it. The numbers come from what each one was measured needing: the pipeline
-# peaked at 946 MiB loading five million rows, and the rest are small.
+# peaked at 946 MiB loading five million rows, and the rest are small. No cpu limit is above 2:
+# Docker refuses a limit larger than the machine has, and the smallest machine this runs on is
+# a two-core CI runner.
 
 services:
   postgres:
@@ -23,7 +25,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "4"
+          cpus: "2"
           memory: 2g
 
   # A stand-in business database for the database connector; test and demo use only.
@@ -96,7 +98,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "4"
+          cpus: "2"
           memory: 4g
 
   # The HTTP API, published on this machine only until it has API keys (slice 10).
@@ -127,7 +129,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "4"
+          cpus: "2"
           # Just above the 946 MiB measured for five million rows: a regression fails here.
           memory: 1536m
 

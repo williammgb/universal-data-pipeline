@@ -125,7 +125,10 @@ def test_keys_are_read_as_written_and_a_key_is_taken_from_either_header() -> Non
     assert parse_keys("one,one") == ("one",)
     assert presented({HEADER: "from-header"}) == "from-header"
     assert presented({"authorization": "Bearer from-bearer"}) == "from-bearer"
+    # A client that writes an extra space must still be understood.
+    assert presented({"authorization": "Bearer  spaced "}) == "spaced"
     assert presented({"authorization": "Bearer"}) is None
+    assert presented({"authorization": "Bearer  "}) is None
     assert presented({}) is None
 
 

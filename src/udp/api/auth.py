@@ -13,7 +13,11 @@ OPEN_PATHS = ("/api/health",)
 
 
 def parse_keys(text: str | None) -> tuple[str, ...]:
-    """The keys in UDP_API_KEYS: separated by commas, spaces trimmed, blanks dropped."""
+    """The keys in UDP_API_KEYS: separated by commas, spaces trimmed, blanks dropped.
+
+    A key may therefore not contain a comma or begin or end with a space; `./run` mints hex
+    keys, and the README says so for keys made by hand.
+    """
     if not text:
         return ()
     return tuple(dict.fromkeys(key.strip() for key in text.split(",") if key.strip()))
@@ -25,7 +29,10 @@ def presented(headers: Mapping[str, str]) -> str | None:
     if header:
         return header
     scheme, _, value = headers.get("authorization", "").partition(" ")
-    return value if scheme.lower() == "bearer" and value else None
+    # Trimmed: a client that writes "Bearer  key" would otherwise present a key with a space
+    # in front of it, which can never match.
+    key = value.strip()
+    return key if scheme.lower() == "bearer" and key else None
 
 
 def accepted(keys: Sequence[str], key: str | None) -> bool:

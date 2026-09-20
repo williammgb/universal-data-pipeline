@@ -626,3 +626,34 @@ while its section has no `built:` line.
 - smoke gate passed (192s): {"step": "run", "status": "succeeded", "rows_extracted": 0, "rows_loaded": 0, "event": "run finished", "source": "demo_csv", "run_id": "01a0c095-2173-7545-9e54-
 - fast gate failed (0s): 1 file would be reformatted, 82 files already formatted
 - fast gate passed (79s): 519 passed, 45 deselected, 8 warnings in 69.17s (0:01:09)
+- [F88] edge-hunter found: returned no journal lines (its reply was 48 characters) — read the reply, or relaunch it if it died
+- F88 rejected: edge-hunter did return, through a hand-back message the journal hook cannot read; its three findings are recorded below as F89–F91.
+- [F89] edge-hunter found: an `Authorization: Bearer  key` header with two spaces gives a key with a space in front of it, so a correct key is refused with 401.
+- [F90] edge-hunter found: the 900-second transform budget is checked between chunks, so a transform that never returns from one chunk still holds its dataset's lock forever — which is what the comment beside the limit claimed it prevented.
+- [F91] edge-hunter found: a key containing a comma is split into fragments by `parse_keys`, so that key can never be presented successfully.
+- F89 fixed: the key taken from a Bearer header is trimmed, and a test presents "Bearer  spaced " and a header with nothing but spaces.
+- F90 rejected: stopping a transform mid-chunk needs a worker thread nobody can safely abandon, which is the trade-off decided before building; the comment beside the limit now says plainly that a transform which never returns from one chunk still hangs its run.
+- F91 rejected: commas separate keys, so a key cannot contain one; `./run` mints hex keys, the README now says so for keys made by hand, and the rule is in the function's own description.
+- [F92] final-check found: returned no journal lines (its reply was 280 characters) — read the reply, or relaunch it if it died
+- full gate failed (659s): 1 failed, 563 passed, 9 warnings in 637.87s (0:10:37)
+- F92 rejected: final-check did return, through a hand-back message the journal hook cannot read; its verdict and findings are recorded below as F93–F99.
+- final-check verdict: FIX FIRST — 2 blocking
+- [F93] final-check found: the CLI test asserting no keys are passed on reads whatever `UDP_API_KEYS` the environment holds, and `./run` now exports one for every stack, so the full gate fails on it — which it then did, here and on the pull request.
+- [F94] final-check found: the promised database test that every read answers 503 while the database is unreachable landed as a fast test that replaces the catalog's methods, so the real connection pool is never driven at a database that is not there.
+- [F95] final-check found: the pool keeps a connection for up to 30 seconds without checking it, so a database that goes away and comes back inside that window costs the next request one 503; that is neither written down nor tested.
+- [F96] final-check found: the smoke's restore check looked only for `"rows_loaded": 0` and dropped the run's exit code, rather than the `file unchanged, skipped` line the plan promised.
+- [F97] final-check found: `./run memory` used a test that exits the whole script under `set -eu` when the result file is missing, before printing the peak and before stopping the stack.
+- [F98] final-check found: `frontend/src/api/client.ts` carried four hunks of unrelated reformatting in a file a reviewer has to read for the key change.
+- [F99] final-check found: the done-means line asking for `compose config` to show a limit under every service has no evidence line, though every service does carry one when the file is read.
+- F93 fixed: the test spells out an empty `UDP_API_KEYS` instead of inheriting the machine's, so it asks what it means to ask.
+- F94 fixed: a database test now points a real catalog at a real server with no such database — which answers at once, unlike a closed port on Windows — and every read, the health check and the metrics answer 503 without naming the database.
+- F95 fixed: SPEC now says the pool holds a connection up to 30 seconds unchecked and what that costs after a short outage.
+- F96 fixed: the smoke keeps the run's output, fails when the run fails, and checks for both `file unchanged, skipped` and `"rows_loaded": 0`.
+- F97 fixed: `./run memory` reads the result file the way the gates do, so a missing one is a failure rather than a silent exit.
+- F98 fixed: the three reformatted blocks in the dashboard's client are back as they were, leaving only the key changes in that file.
+- F99 fixed: the ledger's evidence for resource limits quotes `compose config` rather than the file.
+- built: after the reviews — the Bearer header is trimmed, a key may not contain a comma (said in the README and the code), no cpu limit is above 2 because Docker refuses a limit larger than the machine and the CI runner has two, and the transform budget's comment says plainly what it does not catch.
+- fast gate passed (107s): 519 passed, 46 deselected, 8 warnings in 96.43s (0:01:36)
+- db gate passed (183s): 38 passed, 527 deselected, 2 warnings in 153.37s (0:02:33)
+- smoke gate passed (181s): {"step": "run", "status": "succeeded", "rows_extracted": 0, "rows_loaded": 0, "event": "run finished", "dataset": "customers", "source": "demo_csv", "run_id": "
+- full gate passed (1331s): 565 passed, 9 warnings in 1304.29s (0:21:44)

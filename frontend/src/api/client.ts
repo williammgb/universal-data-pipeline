@@ -97,10 +97,7 @@ export function useDatasets(q: string, source: string) {
 }
 
 export function useSources() {
-  return useQuery({
-    queryKey: ["sources"],
-    queryFn: () => getJson<SourceItem[]>("/sources"),
-  });
+  return useQuery({ queryKey: ["sources"], queryFn: () => getJson<SourceItem[]>("/sources") });
 }
 
 export function useDataset(source: string, dataset: string) {
@@ -113,10 +110,7 @@ export function useDataset(source: string, dataset: string) {
 export const PREVIEW_ROWS = 50;
 
 export function useRows(source: string, dataset: string, offset: number) {
-  const params = new URLSearchParams({
-    limit: String(PREVIEW_ROWS),
-    offset: String(offset),
-  });
+  const params = new URLSearchParams({ limit: String(PREVIEW_ROWS), offset: String(offset) });
   return useQuery({
     queryKey: ["rows", source, dataset, offset],
     queryFn: () => getJson<RowsPage>(`/datasets/${source}/${dataset}/rows`, params),
@@ -152,9 +146,7 @@ export function useStartRun(source: string, dataset: string) {
     mutationFn: () => postJson<RunAccepted>("/runs", { source, dataset }),
     onSuccess: () => {
       void queries.invalidateQueries({ queryKey: ["runs"] });
-      void queries.invalidateQueries({
-        queryKey: ["dataset", source, dataset],
-      });
+      void queries.invalidateQueries({ queryKey: ["dataset", source, dataset] });
       // The datasets list shows each dataset's last run, so it is stale from now too.
       void queries.invalidateQueries({ queryKey: ["datasets"] });
     },

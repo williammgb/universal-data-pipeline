@@ -298,9 +298,16 @@ smoke_backup() {
     echo "restored and matching: $before"
   done
   # The restored copy is a working platform, not only a pile of rows.
-  UDP_DATABASE_URL="postgresql://udp:$stack_password@127.0.0.1:$stack_port/udp_restored" \
-    uv run --locked udp run demo_csv 2>&1 | tee /dev/stderr | grep -q '"rows_loaded": 0' || {
-    echo "a run against the restored database did not skip the unchanged file"
+  restored_run=$(UDP_DATABASE_URL="postgresql://udp:$stack_password@127.0.0.1:$stack_port/udp_restored" \
+    uv run --locked udp run demo_csv 2>&1) || {
+    printf '%s\n' "$restored_run"
+    echo "a run against the restored database failed"
+    return 1
+  }
+  printf '%s\n' "$restored_run"
+  printf '%s' "$restored_run" | grep -q 'file unchanged, skipped' &&
+    printf '%s' "$restored_run" | grep -q '"rows_loaded": 0' || {
+    echo "the run against the restored database did not skip the unchanged file"
     return 1
   }
 }
@@ -386,7 +393,7 @@ memory_run() {
     { compose run --rm --entrypoint sh scale-load -c \
       'udp run scale_csv --full-refresh; ran=$?; echo "peak_bytes $(cat /sys/fs/cgroup/memory.peak)"; exit $ran' \
       && echo 0 > "$log.code" || echo $? > "$log.code"; } 2>&1 | tee "$log"
-  [ -f "$log.code" ] && code=$(cat "$log.code")
+  code=$(cat "$log.code" 2>/dev/null || echo 1)
   stack_stop || true
   peak=$(grep 'peak_bytes' "$log" | tail -n 1 | tr -dc '0-9')
   [ -n "$peak" ] || { echo "the container printed no peak memory"; return 1; }
