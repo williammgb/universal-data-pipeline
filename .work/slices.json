@@ -129,8 +129,8 @@
     {
       "id": 10,
       "name": "production hardening",
-      "state": "in-progress",
-      "commit": null,
+      "state": "done",
+      "commit": "af64ade",
       "checks": [
         { "claim": "the API requires an API key", "passes": true, "evidence": "./run fast: 519 passed, 46 deselected in 96.43s, including tests/test_auth.py's 8 cases — a property that a key is accepted exactly when it equals a configured one (over keys that are prefixes of each other, differ only in case, carry spaces or are not ASCII), a property over sent headers, and examples that no key means open, that /api/health needs none while /api/datasets, /api/runs, /api/metrics, /api/docs and /api/openapi.json all answer 401, and that the API's description is byte-identical with and without keys; ./run smoke exit 0, where a call to /api/datasets without the key printed 401 and Prometheus scraped with its credentials file" },
         { "claim": "a database backup and restore is proven", "passes": true, "evidence": "./run smoke exit 0: pg_dump -Fc of the platform database restored into udp_restored, 'restored and matching: 18' (pipeline_runs count) and 'restored and matching: 3e6b6adf1c085276121416e43aff4db6' (md5 over datasets.demo_csv__customers), then udp run demo_csv against the restored database printed 'file unchanged, skipped' and rows_loaded 0, so the saved state came back with the rows" },
