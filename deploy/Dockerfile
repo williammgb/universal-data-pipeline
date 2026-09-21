@@ -28,6 +28,9 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY src ./src
 RUN uv sync --frozen --no-dev
 
+# `udp migrate` reads these, so a stack started with compose alone creates its own tables.
+COPY migrations ./migrations
+
 COPY --from=dashboard /frontend/dist ./frontend/dist
 
 ENTRYPOINT ["udp"]

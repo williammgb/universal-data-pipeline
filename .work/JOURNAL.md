@@ -657,3 +657,41 @@ while its section has no `built:` line.
 - db gate passed (183s): 38 passed, 527 deselected, 2 warnings in 153.37s (0:02:33)
 - smoke gate passed (181s): {"step": "run", "status": "succeeded", "rows_extracted": 0, "rows_loaded": 0, "event": "run finished", "dataset": "customers", "source": "demo_csv", "run_id": "
 - full gate passed (1331s): 565 passed, 9 warnings in 1304.29s (0:21:44)
+- fast gate failed (40s): 48 deselected, 2 warnings, 1 error in 5.19s
+- [F100] plan-check found: returned no journal lines (its reply was 17 characters) — read the reply, or relaunch it if it died
+- fast gate passed (80s): 539 passed, 48 deselected, 8 warnings in 70.50s (0:01:10)
+
+## Slice 11 — fixes from real datasets
+
+- the four lines just above (two fast gate runs and F100) belong to this slice; they landed before this heading was written.
+- you decided: fix the four problems found by loading Our World in Data's CO2 CSV, Tableau's Superstore workbook and the Pagila database as recommended — tables created by the stack itself first, then database column types and exact numerics together, then spreadsheet float rounding.
+- you decided: problems are presented with a lasting fix rather than worked around in a source's config; the two config workarounds tried first were taken back out.
+- F100 rejected: plan-check did return, through a hand-back message the journal hook cannot read; its finding is recorded below as F101.
+- [F101] plan-check found: the plan's fix 4 modifies `src/udp/pipeline/column_types.py` to accommodate a new source's spreadsheet floats, which the spec's constraint says adding a source must never require.
+- F101 rejected: the Superstore source needs no pipeline change to load — it is plain configuration — and the rounding is a platform rule fixed for every spreadsheet and JSON source, asked for by the user; the constraint forbids a source that needs core changes, not fixing the core.
+- built: `udp migrate` and a compose `migrate` service every app container waits for, so a stack started with compose alone creates its tables; the smoke no longer migrates from the host.
+- built: the database connector reads domains as their base type, arrays as JSON text, other unknown types as text with a warning, `numeric(P,S)` as an exact decimal, and takes `exclude_columns:`; checks on a text column say to declare its type.
+- built: floats declared `decimal(P,S)` are rounded half away from zero to the scale, text still refused; the property's model changed on purpose for float sources, with spreadsheet-style values added to its generator.
+- smoke gate passed (165s): {"step": "run", "status": "succeeded", "rows_extracted": 0, "rows_loaded": 0, "event": "run finished", "source": "demo_csv", "run_id": "01a0c587-63d2-724e-bb9f-
+- [F102] final-check found: returned no journal lines (its reply was 2078 characters) — read the reply, or relaunch it if it died
+- F102 rejected: final-check did return, through a hand-back message the journal hook cannot read; its verdict and findings are recorded below as F103–F105.
+- final-check verdict: FIX FIRST — 3 blocking; it confirmed the migrate profiles and depends_on hold for every profile combination, the float rounding matches its oracle, and the database connector keeps every earlier rule.
+- [F103] final-check found: README.md dropped the `./run` task list and the `udp` command list, which slice 10's ledger claim relies on, and `udp migrate` is documented nowhere.
+- [F104] final-check found: README step 2 (`compose --profile app --profile demo up -d --build --wait`) was never run by a gate, and it starts the `app` and `migrate` containers, which both exit, so `--wait` may fail depending on the Compose version.
+- [F105] final-check found: the compose `migrate` service builds its own image that `./run` never rebuilds, and `down -v` keeps images, so a later smoke would migrate with stale migrations.
+- F103 fixed: the `./run` list stays out because the user asked for the README to show how to use the platform rather than its tests; the `udp` command list is back, with `udp migrate` added, and slice 10's claim now reads true for the `udp` commands only.
+- [F106] edge-hunter found: a Postgres numeric NaN or Infinity read into an exact decimal column makes Polars panic inside `_frame`, and the panic is not one of the caught errors, so the extraction crashes instead of failing cleanly naming the column.
+- edge-hunter also traced: a NaN or Infinity float declared `float` passes through while every other declared type refuses it — deliberate, since IEEE floats hold both, so not a finding.
+- [F106] edge-hunter found: returned no journal lines (its reply was 38 characters) — read the reply, or relaunch it if it died
+- the second F106 line above was numbered by the hook after the first was written by hand; the hand-written one is the finding, the hook's is answered here.
+- F106 rejected (the hook's line): edge-hunter did return, through a hand-back message the journal hook cannot read; its finding is the first F106.
+- F104 fixed: the README's exact command was run on an emptied stack (`down -v`, then `--profile app --profile demo up -d --build --wait`), exited 0 with the migrate and app containers exited cleanly, and migrate logged "database migrated" at revision 0004.
+- F105 fixed: `./run` builds migrate wherever it builds app or scale-load, so a gate stack never migrates with an image left from an older run.
+- F106 fixed: a numeric value that is not finite raises a ValueError naming it, and the value conversion now sits inside the same try, so the run fails with an ExtractError naming the column and table; a test covers NaN, Infinity and -Infinity.
+- built: with the fixes in, the three real sources on a fresh stack all succeed without config workarounds — CO2 50,411 rows, Superstore orders 9,994 with sales stored numeric(12,4) and 731.9399999999999 as 731.9400, Pagila film 1,000 rows with release_year bigint and a "column read as text" warning for its search column, payment amount numeric(5,2) undeclared.
+- full gate passed (716s): 587 passed, 9 warnings in 694.68s (0:11:34)
+- fast gate failed (77s): 3 failed, 539 passed, 48 deselected, 8 warnings in 66.47s (0:01:06)
+- fast gate passed (71s): 542 passed, 48 deselected, 8 warnings in 61.93s (0:01:01)
+- smoke gate failed (216s): the restored database disagrees: '19' became '18'
+- smoke gate passed (153s): {"step": "run", "status": "succeeded", "rows_extracted": 0, "rows_loaded": 0, "event": "run finished", "run_id": "01a0c5b7-dee6-75d9-b43f-e062c23a112a", "datase
+- full gate passed (760s): 590 passed, 9 warnings in 735.61s (0:12:15)

@@ -25,31 +25,60 @@ What it does, end to end:
 
 ## Getting started
 
-Everything goes through `./run`, so there is one command to learn and one thing to allow:
+All you need is Docker with Compose. From the project folder:
+
+**1. Choose a database password and an API key.** Neither one is stored in the project:
 
 ```
-./run setup           install the pinned toolchain and the locked dependencies
-./run fast            the fast gate: lint, types, the dashboard's checks and the unit tests
-./run db              the tests that need a real PostgreSQL
-./run full            the full gate at real size, including million-row loads
-./run smoke           bring the whole stack up and prove it works, browser and all
-./run memory          load five million rows in a container and print its peak memory
-./run image <tag>     build the container image
-./run types           regenerate the dashboard's types from the API's description
-./run check <file>    lint one file
+export POSTGRES_PASSWORD=pick-a-password
+export UDP_API_KEYS=pick-a-key
 ```
 
-To run the platform itself:
+**2. Start the platform.** This starts the database, the dashboard and API, the scheduler, and
+the demo sources (a sample business database and a sample REST API):
 
 ```
-uv run --locked udp run demo_csv        load one source now
-uv run --locked udp schedule            run every scheduled dataset until stopped
-uv run --locked udp api                 serve the dashboard and the API on 127.0.0.1:8000
-uv run --locked udp doctor              check the database connection
+docker compose -f deploy/compose.yaml --profile app --profile demo up -d --build --wait
 ```
 
-In containers, `deploy/compose.yaml` has the platform database, the `api` and `scheduler`
-services, the demo source services (`demo` profile) and Prometheus (`monitoring` profile).
+The platform's tables are created (or updated to a newer version) by a one-off `migrate`
+container that every other container waits for.
+
+**3. Load some data.** Each command runs one source folder from `sources/`:
+
+```
+docker compose -f deploy/compose.yaml --profile app run --rm app run demo_csv
+docker compose -f deploy/compose.yaml --profile app run --rm app run demo_excel
+docker compose -f deploy/compose.yaml --profile app run --rm app run demo_db
+docker compose -f deploy/compose.yaml --profile app run --rm app run demo_api
+```
+
+**4. Open the dashboard** at http://127.0.0.1:8000 and enter your API key when it asks for it.
+From there you can browse datasets, their columns, previews, quality results and run history,
+and use **Run now** on a dataset page to load it again.
+
+Datasets that have a `schedule:` in their `source.yaml` are also run by the scheduler on their
+own. To add your own data, put a new folder in `sources/` (see below) and run step 3 with its
+name.
+
+To stop everything, keeping the data:
+
+```
+docker compose -f deploy/compose.yaml --profile app --profile demo down
+```
+
+Add `-v` to that command to delete the data as well.
+
+Without containers, the same platform runs from the command line against any PostgreSQL named
+by `UDP_DATABASE_URL`:
+
+```
+uv run --locked udp migrate                 create or update the platform's tables
+uv run --locked udp run demo_csv            load one source now
+uv run --locked udp schedule                run every scheduled dataset until stopped
+uv run --locked udp api                     serve the dashboard and the API on 127.0.0.1:8000
+uv run --locked udp doctor                  check the database connection
+```
 
 ## A source in one folder
 

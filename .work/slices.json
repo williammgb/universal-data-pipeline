@@ -1,6 +1,6 @@
 {
   "project": "universal-data-pipeline",
-  "updated": "2026-09-13",
+  "updated": "2026-09-21",
   "slices": [
     {
       "id": 0,
@@ -137,6 +137,21 @@
         { "claim": "compose sets resource limits for every service", "passes": true, "evidence": "docker compose -f deploy/compose.yaml --profile app --profile demo --profile monitoring --profile scale config prints cpus and memory under all 8 services: api 2/4g, app 2/4g, mock-api 1/512m, postgres 2/2g, prometheus 1/1g, scale-load 2/1536m, scheduler 2/4g, source-postgres 2/1g; no cpu limit is above 2 because Docker refuses one larger than the machine has and CI's runner has 2" },
         { "claim": "a 5,000,000-row load stays inside the memory target", "passes": true, "evidence": "./run memory (not a gate) loaded 5,000,000 rows inside the app image and read the container's own accounting: 'peak memory: 946 MiB loading 5000000 rows (limit 1024 MiB)', with the run reporting rows_extracted 5000000 and rows_loaded 5000000; the log is .work/gates/memory.log" },
         { "claim": "a README and an add-a-source guide exist", "passes": true, "evidence": "README.md is 105 lines covering what the platform does, every ./run task and udp command, the source layout, all 3 settings, backup and restore, and the measured 946 MiB; docs/adding-a-source.md is 190 lines walking from a two-field source.yaml through each connector's fields, load modes, declared column types, all 8 checks, transform.py and its rules, running it and what each error means" }
+      ]
+    },
+    {
+      "id": 11,
+      "name": "fixes from real datasets",
+      "state": "in-progress",
+      "commit": null,
+      "checks": [
+        { "claim": "a stack started with docker compose alone on an empty database creates the platform tables before any app container runs", "passes": true, "evidence": "README command `docker compose -f deploy/compose.yaml --profile app --profile demo up -d --build --wait` after `down -v` exited 0 and the migrate container logged {\"event\": \"database migrated\", \"revision\": \"0004\"}; ./run smoke (no host migrate any more) passed in 153s with its first container run succeeding; tests/test_cli.py test_migrate_twice_leaves_the_database_at_the_newest_revision passed in the full gate (590 passed)" },
+        { "claim": "a Postgres table with a domain, an enum, an array and other custom types loads, with binary columns left out through exclude_columns", "passes": true, "evidence": "./run full 590 passed including test_a_table_with_postgres_own_types_loads_like_pagila_film (release_year bigint, rating and features text, poster excluded); the real Pagila film table loaded 1000 rows on the live stack with one 'column read as text' warning for fulltext TSVECTOR" },
+        { "claim": "numeric(P,S) from a database is read and stored as an exact decimal without being declared", "passes": true, "evidence": "./run fast 542 passed including test_each_column_type_is_read_as (Numeric(38,10) as Decimal(38,10), Numeric(39,2) and Numeric() as text) and test_a_numeric_that_is_not_a_number_fails_naming_the_column; live Pagila payment.amount stored as numeric(5,2) with no columns: block; full gate own_types test asserts rental_rate numeric(4,2)" },
+        { "claim": "floats declared decimal(P,S) round half away from zero to the scale while text with too many digits is still quarantined", "passes": true, "evidence": "./run fast 542 passed including test_floats_round_half_away_from_zero_to_the_scale_and_text_never_does (731.9399999999999 to 731.94, 2.675 to 2.68, -0.005 to -0.01, 9999.995 refused; text '12.345' refused) and the conversion property with its float model changed on purpose; live Superstore orders loaded 9994 rows with sales numeric(12,4) and row 2 as 731.9400" },
+        { "claim": "the fast gate passes", "passes": true, "evidence": "./run fast exit 0: 542 passed, 48 deselected, 8 warnings in 61.93s; dashboard 25 passed" },
+        { "claim": "the full gate passes", "passes": true, "evidence": "./run full exit 0 after the review fixes: 590 passed, 9 warnings in 735.61s" },
+        { "claim": "./run smoke passes", "passes": true, "evidence": "./run smoke exit 0 in 153s after the review fixes, starting from an empty database with migrate built beside app" }
       ]
     }
   ]

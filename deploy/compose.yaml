@@ -89,9 +89,12 @@ services:
       UDP_API_KEYS: ${UDP_API_KEYS:-}
     volumes:
       - ../sources:/app/sources:ro
+    # Nothing that reads or writes the platform tables starts before they exist.
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     command: ["doctor"]
     # Inherited by api and scheduler: a run peaked at 946 MiB on five million rows, and the
     # scheduler runs up to four at once.
@@ -100,6 +103,21 @@ services:
         limits:
           cpus: "2"
           memory: 4g
+
+  # Creates or updates the platform tables, then exits; everything built on the app anchor
+  # waits for it. Running it on an up-to-date database changes nothing.
+  migrate:
+    <<: *app
+    profiles: ["app", "scale"]
+    command: ["migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512m
 
   # The HTTP API, published on this machine only until it has API keys (slice 10).
   api:

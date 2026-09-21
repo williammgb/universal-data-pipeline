@@ -1,0 +1,24 @@
+connection:
+  type: csv
+datasets:
+  # Our World in Data's CO2 and greenhouse gas emissions, one row per country and year.
+  # https://github.com/owid/co2-data — the file is not in git; fetch it into data/ with
+  #   curl -o data/owid-co2-data.csv https://raw.githubusercontent.com/owid/co2-data/master/owid-co2-data.csv
+  - name: emissions
+    path: data/owid-co2-data.csv
+    load_mode: full
+    columns:
+      year: integer
+    checks:
+      - check: not_null
+        column: country
+      - check: not_null
+        column: year
+      - check: unique
+        columns: [country, year]
+      - check: range
+        column: year
+        min: 1750
+        max: 2100
+      - check: min_rows
+        rows: 10000

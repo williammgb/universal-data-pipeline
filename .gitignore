@@ -20,3 +20,7 @@ dist/
 .ruff_cache/
 .hypothesis/
 reports/
+
+# Downloaded test datasets, too large to keep in git.
+sources/owid_co2/data/
+sources/superstore/data/

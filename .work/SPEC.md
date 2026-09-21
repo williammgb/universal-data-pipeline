@@ -59,7 +59,10 @@ Measured by `env-doctor` on 2026-09-13.
 - secrets: only `${ENV_VAR}` references in YAML, filled from uncommitted `.env`; missing secret fails before extraction
 - config truth: files; copied into `platform.sources` / `platform.datasets` every run
 - column types: inferred on first run, recorded as schema version; optional `columns:` block in YAML declares a storage type per column (text, integer, decimal(P,S), float, boolean, date, timestamp, json), keyed by cleaned column names and applied right after name cleanup, before `transform.py`; CSV reads declared columns as text; timestamps stored with time zone in UTC (no zone read as UTC); json stored as validated text (slice 5)
-- exact decimal source columns (e.g. Postgres numeric): stored as text unless `columns:` declares them `decimal(P,S)`
+- exact decimal source columns (e.g. Postgres numeric): stored as text unless `columns:` declares them `decimal(P,S)` — changed in slice 11: `numeric(P,S)` with P ≤ 38 is read as that exact decimal; only unbounded numeric stays text
+- database column types (slice 11): a domain reads as its base type; enums as text; arrays as JSON text; binary is refused (leave it out with `exclude_columns:`); any other type reads as its text with a warning log line; `exclude_columns:` may not name the watermark or a primary-key column
+- floats declared `decimal(P,S)` (slice 11): rounded half away from zero to the scale from their shortest decimal form (a spreadsheet's 731.9399999999999 becomes 731.94); text is never rounded and still quarantined when it has too many digits
+- platform tables (slice 11): `udp migrate` applies the migrations; compose runs it as a one-off `migrate` service every other app container waits for, so a stack started with compose alone works on an empty database
 - nested API objects and lists: stored as JSON text in one column
 - Postgres layout: schema `datasets` → one table per dataset named `<source>__<dataset>`; schema `platform` → sources, datasets, schema_versions, pipeline_runs, source_state, quarantine, quality_results
 - names: lowercase snake_case, validated against Postgres 63-char identifier limit

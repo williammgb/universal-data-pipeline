@@ -7,6 +7,9 @@ import psycopg
 import structlog
 import typer
 import uvicorn
+from alembic import command
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 from udp import __version__
 from udp.api.app import create_app
@@ -127,6 +130,26 @@ def openapi() -> None:
     unused = "postgresql://openapi:openapi@127.0.0.1:1/openapi"
     web = create_app(PostgresCatalog(unused), Path("sources"), {}, lambda: PostgresLoader(unused))
     typer.echo(json.dumps(web.openapi(), indent=2, sort_keys=True))
+
+
+@app.command()
+def migrate(
+    migrations: Annotated[
+        Path, typer.Option(help="Folder holding the migrations (Alembic's script location).")
+    ] = Path("migrations"),
+) -> None:
+    """Create or update the platform's tables; safe to run again on an up-to-date database."""
+    configure_logging()
+    if not (migrations / "env.py").is_file():
+        structlog.get_logger(step="migrate").error(
+            "no migrations found", migrations=migrations.as_posix()
+        )
+        raise typer.Exit(2)
+    config = Config()
+    config.set_main_option("script_location", str(migrations))
+    command.upgrade(config, "head")
+    head = ScriptDirectory.from_config(config).get_current_head()
+    structlog.get_logger(step="migrate").info("database migrated", revision=head)
 
 
 @app.command()

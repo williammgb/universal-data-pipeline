@@ -62,6 +62,65 @@ def test_database_demo_merges_nothing_on_its_second_run() -> None:
     assert _fingerprint("demo_db__orders", "id") == before
 
 
+def _stored_type(table: str, column: str) -> str:
+    return str(
+        _scalar(
+            "SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
+            f"WHERE attrelid = 'datasets.{table}'::regclass AND attname = '{column}'"
+        )
+    )
+
+
+@pytest.mark.db
+@pytest.mark.services
+def test_a_table_with_postgres_own_types_loads_like_pagila_film(tmp_path: Path) -> None:
+    # The shapes Pagila's film table has: a domain, an enum, a text array and a search
+    # vector, plus sized and unsized numeric and a binary column that is left out.
+    with psycopg.connect(os.environ["DEMO_DB_URL"], autocommit=True) as conn:
+        conn.execute("DROP TABLE IF EXISTS own_types")
+        conn.execute("DROP DOMAIN IF EXISTS film_year")
+        conn.execute("DROP TYPE IF EXISTS film_rating")
+        conn.execute("CREATE DOMAIN film_year AS integer CHECK (VALUE BETWEEN 1901 AND 2155)")
+        conn.execute("CREATE TYPE film_rating AS ENUM ('G', 'PG', 'R')")
+        conn.execute(
+            "CREATE TABLE own_types (id integer PRIMARY KEY, release_year film_year, "
+            "rating film_rating, features text[], fulltext tsvector, length interval, "
+            "rental_rate numeric(4,2), ratio numeric, poster bytea)"
+        )
+        conn.execute(
+            "INSERT INTO own_types VALUES "
+            "(1, 2006, 'PG', ARRAY['Trailers', 'Deleted Scenes'], to_tsvector('an epic drama'), "
+            "interval '86 minutes', 0.99, 1.5, '\\x00'), "
+            "(2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)"
+        )
+    _write_source(
+        tmp_path,
+        "own_types",
+        "connection:\n  type: database\n  url: ${DEMO_DB_URL}\n"
+        "datasets:\n  - name: films\n    table: own_types\n    exclude_columns: [poster]\n"
+        "    checks:\n      - check: range\n        column: rental_rate\n        min: 0\n",
+    )
+
+    assert _run("own_types", tmp_path, refresh=True) == 2
+    table = "own_types__films"
+    assert _stored_type(table, "release_year") == "bigint"
+    assert _stored_type(table, "rental_rate") == "numeric(4,2)"
+    assert _stored_type(table, "rating") == "text"
+    assert _stored_type(table, "features") == "text"
+    assert (
+        _scalar(
+            f"SELECT count(*) FROM pg_attribute WHERE attname = 'poster' "
+            f"AND attrelid = 'datasets.{table}'::regclass"
+        )
+        == 0
+    )
+    row = _scalar(
+        f"SELECT row(release_year, rental_rate, rating, features, ratio)::text "
+        f"FROM datasets.{table} WHERE id = 1"
+    )
+    assert row == '(2006,0.99,PG,"[""Trailers"", ""Deleted Scenes""]",1.5)'
+
+
 @pytest.mark.db
 @pytest.mark.services
 def test_api_demo_loads_twice_from_the_mock_api() -> None:

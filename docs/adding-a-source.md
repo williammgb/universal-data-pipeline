@@ -65,7 +65,7 @@ its connector:
 | --- | --- | --- |
 | `csv` | `path:` relative to the source folder | — |
 | `excel` | `path:` plus `sheet:` | — |
-| `database` | `table:` | — |
+| `database` | `table:` | `schema:`, `exclude_columns:` (source column names never read) |
 | `rest_api` | `endpoint:` and `records_path:` | `params:`, `pagination:` (`page`, `offset`, `cursor`, `next_link`) |
 
 Every dataset also takes:
@@ -98,6 +98,17 @@ schema version 1. With `columns:`, the storage type is yours:
 The types are `text`, `integer`, `decimal(P,S)`, `float`, `boolean`, `date`, `timestamp` and
 `json`. A value that does not fit its declared type is quarantined with the reason, rather than
 quietly becoming null. Timestamps are stored with a time zone, in UTC.
+
+Numbers with too many decimals for `decimal(P,S)` depend on where they came from. Spreadsheets
+and JSON store numbers as binary floats, so 731.94 arrives as 731.9399999999999; those are
+rounded half away from zero to the scale. Text is never rounded: "12.345" in a CSV column
+declared `decimal(12,2)` is quarantined, because someone wrote those three decimals.
+
+A database table brings its own types. `numeric(10,2)` is read as exactly that, so it needs no
+declaration; unbounded `numeric` arrives as text until you declare it. A domain (a named type
+with a rule, like Pagila's `year`) is read as the type underneath; enums as text; arrays as JSON
+text. Binary columns cannot be read — list them under `exclude_columns:`. Any other type is read
+as its text, and the run logs a `column read as text` warning naming the column.
 
 ## Checks
 

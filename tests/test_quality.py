@@ -18,8 +18,9 @@ from polars.testing import assert_frame_equal
 from udp.config.quality import Check
 from udp.config.source import load_source
 from udp.connectors.csv import CsvDataset
+from udp.errors import ValidationError
 from udp.pipeline.runner import RunOutcome, run_source
-from udp.quality.checks import check_rows
+from udp.quality.checks import check_columns, check_rows
 from udp.quality.quarantine import QUARANTINE_KEEP, quarantine, threshold_exceeded
 from udp.settings import Settings
 from udp.storage.loader import Loader, RunFindings
@@ -39,6 +40,28 @@ ROW_CHECKS: list[dict[str, Any]] = [
 def _checks(specs: list[dict[str, Any]]) -> list[Check]:
     dataset = CsvDataset.model_validate({"name": "d", "path": "d.csv", "checks": specs})
     return list(dataset.checks)
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {"check": "range", "column": "amount", "min": 0},
+        {"check": "accepted_values", "column": "amount", "values": [1, 2]},
+    ],
+)
+def test_a_number_check_on_a_text_column_says_to_declare_its_type(spec: dict[str, Any]) -> None:
+    schema = pl.Schema({"amount": pl.String()})
+
+    with pytest.raises(ValidationError, match="declare its type under columns:"):
+        check_columns(schema, _checks([spec]))
+
+
+def test_a_number_check_on_a_date_column_gives_no_declare_hint() -> None:
+    schema = pl.Schema({"amount": pl.Date()})
+
+    with pytest.raises(ValidationError) as raised:
+        check_columns(schema, _checks([{"check": "range", "column": "amount", "min": 0}]))
+    assert "declare" not in str(raised.value)
 
 
 def _fails(spec: dict[str, Any], row: dict[str, Any]) -> bool:

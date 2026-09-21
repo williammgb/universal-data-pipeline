@@ -1,19 +1,22 @@
 import json
 import time
 from collections.abc import Callable, Iterator, Sequence
+from decimal import Decimal
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Self
 from urllib.parse import quote
 
 import polars as pl
 import structlog
-from pydantic import ConfigDict, Field, SecretStr, field_validator
+from pydantic import ConfigDict, Field, SecretStr, field_validator, model_validator
 from sqlalchemy import URL, Column, Engine, MetaData, Table, create_engine, make_url, select, types
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import ArgumentError, NoSuchTableError, OperationalError, SQLAlchemyError
 
 from udp.connectors.base import ConnectionBase, DatasetBase, ExtractRequest, FileVersion
 from udp.connectors.retry import RETRY_WAITS, retry
 from udp.errors import ExtractError
+from udp.pipeline.transform import clean_column_names
 
 log = structlog.get_logger(step="extract")
 
@@ -45,6 +48,19 @@ class DatabaseDataset(DatasetBase):
 
     table: str
     table_schema: str | None = Field(default=None, alias="schema")
+    # Source column names, as the table has them, that are never read.
+    exclude_columns: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _keeps_the_columns_it_loads_by(self) -> Self:
+        needed = {self.watermark, *(self.primary_key or [])} - {None}
+        for name in self.exclude_columns:
+            (clean,) = clean_column_names([name])
+            if name in needed or clean in needed:
+                raise ValueError(
+                    f"exclude_columns: '{name}' is the watermark or part of the primary key"
+                )
+        return self
 
 
 def engine_url(url: str) -> URL:
@@ -56,12 +72,37 @@ def engine_url(url: str) -> URL:
 
 
 def _json_text(value: Any) -> str:
-    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    if isinstance(value, str):
+        return value
+    # default=str: an array of dates or decimals is still written, as their text.
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _finite(value: Decimal) -> Decimal:
+    """Postgres numeric may hold NaN; an exact decimal cannot, and Polars panics on one."""
+    if not value.is_finite():
+        raise ValueError(f"{value} is not a finite number")
+    return value
+
+
+# The widest exact decimal Polars holds; a wider numeric is read as its text.
+MAX_DECIMAL_PRECISION = 38
+
+
+def _underlying(kind: types.TypeEngine[Any]) -> types.TypeEngine[Any]:
+    """A domain's base type: a domain is a named built-in type with a rule attached."""
+    while isinstance(kind, postgresql.DOMAIN):
+        kind = kind.data_type
+    return kind
 
 
 def column_type(column: Column[Any]) -> tuple[pl.DataType, Convert]:
-    """The Polars type a reflected column is read as, and how each value is converted."""
-    kind = column.type
+    """The Polars type a reflected column is read as, and how each value is converted.
+
+    Binary columns are refused, because no text form of them is worth storing. Any other type
+    this function does not know is read as its text, with a warning naming the column.
+    """
+    kind = _underlying(column.type)
     if isinstance(kind, types.Boolean):
         return pl.Boolean(), None
     if isinstance(kind, types.Integer):
@@ -69,6 +110,11 @@ def column_type(column: Column[Any]) -> tuple[pl.DataType, Convert]:
     if isinstance(kind, types.Float):
         return pl.Float64(), float
     if isinstance(kind, types.Numeric):
+        precision, scale = kind.precision, kind.scale
+        if precision is not None and scale is not None and precision <= MAX_DECIMAL_PRECISION:
+            return pl.Decimal(precision, scale), _finite
+        # Unbounded numeric has no fixed number of decimals to hold it in, so it stays exact
+        # as text until the dataset declares a type for it.
         return pl.String(), str
     if isinstance(kind, types.DateTime):
         return (pl.Datetime("us", "UTC") if kind.timezone else pl.Datetime("us")), None
@@ -78,11 +124,17 @@ def column_type(column: Column[Any]) -> tuple[pl.DataType, Convert]:
         return pl.Time(), None
     if isinstance(kind, types.Uuid):
         return pl.String(), str
-    if isinstance(kind, types.JSON):
+    if isinstance(kind, types.JSON | types.ARRAY):
         return pl.String(), _json_text
     if isinstance(kind, types.String):
         return pl.String(), None
-    raise ExtractError(f"column '{column.name}' has type {kind}, which cannot be read yet")
+    if isinstance(kind, types.LargeBinary | types.BINARY | types.VARBINARY):
+        raise ExtractError(
+            f"column '{column.name}' has type {kind}, which cannot be read; "
+            "leave it out with exclude_columns"
+        )
+    log.warning("column read as text", column=column.name, type=str(column.type))
+    return pl.String(), str
 
 
 def _frame(
@@ -91,9 +143,9 @@ def _frame(
     values_by_column = list(zip(*rows, strict=True)) if rows else [() for _ in columns]
     series = []
     for (name, dtype, convert), values in zip(columns, values_by_column, strict=True):
-        if convert is not None:
-            values = tuple(None if value is None else convert(value) for value in values)
         try:
+            if convert is not None:
+                values = tuple(None if value is None else convert(value) for value in values)
             series.append(pl.Series(name, values, dtype=dtype, strict=True))
         except (TypeError, ValueError, OverflowError, pl.exceptions.PolarsError) as error:
             raise ExtractError(
@@ -147,8 +199,16 @@ class DatabaseConnector:
                     schema=request.dataset.table_schema,
                     autoload_with=connection,
                 )
-                columns = [(c.name, *column_type(c)) for c in table.columns]
-                query = select(table)
+                excluded = request.dataset.exclude_columns
+                missing = [name for name in excluded if name not in table.columns]
+                if missing:
+                    raise ExtractError(
+                        f"exclude_columns names {', '.join(repr(m) for m in missing)}, "
+                        f"which table '{table_name}' does not have"
+                    )
+                kept = [c for c in table.columns if c.name not in excluded]
+                columns = [(c.name, *column_type(c)) for c in kept]
+                query = select(*kept)
                 saved = request.watermark
                 if saved is not None:
                     column = table.columns.get(saved.column)

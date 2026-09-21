@@ -9,7 +9,7 @@ with hours 00-23 and seconds 00-59.
 
 import json
 from collections.abc import Callable, Iterator, Mapping
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any, cast
 
 import polars as pl
@@ -185,9 +185,30 @@ def _plain_decimal_text(text: str, precision: int, scale: int) -> str | None:
     return format(Decimal((sign, tuple(kept), exponent)), "f")
 
 
+def _rounded_text(text: str, precision: int, scale: int) -> str | None:
+    """A float's shortest text rounded half away from zero to the scale, or None if too big."""
+    value = Decimal(text)
+    if value.adjusted() >= precision - scale:
+        return None
+    with localcontext() as context:
+        context.prec = precision + 2
+        return format(value.quantize(Decimal(1).scaleb(-scale), ROUND_HALF_UP), "f")
+
+
 def _to_decimal(series: pl.Series, precision: int, scale: int) -> pl.Series:
     # A copy, because scatter below writes in place and must not touch the chunk's column.
     text = series.cast(pl.String).clone()
+    if series.dtype.is_float():
+        # A float is binary, so 731.94 from a spreadsheet arrives as 731.9399999999999: its
+        # extra digits are how it was stored, not what was typed, and it is rounded to the
+        # scale. Text is never rounded — "12.345" in decimal(12,2) is refused.
+        fraction = text.str.extract(r"\.([0-9]*)", 1).str.len_bytes().fill_null(0)
+        long = text.str.contains(_NUMBER) & ((fraction > scale) | text.str.contains(r"[eE]"))
+        long = long.fill_null(False)
+        if long.any():
+            rows = long.arg_true()
+            rounded = [_rounded_text(value, precision, scale) for value in text.filter(long)]
+            text = text.scatter(rows, rounded)
     exponent = (text.str.contains(r"[eE]") & text.str.contains(_NUMBER)).fill_null(False)
     if exponent.any():
         rows = exponent.arg_true()

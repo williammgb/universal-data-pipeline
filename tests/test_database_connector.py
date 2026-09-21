@@ -19,15 +19,18 @@ from sqlalchemy import (
     Date,
     DateTime,
     Float,
+    Integer,
     LargeBinary,
     MetaData,
     Numeric,
     String,
     Table,
+    Text,
     create_engine,
     insert,
     text,
 )
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import OperationalError
 
@@ -36,6 +39,8 @@ from udp.connectors.database import (
     DatabaseConnection,
     DatabaseConnector,
     DatabaseDataset,
+    _frame,
+    column_type,
     engine_url,
 )
 from udp.errors import ExtractError
@@ -52,11 +57,12 @@ def _extract(
     chunk_size: int,
     connector: DatabaseConnector | None = None,
     watermark: SavedWatermark | None = None,
+    exclude: list[str] | None = None,
 ) -> Iterator[pl.DataFrame]:
     request = ExtractRequest(
         source_dir=Path("."),
         connection=DatabaseConnection(type="database", url=SecretStr(url)),
-        dataset=DatabaseDataset(name="data", table=table),
+        dataset=DatabaseDataset(name="data", table=table, exclude_columns=exclude or []),
         chunk_size=chunk_size,
         watermark=watermark,
     )
@@ -158,7 +164,7 @@ def test_column_types_are_taken_from_the_table_definition(tmp_path: Path) -> Non
 
     assert dict(chunk.schema) == {
         "id": pl.Int64,
-        "amount": pl.String,
+        "amount": pl.Decimal(10, 2),
         "ratio": pl.Float64,
         "paid": pl.Boolean,
         "ordered_on": pl.Date,
@@ -167,7 +173,7 @@ def test_column_types_are_taken_from_the_table_definition(tmp_path: Path) -> Non
     }
     assert chunk.row(0) == (
         1,
-        "12.30",
+        Decimal("12.30"),
         0.5,
         True,
         date(2024, 1, 2),
@@ -191,8 +197,96 @@ def test_unsupported_column_type_names_the_column(tmp_path: Path) -> None:
     path = tmp_path / "source.db"
     _create(path, [Column("id", BigInteger), Column("photo", LargeBinary)], [])
 
-    with pytest.raises(ExtractError, match="photo"):
+    with pytest.raises(ExtractError, match=r"photo.*exclude_columns"):
         list(_extract(_sqlite_url(path), "items", 10))
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        # A domain is read as the type underneath it, however deeply nested.
+        (postgresql.DOMAIN("year", Integer()), pl.Int64()),
+        (postgresql.DOMAIN("price", postgresql.DOMAIN("money2", Numeric(8, 2))), pl.Decimal(8, 2)),
+        (postgresql.ENUM("G", "PG", name="rating"), pl.String()),
+        (postgresql.ARRAY(Text()), pl.String()),
+        (postgresql.TSVECTOR(), pl.String()),
+        (postgresql.INTERVAL(), pl.String()),
+        (Numeric(38, 10), pl.Decimal(38, 10)),
+        (Numeric(39, 2), pl.String()),
+        (Numeric(), pl.String()),
+    ],
+)
+def test_each_column_type_is_read_as(kind: Any, expected: pl.DataType) -> None:
+    dtype, _ = column_type(Column("c", kind))
+
+    assert dtype == expected
+
+
+def test_a_type_read_as_text_says_so_once_naming_the_column(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_logging()
+    _, convert = column_type(Column("fulltext", postgresql.TSVECTOR()))
+
+    assert convert is not None and convert("'dvd':1") == "'dvd':1"
+    line = capsys.readouterr().out.strip()
+    assert "column read as text" in line and "fulltext" in line and "TSVECTOR" in line
+
+
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity"])
+def test_a_numeric_that_is_not_a_number_fails_naming_the_column(value: str) -> None:
+    rows = [(Decimal("1.50"),), (Decimal(value),)]
+    columns = [("rate", *column_type(Column("rate", Numeric(10, 2))))]
+
+    with pytest.raises(ExtractError, match=r"column 'rate' of table 'items'.*not a finite"):
+        _frame(rows, columns, "items")
+
+
+def test_an_array_is_read_as_json_text() -> None:
+    _, convert = column_type(Column("tags", postgresql.ARRAY(Text())))
+
+    assert convert is not None
+    assert convert(["Trailers", "Deleted Scenes"]) == '["Trailers", "Deleted Scenes"]'
+    assert convert([date(2024, 1, 2), Decimal("1.50")]) == '["2024-01-02", "1.50"]'
+
+
+def test_excluded_columns_are_never_read(tmp_path: Path) -> None:
+    path = tmp_path / "source.db"
+    _create(
+        path,
+        [Column("id", BigInteger), Column("photo", LargeBinary), Column("name", String)],
+        [{"id": 1, "photo": b"\x00\x01", "name": "a"}],
+    )
+
+    (chunk,) = list(_extract(_sqlite_url(path), "items", 10, exclude=["photo"]))
+
+    assert chunk.columns == ["id", "name"]
+    assert chunk.row(0) == (1, "a")
+
+
+def test_excluding_a_column_the_table_lacks_names_it(tmp_path: Path) -> None:
+    path = tmp_path / "source.db"
+    _create(path, [Column("id", BigInteger)], [])
+
+    with pytest.raises(ExtractError, match=r"'gone'.*does not have"):
+        list(_extract(_sqlite_url(path), "items", 10, exclude=["gone"]))
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"load_mode": "append", "watermark": "changed", "exclude_columns": ["changed"]},
+        {
+            "load_mode": "merge",
+            "watermark": "changed",
+            "primary_key": ["id"],
+            "exclude_columns": ["id"],
+        },
+    ],
+)
+def test_the_watermark_and_primary_key_cannot_be_excluded(fields: dict[str, Any]) -> None:
+    with pytest.raises(ValidationError, match="watermark or part of the primary key"):
+        DatabaseDataset(name="items", table="items", **fields)
 
 
 def test_text_stored_in_an_integer_column_names_the_column(tmp_path: Path) -> None:

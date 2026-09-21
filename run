@@ -148,7 +148,7 @@ stack_stop() {
 }
 
 migrate() {
-  uv run --locked alembic upgrade head
+  uv run --locked udp migrate
 }
 
 fast_gate() {
@@ -200,7 +200,7 @@ full_gate() {
   code=0
   stack_start udp-gate 45432 45442 45452 &&
     migrate &&
-    compose build app &&
+    compose build app migrate &&
     HYPOTHESIS_PROFILE=ci uv run --locked python -m pytest -q "$@" || code=$?
   stack_stop || true
   return "$code"
@@ -208,8 +208,10 @@ full_gate() {
 
 SMOKE_SOURCES="demo_csv demo_excel demo_db demo_api"
 
+# migrate is built with app every time: compose gives it an image of its own, which down -v
+# keeps, so a migrate image left from an older smoke would apply older migrations.
 smoke_sources() {
-  compose build app || return
+  compose build app migrate || return
   for source in $SMOKE_SOURCES; do
     compose run --rm app run "$source" || return
   done
@@ -389,7 +391,7 @@ memory_run() {
   uv run --locked python tests/scale_csv.py .work/scale "$rows" &&
     stack_start udp-memory 45435 &&
     migrate &&
-    compose build scale-load &&
+    compose build scale-load migrate &&
     { compose run --rm --entrypoint sh scale-load -c \
       'udp run scale_csv --full-refresh; ran=$?; echo "peak_bytes $(cat /sys/fs/cgroup/memory.peak)"; exit $ran' \
       && echo 0 > "$log.code" || echo $? > "$log.code"; } 2>&1 | tee "$log"
@@ -402,10 +404,11 @@ memory_run() {
   [ "$peak" -le "$MEMORY_LIMIT_BYTES" ] || { echo "over the memory target"; return 1; }
 }
 
+# No migrate from this machine here: the stack starts on an empty database, and the first
+# container run must create the platform tables through compose's migrate service alone.
 smoke_gate() {
   code=0
   stack_start udp-smoke 45433 45443 45453 45463 45473 &&
-    migrate &&
     smoke_sources || code=$?
   stack_stop || true
   return "$code"

@@ -1,0 +1,39 @@
+connection:
+  type: database
+  # Pagila, the DVD-rental sample database, loaded into the demo source database by hand:
+  #   curl -o pagila.sql https://raw.githubusercontent.com/neondatabase/postgres-sample-dbs/main/pagila.sql
+  #   docker compose -f deploy/compose.yaml exec -T source-postgres psql -U source -d source < pagila.sql
+  # Without that, every dataset here fails with "table ... not found".
+  url: ${DEMO_DB_URL}
+datasets:
+  - name: actor
+    table: actor
+    load_mode: full
+  - name: film
+    table: film
+    load_mode: full
+  - name: customer
+    table: customer
+    load_mode: merge
+    watermark: last_update
+    primary_key: [customer_id]
+    checks:
+      - check: unique
+        columns: [customer_id]
+      - check: regex
+        column: email
+        pattern: "^[^@]+@[^@]+$"
+        severity: warn
+  - name: rental
+    table: rental
+    load_mode: merge
+    watermark: last_update
+    primary_key: [rental_id]
+  - name: payment
+    table: payment
+    load_mode: append
+    watermark: payment_date
+    checks:
+      - check: range
+        column: amount
+        min: 0

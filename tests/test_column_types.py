@@ -2,7 +2,7 @@ import json
 import math
 import re
 from datetime import UTC, date, datetime, time
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
 from itertools import pairwise
 from typing import Any
 
@@ -68,7 +68,13 @@ def model(value: Any, source: str, declared: str) -> Any:
         if source == "text":
             return _decimal_model(Decimal(value), 6, 2) if NUMBER.fullmatch(value) else BAD
         if source == "float":
-            return _decimal_model(Decimal(repr(value)), 6, 2) if math.isfinite(value) else BAD
+            # A float's extra digits are how it was stored, so it is rounded half away from
+            # zero to the scale first; text and exact decimals are never rounded.
+            if not math.isfinite(value):
+                return BAD
+            with localcontext(prec=400, Emax=999_999_999, Emin=-999_999_999):
+                rounded = Decimal(repr(value)).quantize(Decimal("0.01"), ROUND_HALF_UP)
+            return _decimal_model(rounded, 6, 2)
         return _decimal_model(Decimal(value), 6, 2)
     if declared == "float":
         if source == "text":
@@ -193,7 +199,27 @@ SOURCES: dict[str, tuple[pl.DataType, st.SearchStrategy[Any]]] = {
         pl.Float64(),
         st.one_of(
             st.floats(allow_nan=True),
-            st.sampled_from([0.5, 12.34, 12.345, 1e20, 2.0**63, -(2.0**63), 9999.99, 1e-7, 3.0]),
+            # The last five are spreadsheet-style: a stored tail, a half to round up, a round
+            # up past the precision, a negative half that must not round toward zero, and
+            # a value that rounds to zero.
+            st.sampled_from(
+                [
+                    0.5,
+                    12.34,
+                    12.345,
+                    1e20,
+                    2.0**63,
+                    -(2.0**63),
+                    9999.99,
+                    1e-7,
+                    3.0,
+                    731.9399999999999,
+                    2.675,
+                    9999.995,
+                    -0.005,
+                    1e-3,
+                ]
+            ),
         ),
     ),
     "decimal": (
@@ -309,6 +335,20 @@ def test_a_bad_row_is_quarantined_as_read_with_every_unfit_column_named() -> Non
         "column 'amount' is not decimal(6,2)",
     ]
     assert json.loads(quarantined["record"][1]) == {"id": "3", "amount": "x", "day": "2024-01-03"}
+
+
+def test_floats_round_half_away_from_zero_to_the_scale_and_text_never_does() -> None:
+    floats = pl.Series("v", [731.9399999999999, 2.675, -0.005, 9999.995, 12.3])
+    texts = pl.Series("v", ["731.9399999999999", "2.675", "12.345", "12.3"])
+
+    assert convert(floats, DECIMAL).to_list() == [
+        Decimal("731.94"),
+        Decimal("2.68"),
+        Decimal("-0.01"),
+        None,  # 10000.00 does not fit decimal(6,2)
+        Decimal("12.30"),
+    ]
+    assert convert(texts, DECIMAL).to_list() == [None, None, None, Decimal("12.30")]
 
 
 @pytest.mark.parametrize(

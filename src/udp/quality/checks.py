@@ -59,6 +59,13 @@ def _literal(value: Any, dtype: pl.DataType) -> pl.Expr:
     return pl.lit(value)
 
 
+def _declare_hint(dtype: pl.DataType) -> str:
+    """For a text column, how to make it comparable: numbers and dates often arrive as text."""
+    if isinstance(dtype, pl.String):
+        return "; declare its type under columns: (for example decimal(10,2) or date)"
+    return ""
+
+
 def check_columns(schema: pl.Schema, checks: Sequence[Check]) -> None:
     """Every check names columns that exist, of a type the check can compare."""
     for position, check in enumerate(checks):
@@ -84,7 +91,7 @@ def check_columns(schema: pl.Schema, checks: Sequence[Check]) -> None:
             if not fits:
                 raise ValidationError(
                     f"{where}: column '{column}' is {dtype} and cannot be compared with "
-                    f"{', '.join(repr(b) for b in bounds)}"
+                    f"{', '.join(repr(b) for b in bounds)}{_declare_hint(dtype)}"
                 )
         if isinstance(check, Freshness) and not isinstance(dtype, pl.Date | pl.Datetime | pl.Null):
             raise ValidationError(f"{where}: column '{column}' is {dtype}, not a date or timestamp")
@@ -102,6 +109,7 @@ def check_columns(schema: pl.Schema, checks: Sequence[Check]) -> None:
             if not fits:
                 raise ValidationError(
                     f"{where}: column '{column}' is {dtype} and cannot be compared with its values"
+                    f"{_declare_hint(dtype)}"
                 )
 
 
