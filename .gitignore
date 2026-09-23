@@ -1,9 +1,6 @@
-# The spec, the done ledger and the journal are the record; everything else the
-# workflow writes into .work/ is regenerated.
-.work/*
-!.work/SPEC.md
-!.work/slices.json
-!.work/JOURNAL.md
+# Working state for a session — the plan, the journal, the done ledger, gate logs.
+# None of it belongs in the repository.
+.work/
 
 .claude/settings.local.json
 
