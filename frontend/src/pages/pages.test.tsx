@@ -181,6 +181,19 @@ const PROFILE: DatasetProfile = {
       pattern: "^[A-Z]{2}\\-[0-9]{5}$",
       pattern_share: 0.9957,
     },
+    {
+      name: "city",
+      type: "text",
+      kind: "text",
+      missing: 0,
+      distinct: 20,
+      appear_once: 20,
+      most_used: [
+        { value: "city 1", count: 1 },
+        { value: "city 10", count: 1 },
+        { value: "city 11", count: 1 },
+      ],
+    },
   ],
 };
 
@@ -307,9 +320,19 @@ describe("the dashboard", () => {
     expect(colour.textContent).not.toContain("Least used");
     const code = screen.getByRole("article", { name: "column code" });
     expect(code.textContent).toContain("^[A-Z]{2}\\-[0-9]{5}$");
-    expect(code.textContent).toContain("99.6% of values match this pattern");
+    expect(code.textContent).toContain("99.6% match");
     expect(code.textContent).toContain("Most used");
-    expect(code.textContent).toContain("5 appear once; the first 3 by value are shown");
+    expect(code.textContent).toContain("Least used");
+    expect(code.textContent).toContain("793 distinct values · 5 appear once");
+    // The dashboard states facts; how the three were picked is not one of them.
+    expect(code.textContent).not.toContain("the first 3 by value");
+    const city = screen.getByRole("article", { name: "column city" });
+    // Every value appears once: one list, and not called most used.
+    expect(city.textContent).toContain("Values");
+    expect(city.textContent).not.toContain("Most used");
+    expect(city.textContent).not.toContain("Least used");
+    expect(city.textContent).toContain("20 distinct values");
+    expect(city.textContent).not.toContain("appear once");
     const day = screen.getByRole("article", { name: "column ordered" });
     expect(day.textContent).toContain("earliest");
     expect(day.textContent).toContain("2015-01-03 00:00");
@@ -320,6 +343,8 @@ describe("the dashboard", () => {
     show("/settings");
 
     (await screen.findByLabelText(/Show them in full/)).click();
+    expect(screen.queryByText(/Kept in this browser/)).toBeNull();
+    expect(screen.queryByText(/Cut at 22 characters/)).toBeNull();
     await waitFor(() => expect(document.documentElement.classList.contains(FULL_CLASS)).toBe(true));
     expect(window.localStorage.getItem("udp.longValues")).toBe("full");
 

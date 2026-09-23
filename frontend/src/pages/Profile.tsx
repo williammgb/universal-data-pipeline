@@ -117,8 +117,7 @@ function Card({ column, rows }: { column: ColumnProfile; rows: number }) {
         <div>
           <div className="pattern">{column.pattern}</div>
           <small className="muted">
-            {((column.pattern_share ?? 0) * 100).toFixed(1).replace(/\.0$/, "")}% of values match
-            this pattern
+            {((column.pattern_share ?? 0) * 100).toFixed(1).replace(/\.0$/, "")}% match
           </small>
         </div>
       ) : null}
@@ -127,22 +126,18 @@ function Card({ column, rows }: { column: ColumnProfile; rows: number }) {
           <Values title="Every value" values={column.all_values} />
         </div>
       ) : null}
-      {column.most_used && column.least_used ? (
-        <div className="values">
-          <Values title="Most used" values={column.most_used} />
-          <Values title="Least used" values={column.least_used} />
+      {column.most_used ? (
+        <div className={column.least_used ? "values" : "values one"}>
+          {/* With every count equal there is no ranking, so the list is not called "most used". */}
+          <Values title={column.least_used ? "Most used" : "Values"} values={column.most_used} />
+          {column.least_used ? <Values title="Least used" values={column.least_used} /> : null}
         </div>
       ) : null}
       {column.kind === "text" ? (
         <p className="muted">
           {count(column.distinct ?? 0)} distinct values
-          {column.least_used && once > 0
-            ? ` · ${count(once)} appear once${once > 3 ? "; the first 3 by value are shown" : ""}`
-            : ""}
+          {once > 0 && once !== column.distinct ? ` · ${count(once)} appear once` : ""}
         </p>
-      ) : null}
-      {column.kind === "other" ? (
-        <p className="muted">Only missing values are counted for this type.</p>
       ) : null}
     </article>
   );

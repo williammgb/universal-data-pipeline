@@ -76,6 +76,9 @@ services:
           cpus: "1"
           memory: 512m
 
+  # The anchor every container built from this image inherits, and the one-off runner for
+  # `compose run --rm app run <source>`. Its own profile keeps it out of a plain `up`, which
+  # the containers below undo with an empty profile list so they start by default.
   app: &app
     profiles: ["app"]
     build:
@@ -108,7 +111,7 @@ services:
   # waits for it. Running it on an up-to-date database changes nothing.
   migrate:
     <<: *app
-    profiles: ["app", "scale"]
+    profiles: []
     command: ["migrate"]
     depends_on:
       postgres:
@@ -122,6 +125,7 @@ services:
   # The HTTP API, published on this machine only until it has API keys (slice 10).
   api:
     <<: *app
+    profiles: []
     command: ["api", "--host", "0.0.0.0"]
     ports:
       - "127.0.0.1:${UDP_API_PORT:-8000}:8000"
@@ -132,6 +136,27 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+
+  # Loads the four demo sources once, so `--profile demo up` gives a dashboard with data in it.
+  # Running it again reloads nothing that has not changed.
+  demo-load:
+    <<: *app
+    profiles: ["demo"]
+    command: ["run", "demo_csv", "demo_excel", "demo_db", "demo_api"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      source-postgres:
+        condition: service_healthy
+      mock-api:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2g
 
   # Loads the five-million-row source for ./run memory, so the peak can be read from the
   # container's own accounting. Never part of a gate.
@@ -175,6 +200,7 @@ services:
   # Runs every dataset with a `schedule:` in source.yaml; schedules are read at start.
   scheduler:
     <<: *app
+    profiles: []
     command: ["schedule"]
     init: true
     restart: unless-stopped

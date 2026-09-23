@@ -172,6 +172,7 @@ describes the code that ran, and editing it makes the next run reload everything
 
 ```
 uv run --locked udp run my_shop                  every dataset of the source
+uv run --locked udp run my_shop other_shop       several sources, one after another
 uv run --locked udp run my_shop --full-refresh   forget the saved state and reload
 ```
 
@@ -181,7 +182,7 @@ configuration is invalid — with the file and field named.
 To have it run by itself, give the dataset a `schedule:` and start the scheduler:
 
 ```
-docker compose -f deploy/compose.yaml --profile app up -d scheduler
+docker compose -f deploy/compose.yaml up -d scheduler
 ```
 
 ## Seeing it

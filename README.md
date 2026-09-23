@@ -34,37 +34,42 @@ export POSTGRES_PASSWORD=pick-a-password
 export UDP_API_KEYS=pick-a-key
 ```
 
-**2. Start the platform.** This starts the database, the dashboard and API, the scheduler, and
-the demo sources (a sample business database and a sample REST API):
+**2. Start it.** The database, the dashboard and API, and the scheduler:
 
 ```
-docker compose -f deploy/compose.yaml --profile app --profile demo up -d --build --wait
+docker compose -f deploy/compose.yaml up -d --build --wait
+```
+
+Or start it with the demo in place — the same platform plus a sample business database and a
+sample REST API, with all four demo sources already loaded:
+
+```
+docker compose -f deploy/compose.yaml --profile demo up -d --build --wait
 ```
 
 The platform's tables are created (or updated to a newer version) by a one-off `migrate`
 container that every other container waits for.
 
-**3. Load some data.** Each command runs one source folder from `sources/`:
-
-```
-docker compose -f deploy/compose.yaml --profile app run --rm app run demo_csv
-docker compose -f deploy/compose.yaml --profile app run --rm app run demo_excel
-docker compose -f deploy/compose.yaml --profile app run --rm app run demo_db
-docker compose -f deploy/compose.yaml --profile app run --rm app run demo_api
-```
-
-**4. Open the dashboard** at http://127.0.0.1:8000 and enter your API key when it asks for it.
+**3. Open the dashboard** at http://127.0.0.1:8000 and enter your API key when it asks for it.
 From there you can browse datasets, their columns, previews, quality results and run history,
 and use **Run now** on a dataset page to load it again.
 
+**4. Load your own data.** Put a folder in `sources/` (see below) and run it by name; several
+names in one command run one after another:
+
+```
+docker compose -f deploy/compose.yaml run --rm app run my_source
+```
+
 Datasets that have a `schedule:` in their `source.yaml` are also run by the scheduler on their
-own. To add your own data, put a new folder in `sources/` (see below) and run step 3 with its
-name.
+own. The four `demo_*` folders shipped in `sources/` count: `demo_csv` is scheduled every
+minute, so even a start without the demo profile loads it. Delete the demo folders for a clean
+installation.
 
 To stop everything, keeping the data:
 
 ```
-docker compose -f deploy/compose.yaml --profile app --profile demo down
+docker compose -f deploy/compose.yaml --profile demo down
 ```
 
 Add `-v` to that command to delete the data as well.
@@ -74,7 +79,7 @@ by `UDP_DATABASE_URL`:
 
 ```
 uv run --locked udp migrate                 create or update the platform's tables
-uv run --locked udp run demo_csv            load one source now
+uv run --locked udp run demo_csv            load one source now (or several, by name)
 uv run --locked udp schedule                run every scheduled dataset until stopped
 uv run --locked udp api                     serve the dashboard and the API on 127.0.0.1:8000
 uv run --locked udp doctor                  check the database connection

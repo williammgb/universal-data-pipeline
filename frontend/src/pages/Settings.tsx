@@ -2,17 +2,9 @@ import { useState } from "react";
 
 import { chooseLongValues, longValues, type LongValues } from "../settings";
 
-const CHOICES: { value: LongValues; label: string; help: string }[] = [
-  {
-    value: "shorten",
-    label: "Shorten them",
-    help: "Cut at 22 characters with “…”; point at a value to read all of it.",
-  },
-  {
-    value: "full",
-    label: "Show them in full",
-    help: "Long values wrap onto more lines, so rows get taller.",
-  },
+const CHOICES: { value: LongValues; label: string }[] = [
+  { value: "shorten", label: "Shorten them" },
+  { value: "full", label: "Show them in full" },
 ];
 
 export default function Settings() {
@@ -40,13 +32,9 @@ export default function Settings() {
               checked={choice === item.value}
               onChange={() => choose(item.value)}
             />
-            <span>
-              {item.label}
-              <small>{item.help}</small>
-            </span>
+            <span>{item.label}</span>
           </label>
         ))}
-        <p className="note">Kept in this browser, for every table of values on this dashboard.</p>
       </section>
     </main>
   );

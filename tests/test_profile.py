@@ -184,7 +184,9 @@ def test_a_known_table_is_profiled_exactly(conn: psycopg.Connection[dict[str, An
     code = columns["code"]
     assert (code.pattern, code.pattern_share) == ("^[A-Z]{2}\\-[0-9]{3}$", 0.95)
     assert code.distinct == 20 and code.appear_once == 20
-    assert [v.value for v in code.least_used or []] == ["AB-101", "AB-102", "AB-103"]
+    # Every value appears once, so there is no least used one; only the one list comes back.
+    assert code.least_used is None
+    assert [v.value for v in code.most_used or []] == ["AB-101", "AB-102", "AB-103"]
     colour = columns["colour"]
     # Fewer than 6 distinct values: every one is listed, most used first, ties by value.
     assert [(v.value, v.count) for v in colour.all_values or []] == [
@@ -201,6 +203,7 @@ def test_a_known_table_is_profiled_exactly(conn: psycopg.Connection[dict[str, An
         ("city 10", 1),
         ("city 11", 1),
     ]
+    assert city.least_used is None
     flag = columns["flag"]
     assert [(v.value, v.count) for v in flag.all_values or []] == [("false", 10), ("true", 10)]
     # "true" and "false" share a shape, so a pattern here would say nothing.
@@ -270,6 +273,23 @@ def test_histogram_bars_add_up_to_the_finite_values(
     assert (v.min, v.max) == ("-3.50", "100.00")
     # -3.5 becomes -4 as an integer (Postgres rounds halves away from zero): 120 days earlier.
     assert d.min == (date(2020, 2, 29) - timedelta(days=120)).isoformat()
+
+
+@pytest.mark.db
+def test_most_and_least_used_never_share_a_value(conn: psycopg.Connection[dict[str, Any]]) -> None:
+    # Seven values with a real ranking: g appears 7 times down to a once.
+    name = _table(
+        conn,
+        "word text",
+        "SELECT chr(96 + i) FROM generate_series(1, 7) AS i, generate_series(1, i) AS j",
+    )
+
+    (word,) = profile_table(conn, name, _columns(conn, name), json_value).columns
+
+    assert [(v.value, v.count) for v in word.most_used or []] == [("g", 7), ("f", 6), ("e", 5)]
+    assert [(v.value, v.count) for v in word.least_used or []] == [("a", 1), ("b", 2), ("c", 3)]
+    shared = {v.value for v in word.most_used or []} & {v.value for v in word.least_used or []}
+    assert shared == set()
 
 
 @pytest.mark.db

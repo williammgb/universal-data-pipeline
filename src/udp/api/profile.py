@@ -275,9 +275,11 @@ def _add_values(
             "(SELECT coalesce(json_agg(json_build_array(left(v, %s), n)), '[]') FROM "
             "(SELECT v, n FROM g ORDER BY n DESC, v LIMIT %s) AS top) AS top, "
             "(SELECT coalesce(json_agg(json_build_array(left(v, %s), n)), '[]') FROM "
-            "(SELECT v, n FROM g ORDER BY n, v LIMIT %s) AS bottom) AS bottom"
+            "(SELECT v, n FROM g ORDER BY n, v LIMIT %s) AS bottom) AS bottom, "
+            "(SELECT min(n) FROM g) AS low, (SELECT max(n) FROM g) AS high"
         ).format(c=column, s=source),
-        [SHOWN_LENGTH, LIST_ALL_BELOW - 1, SHOWN_LENGTH, SHOWN_VALUES],
+        # Twice the shown values from the bottom: up to three of them are also at the top.
+        [SHOWN_LENGTH, LIST_ALL_BELOW - 1, SHOWN_LENGTH, SHOWN_VALUES * 2],
     ).fetchone()
     if found is None:
         return
@@ -288,7 +290,12 @@ def _add_values(
         profile.all_values = top
     else:
         profile.most_used = top[:SHOWN_VALUES]
-        profile.least_used = [ValueCount(value=v, count=n) for v, n in found["bottom"]]
+        # Where every value appears the same number of times, no value is used less than
+        # another, so there is no second list; where they differ, it never repeats the first.
+        if found["low"] != found["high"]:
+            shown = {value.value for value in profile.most_used}
+            least = [ValueCount(value=v, count=n) for v, n in found["bottom"] if v not in shown]
+            profile.least_used = least[:SHOWN_VALUES]
     if stored_type == "boolean":
         # "true" and "false" share a shape, so every boolean column would show ^[a-z]+$.
         return

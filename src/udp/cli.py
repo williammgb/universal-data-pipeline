@@ -45,31 +45,38 @@ def main(
 
 @app.command()
 def run(
-    source: Annotated[str, typer.Argument(help="Folder name under sources/.")],
+    sources: Annotated[list[str], typer.Argument(help="Folder names under sources/.")],
     full_refresh: Annotated[
         bool,
         typer.Option("--full-refresh", help="Delete each dataset's table and load it again."),
     ] = False,
 ) -> None:
-    """Load every dataset of a source.
+    """Load every dataset of each source, in the order given.
 
     Exit 0 when every run succeeded or was skipped because another run of its dataset was in
     progress, 1 when a run failed, 2 on invalid config.
     """
     configure_logging()
     settings = Settings()  # type: ignore[call-arg]
-    try:
-        config = load_source(settings.sources_dir, source, read_environment(Path(".env")))
-    except ConfigError as error:
-        structlog.get_logger().error(
-            "invalid source config", step="config", source=source, error=str(error)
-        )
-        raise typer.Exit(2) from error
+    environment = read_environment(Path(".env"))
+    configs = []
+    for source in sources:
+        try:
+            configs.append((source, load_source(settings.sources_dir, source, environment)))
+        except ConfigError as error:
+            structlog.get_logger().error(
+                "invalid source config", step="config", source=source, error=str(error)
+            )
+            raise typer.Exit(2) from error
+    failed = False
     with PostgresLoader(settings.database_url) as loader:
-        outcomes = run_source(
-            source, config, settings.sources_dir, loader, full_refresh=full_refresh
-        )
-    if any(outcome.status == "failed" for outcome in outcomes):
+        for source, config in configs:
+            outcomes = run_source(
+                source, config, settings.sources_dir, loader, full_refresh=full_refresh
+            )
+            if any(outcome.status == "failed" for outcome in outcomes):
+                failed = True
+    if failed:
         raise typer.Exit(1)
 
 
