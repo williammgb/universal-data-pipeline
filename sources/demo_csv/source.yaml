@@ -4,7 +4,9 @@ datasets:
   - name: customers
     path: data/customers.csv
     load_mode: full
-    schedule: "* * * * *"
+    # Unset everywhere but the smoke gate, so an installation that only wants the platform
+    # never finds demo data loading itself.
+    schedule: "${DEMO_SCHEDULE:-}"
     columns:
       customer_id: integer
       signup_date: date

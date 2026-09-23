@@ -89,6 +89,9 @@ services:
       DEMO_DB_URL: postgresql://source:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@source-postgres:5432/source
       DEMO_API_URL: http://mock-api:8000
       DEMO_API_TOKEN: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      # Empty unless it is set: demo_csv then schedules itself nowhere. The smoke gate sets it,
+      # because its scheduler check needs a dataset that runs every minute.
+      DEMO_SCHEDULE: ${DEMO_SCHEDULE:-}
       UDP_API_KEYS: ${UDP_API_KEYS:-}
     volumes:
       - ../sources:/app/sources:ro

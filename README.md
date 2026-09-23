@@ -62,9 +62,8 @@ docker compose -f deploy/compose.yaml run --rm app run my_source
 ```
 
 Datasets that have a `schedule:` in their `source.yaml` are also run by the scheduler on their
-own. The four `demo_*` folders shipped in `sources/` count: `demo_csv` is scheduled every
-minute, so even a start without the demo profile loads it. Delete the demo folders for a clean
-installation.
+own. The four `demo_*` folders shipped in `sources/` schedule nothing, so a start without the
+demo profile leaves the scheduler with nothing to do.
 
 To stop everything, keeping the data:
 

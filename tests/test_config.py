@@ -39,6 +39,25 @@ def test_references_are_filled_from_the_environment(tmp_path: Path) -> None:
     assert config.connection.auth.token.get_secret_value() == "secret"
 
 
+SCHEDULED_SOURCE = (
+    "connection:\n  type: csv\n"
+    "datasets:\n  - name: rows\n    path: data/rows.csv\n"
+    '    schedule: "${WHEN:-}"\n'
+)
+
+
+def test_a_schedule_that_fills_out_empty_leaves_the_dataset_unscheduled(tmp_path: Path) -> None:
+    _write_source(tmp_path / "sources", "csv", SCHEDULED_SOURCE)
+
+    unset = load_source(tmp_path / "sources", "csv", {})
+    blank = load_source(tmp_path / "sources", "csv", {"WHEN": "   "})
+    set_to_a_time = load_source(tmp_path / "sources", "csv", {"WHEN": "0 6 * * *"})
+
+    assert unset.datasets[0].schedule is None
+    assert blank.datasets[0].schedule is None
+    assert set_to_a_time.datasets[0].schedule == "0 6 * * *"
+
+
 WIDE_SECRET = st.text(
     alphabet=st.characters(blacklist_categories=["Cs", "Cc"], blacklist_characters="\\"),
     min_size=8,

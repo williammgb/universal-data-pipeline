@@ -31,7 +31,9 @@ DEMO_COLUMNS = [
 
 
 def _run_demo(loader: MemoryLoader, chunk_size: int = 7) -> list[str]:
-    config = load_source(SOURCES, "demo_csv")
+    # An explicit environment, so what these tests read does not depend on what is set around
+    # them — demo_csv's schedule is a ${DEMO_SCHEDULE:-} reference.
+    config = load_source(SOURCES, "demo_csv", {})
     outcomes = run_source("demo_csv", config, SOURCES, loader, chunk_size=chunk_size)
     return [outcome.status for outcome in outcomes]
 
@@ -181,7 +183,9 @@ def test_a_run_copies_its_source_settings_as_written() -> None:
     copied = loader.datasets[("demo_csv", "customers")]
     written = yaml.safe_load((SOURCES / "demo_csv" / "source.yaml").read_text(encoding="utf-8"))
     assert copied["definition"] == written["datasets"][0]
-    assert (copied["table_name"], copied["schedule"]) == (DEMO_TABLE, "* * * * *")
+    # The copy keeps the reference as written, and the schedule is what it filled out to —
+    # nothing, because DEMO_SCHEDULE is set only where a demo is wanted.
+    assert (copied["table_name"], copied["schedule"]) == (DEMO_TABLE, None)
 
 
 def test_a_run_of_a_source_with_secrets_copies_only_their_references(

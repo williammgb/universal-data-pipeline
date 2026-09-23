@@ -367,8 +367,31 @@ describe("the dashboard", () => {
 
     expect(await screen.findByText("Delft")).toBeTruthy();
     expect(screen.getByText("null")).toBeTruthy();
-    expect(screen.getByText("Rows 1–2 of this table")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Next" }).hasAttribute("disabled")).toBe(true);
+    // The same line and the same two buttons above the table and below it.
+    expect(screen.getAllByText("Rows 1–2 of this table (total 20 rows)")).toHaveLength(2);
+    const next = screen.getAllByRole("button", { name: "Next" });
+    const previous = screen.getAllByRole("button", { name: "Previous" });
+    expect(next).toHaveLength(2);
+    expect(previous).toHaveLength(2);
+    for (const button of [...next, ...previous]) {
+      expect(button.hasAttribute("disabled")).toBe(true);
+    }
+  });
+
+  it("pages with the buttons above the table", async () => {
+    serve({
+      "GET /api/datasets/demo_csv/customers": { body: DETAIL },
+      "GET /api/datasets/demo_csv/customers/rows": { body: { ...ROWS, has_more: true } },
+    });
+
+    show("/datasets/demo_csv/customers?tab=preview");
+
+    const [topNext] = await screen.findAllByRole("button", { name: "Next" });
+    topNext?.click();
+    expect(await screen.findAllByText("Rows 51–52 of this table (total 20 rows)")).toHaveLength(2);
+    const [topPrevious] = screen.getAllByRole("button", { name: "Previous" });
+    topPrevious?.click();
+    expect(await screen.findAllByText("Rows 1–2 of this table (total 20 rows)")).toHaveLength(2);
   });
 
   it("shows a warn-level check that failed", async () => {

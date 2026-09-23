@@ -37,6 +37,12 @@ type per column, and replaces the table `datasets.my_shop__customers`. The run i
 One connection per source, named by `type`. Secrets are never written here: use `${NAME}` and
 keep the value in an uncommitted `.env` or in the environment.
 
+References work in every field of this file, not only the connection. A missing `${NAME}` fails
+the source loudly; write `${NAME:-fallback}` where the setting is allowed to be absent, and the
+fallback is used instead. The fallback may be empty — a dataset's `schedule: "${MY_TIME:-}"` is
+scheduled where that setting exists and unscheduled everywhere else. A fallback is plain text:
+it cannot hold another `${...}`, and saying so is refused rather than half-read.
+
 ```yaml
 # a folder of files
 connection:

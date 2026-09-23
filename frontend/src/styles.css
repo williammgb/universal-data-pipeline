@@ -451,9 +451,12 @@ td a:hover {
   display: inline;
 }
 
+/* A floor so a column is readable, and a ceiling so one long JSON column cannot squeeze every
+   other column down to the floor. */
 .values-full td {
   white-space: normal;
   min-width: 12ch;
+  max-width: 48ch;
 }
 
 .kind {
@@ -537,6 +540,8 @@ td a:hover {
   flex-direction: column;
   gap: 10px;
   min-width: 0;
+  /* Last resort: whatever a column holds is drawn inside the card, never across its edge. */
+  overflow-wrap: anywhere;
 }
 
 .card header {
@@ -620,12 +625,18 @@ svg.hist {
 
 .values {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax, because a grid child is as wide as its content unless it is told otherwise, and
+     one unbreakable value would then widen its column past the card. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 10px;
 }
 
+.values > * {
+  min-width: 0;
+}
+
 .values.one {
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .values h4 {
@@ -647,13 +658,17 @@ svg.hist {
   font-size: 13px;
 }
 
+/* The value may shrink to nothing; the count keeps a track of its own, so a long value can
+   never grow into it or past the card. */
 .values li {
-  display: flex;
-  justify-content: space-between;
-  gap: 6px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: baseline;
 }
 
 .values li span:first-child {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

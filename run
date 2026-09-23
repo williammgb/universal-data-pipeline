@@ -84,7 +84,7 @@ compose() {
   $engine env POSTGRES_PASSWORD="$stack_password" UDP_PG_PORT="$stack_port" \
     UDP_SOURCE_PG_PORT="$stack_source_port" UDP_MOCK_API_PORT="$stack_api_port" \
     UDP_API_PORT="${stack_http_port:-8000}" UDP_PROM_PORT="${stack_prom_port:-9090}" \
-    UDP_API_KEYS="${UDP_API_KEYS:-}" \
+    UDP_API_KEYS="${UDP_API_KEYS:-}" DEMO_SCHEDULE="${DEMO_SCHEDULE:-}" \
     docker compose -p "$stack_project" -f deploy/compose.yaml \
     --profile app --profile demo --profile monitoring --profile scale "$@"
 }
@@ -409,6 +409,10 @@ memory_run() {
 # container run must create the platform tables through compose's migrate service alone.
 smoke_gate() {
   code=0
+  # Only here: the scheduler check needs demo_csv to run every minute, and setting it for
+  # every stack would leave the full gate's pytest reading a scheduled demo_csv as well.
+  DEMO_SCHEDULE="* * * * *"
+  export DEMO_SCHEDULE
   stack_start udp-smoke 45433 45443 45453 45463 45473 &&
     smoke_sources || code=$?
   stack_stop || true

@@ -114,6 +114,43 @@ def test_problem_names_the_variable() -> None:
     assert problems == ["connection.token: environment variable API_TOKEN is not set"]
 
 
+def test_a_fallback_is_used_only_when_the_variable_is_missing() -> None:
+    env = {"SET": "real", "EMPTY": ""}
+    data = {
+        "a": "${SET:-other}",
+        "b": "${MISSING:-other}",
+        "c": "${EMPTY:-other}",
+        "d": "${MISSING:-}",
+        "e": "every ${MISSING:-day} at ${SET:-noon}",
+    }
+
+    filled, problems = fill_references(data, env)
+
+    assert problems == []
+    assert filled == {"a": "real", "b": "other", "c": "other", "d": "", "e": "every day at real"}
+
+
+def test_a_reference_inside_a_fallback_is_a_problem_rather_than_half_read() -> None:
+    # The reference ends at the first '}', so "${MISSING:-${SET}}" would otherwise fill out to
+    # the text "${SET}" — which reads like a reference nobody filled — and report nothing.
+    filled, problems = fill_references({"a": "${MISSING:-${SET}}"}, {"SET": "real"})
+
+    assert problems == [
+        "a: '${MISSING:-${SET}' puts a reference inside a fallback, which is not read; "
+        "give a plain fallback"
+    ]
+    assert filled == {"a": "}"}
+
+
+def test_a_fallback_does_not_excuse_a_bad_name() -> None:
+    _, problems = fill_references({"a": "${lower:-x}", "b": "${GOOD}"}, {})
+
+    assert problems == [
+        "a: '${lower:-x}' is not a valid reference (use uppercase letters, digits and _)",
+        "b: environment variable GOOD is not set",
+    ]
+
+
 def test_dotenv_values_are_used_and_the_real_environment_wins(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

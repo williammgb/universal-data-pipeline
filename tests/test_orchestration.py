@@ -418,8 +418,10 @@ DEMO_ENV = {
 }
 
 
-def test_demo_csv_is_the_scheduled_demo_dataset() -> None:
-    assert find_schedules(Path("sources"), DEMO_ENV) == [
+def test_the_demo_sources_schedule_nothing_unless_the_setting_says_so() -> None:
+    # A plain installation must not find demo data loading itself every minute.
+    assert find_schedules(Path("sources"), DEMO_ENV) == []
+    assert find_schedules(Path("sources"), DEMO_ENV | {"DEMO_SCHEDULE": "* * * * *"}) == [
         ScheduledDataset("demo_csv", "customers", "* * * * *")
     ]
 

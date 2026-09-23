@@ -73,7 +73,9 @@ export default function Dataset() {
         <>
           {tab === "schema" ? <Schema detail={detail.data} /> : null}
           {tab === "profile" ? <Profile source={source} dataset={dataset} /> : null}
-          {tab === "preview" ? <Preview source={source} dataset={dataset} /> : null}
+          {tab === "preview" ? (
+            <Preview source={source} dataset={dataset} total={detail.data.table_rows} />
+          ) : null}
           {tab === "quality" ? <Quality source={source} dataset={dataset} /> : null}
           {tab === "runs" ? <DatasetRuns source={source} dataset={dataset} /> : null}
         </>
@@ -141,15 +143,71 @@ function Schema({ detail }: { detail: DatasetDetail }) {
   );
 }
 
-function Preview({ source, dataset }: { source: string; dataset: string }) {
+function Paging({
+  first,
+  last,
+  total,
+  offset,
+  hasMore,
+  go,
+}: {
+  first: number;
+  last: number;
+  total: number | null;
+  offset: number;
+  hasMore: boolean;
+  go: (offset: number) => void;
+}) {
+  return (
+    <div className="paging">
+      <span>
+        Rows {first}–{last} of this table
+        {total === null ? "" : ` (total ${count(total)} rows)`}
+      </span>
+      <span className="spacer" />
+      <button
+        type="button"
+        disabled={offset === 0}
+        onClick={() => go(Math.max(0, offset - PREVIEW_ROWS))}
+      >
+        Previous
+      </button>
+      <button type="button" disabled={!hasMore} onClick={() => go(offset + PREVIEW_ROWS)}>
+        Next
+      </button>
+    </div>
+  );
+}
+
+function Preview({
+  source,
+  dataset,
+  total,
+}: {
+  source: string;
+  dataset: string;
+  total: number | null;
+}) {
   const [offset, setOffset] = useState(0);
   const page = useRows(source, dataset, offset);
   if (page.isPending) return <Waiting />;
   if (page.error) return <Problem error={page.error} />;
   if (!page.data) return null;
   const { columns, rows, has_more: hasMore } = page.data;
+  // The same line and the same two buttons above the table and below it, so they cannot differ.
+  const paging = (
+    <Paging
+      first={rows.length === 0 ? 0 : offset + 1}
+      last={offset + rows.length}
+      total={total}
+      offset={offset}
+      hasMore={hasMore}
+      go={setOffset}
+    />
+  );
   return (
     <>
+      {paging}
       <div className="panel scroll">
         <table>
           <thead>
@@ -183,22 +241,7 @@ function Preview({ source, dataset }: { source: string; dataset: string }) {
           </tbody>
         </table>
       </div>
-      <div className="paging">
-        <span>
-          Rows {rows.length === 0 ? 0 : offset + 1}–{offset + rows.length} of this table
-        </span>
-        <span className="spacer" />
-        <button
-          type="button"
-          disabled={offset === 0}
-          onClick={() => setOffset(Math.max(0, offset - PREVIEW_ROWS))}
-        >
-          Previous
-        </button>
-        <button type="button" disabled={!hasMore} onClick={() => setOffset(offset + PREVIEW_ROWS)}>
-          Next
-        </button>
-      </div>
+      {paging}
     </>
   );
 }

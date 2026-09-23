@@ -25,16 +25,28 @@ def _fill_string(value: str, env: Mapping[str, str], where: str, problems: list[
             problems.append(f"{where}: unclosed '${{' reference")
             parts.append(value[start:])
             return "".join(parts)
-        name = value[start + 2 : end]
+        # ${NAME:-fallback} takes the fallback when NAME is unset or empty, so a source can
+        # name a setting that is usually absent; the fallback may itself be empty.
+        reference = value[start + 2 : end]
+        name, separator, fallback = reference.partition(":-")
         if not _NAME.fullmatch(name):
             problems.append(
-                f"{where}: '${{{name}}}' is not a valid reference "
+                f"{where}: '${{{reference}}}' is not a valid reference "
                 "(use uppercase letters, digits and _)"
             )
-        elif not env.get(name):
-            problems.append(f"{where}: environment variable {name} is not set")
-        else:
+        elif "${" in fallback:
+            # The reference ends at the first '}', so a nested one would be cut in half and
+            # the rest left as text. Say so rather than fill in something half-read.
+            problems.append(
+                f"{where}: '${{{reference}}}' puts a reference inside a fallback, "
+                "which is not read; give a plain fallback"
+            )
+        elif env.get(name):
             parts.append(env[name])
+        elif separator:
+            parts.append(fallback)
+        else:
+            problems.append(f"{where}: environment variable {name} is not set")
         position = end + 1
     parts.append(value[position:])
     return "".join(parts)

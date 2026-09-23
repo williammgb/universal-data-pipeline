@@ -45,6 +45,13 @@ class DatasetBase(BaseModel):
     quarantine_threshold_percent: float = Field(default=1, ge=0, le=100)
     schedule: CronSchedule | None = None
 
+    @field_validator("schedule", mode="before")
+    @classmethod
+    def _a_blank_schedule_is_none(cls, value: object) -> object:
+        # `schedule: "${DEMO_SCHEDULE:-}"` fills out empty wherever that setting is absent,
+        # and an empty schedule means the same as leaving the line out.
+        return None if isinstance(value, str) and not value.strip() else value
+
     @field_validator("columns")
     @classmethod
     def _columns_use_stored_names(
