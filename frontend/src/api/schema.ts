@@ -38,6 +38,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/datasets/{source}/{dataset}/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Profile */
+        get: operations["profile_api_datasets__source___dataset__profile_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/datasets/{source}/{dataset}/quality": {
         parameters: {
             query?: never;
@@ -200,10 +217,48 @@ export interface components {
             /** Type */
             type: string;
         };
+        /** ColumnProfile */
+        ColumnProfile: {
+            /** All Values */
+            all_values?: components["schemas"]["ValueCount"][] | null;
+            /** Appear Once */
+            appear_once?: number | null;
+            /** Distinct */
+            distinct?: number | null;
+            /** Histogram */
+            histogram?: number[] | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "number" | "date" | "text" | "other";
+            /** Least Used */
+            least_used?: components["schemas"]["ValueCount"][] | null;
+            /** Max */
+            max?: string | number | boolean | null;
+            /** Mean */
+            mean?: string | number | boolean | null;
+            /** Min */
+            min?: string | number | boolean | null;
+            /** Missing */
+            missing: number;
+            /** Most Used */
+            most_used?: components["schemas"]["ValueCount"][] | null;
+            /** Name */
+            name: string;
+            /** Pattern */
+            pattern?: string | null;
+            /** Pattern Share */
+            pattern_share?: number | null;
+            /** Type */
+            type: string;
+        };
         /** DatasetDetail */
         DatasetDetail: {
             /** Columns */
             columns: components["schemas"]["Column"][];
+            /** Connector Type */
+            connector_type: string;
             /** Dataset */
             dataset: string;
             /** Definition */
@@ -227,6 +282,8 @@ export interface components {
             state: components["schemas"]["SavedState"] | null;
             /** Table Name */
             table_name: string;
+            /** Table Rows */
+            table_rows: number | null;
             /** Versions */
             versions: components["schemas"]["SchemaVersion"][];
             /** Watermark */
@@ -234,6 +291,8 @@ export interface components {
         };
         /** DatasetItem */
         DatasetItem: {
+            /** Connector Type */
+            connector_type: string;
             /** Dataset */
             dataset: string;
             last_run: components["schemas"]["RunSummary"] | null;
@@ -250,6 +309,19 @@ export interface components {
             source: string;
             /** Table Name */
             table_name: string;
+            /** Table Rows */
+            table_rows: number | null;
+        };
+        /** DatasetProfile */
+        DatasetProfile: {
+            /** Columns */
+            columns: components["schemas"]["ColumnProfile"][];
+            /** Profiled Rows */
+            profiled_rows: number;
+            /** Sampled */
+            sampled: boolean;
+            /** Table Rows */
+            table_rows: number;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -510,6 +582,13 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /** ValueCount */
+        ValueCount: {
+            /** Count */
+            count: number;
+            /** Value */
+            value: string | number | boolean | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -570,6 +649,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DatasetDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    profile_api_datasets__source___dataset__profile_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source: string;
+                dataset: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatasetProfile"];
                 };
             };
             /** @description Validation Error */

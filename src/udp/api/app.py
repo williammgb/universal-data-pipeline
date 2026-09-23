@@ -22,6 +22,7 @@ from udp.api.metrics import CONTENT_TYPE, render
 from udp.api.models import (
     DatasetDetail,
     DatasetItem,
+    DatasetProfile,
     Health,
     QualityReport,
     RowsPage,
@@ -156,6 +157,10 @@ def create_app(
     def rows(source: str, dataset: str, limit: Limit = 50, offset: Offset = 0) -> RowsPage:
         page = catalog.rows(source, dataset, limit, offset)
         return found(page, f"dataset '{source}.{dataset}'")
+
+    @app.get("/api/datasets/{source}/{dataset}/profile")
+    def profile(source: str, dataset: str) -> DatasetProfile:
+        return found(catalog.profile(source, dataset), f"dataset '{source}.{dataset}'")
 
     @app.get("/api/datasets/{source}/{dataset}/quality")
     def quality(source: str, dataset: str) -> QualityReport:

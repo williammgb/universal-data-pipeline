@@ -115,6 +115,7 @@ def test_the_openapi_document_lists_every_route_and_the_docs_page_loads() -> Non
     assert sorted(paths) == [
         "/api/datasets",
         "/api/datasets/{source}/{dataset}",
+        "/api/datasets/{source}/{dataset}/profile",
         "/api/datasets/{source}/{dataset}/quality",
         "/api/datasets/{source}/{dataset}/rows",
         "/api/health",
@@ -179,6 +180,7 @@ def test_the_run_queue_is_capped_and_frees_up_again() -> None:
         "/api/datasets/demo_csv/customers",
         "/api/datasets/demo_csv/customers/rows",
         "/api/datasets/demo_csv/customers/quality",
+        "/api/datasets/demo_csv/customers/profile",
         "/api/runs",
         "/api/runs/01a0a3de-9cb0-73ec-be37-1caa01588b64",
     ],
@@ -191,7 +193,18 @@ def test_every_read_says_the_database_is_unavailable_without_leaking_the_connect
             f'connection failed: password authentication failed for user "udp" ({UNREACHABLE})'
         )
 
-    for read in ("sources", "source", "datasets", "dataset", "rows", "quality", "runs", "run"):
+    reads = (
+        "sources",
+        "source",
+        "datasets",
+        "dataset",
+        "rows",
+        "quality",
+        "profile",
+        "runs",
+        "run",
+    )
+    for read in reads:
         monkeypatch.setattr(PostgresCatalog, read, refuse)
     client, _ = _client()
 
@@ -493,6 +506,14 @@ def test_a_loaded_source_is_described_by_the_api(tmp_path: Path) -> None:
     ]
     assert client.get(f"/api/datasets/{source}/missing").status_code == 404
     assert client.get(f"/api/runs/{uuid7()}").status_code == 404
+    # The table's own row count and the source's type, on the list and on the dataset.
+    (item,) = client.get("/api/datasets", params={"q": source}).json()
+    assert (item["connector_type"], item["table_rows"]) == ("csv", 2)
+    assert (detail["connector_type"], detail["table_rows"]) == ("csv", 2)
+    profile = client.get(f"/api/datasets/{source}/customers/profile").json()
+    assert (profile["table_rows"], profile["profiled_rows"], profile["sampled"]) == (2, 2, False)
+    assert [column["name"] for column in profile["columns"]] == ["customer_id", "amount", "city"]
+    assert client.get(f"/api/datasets/{source}/missing/profile").status_code == 404
 
 
 @pytest.mark.db

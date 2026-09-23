@@ -154,13 +154,14 @@ migrate() {
 fast_gate() {
   uv run --locked ruff check . &&
     uv run --locked ruff format --check . &&
-    uv run --locked mypy &&
+    uv run --locked python -m mypy &&
     types_are_current &&
     checks_together "$@"
 }
 
-# pytest is started as `python -m pytest`: Windows Application Control blocked the pytest.exe
-# shim mid-slice ("os error 4551"), and the module form does not go through that file.
+# pytest and mypy are started as `python -m ...`: Windows Application Control blocked the
+# pytest.exe shim mid-slice, then the mypy.exe one ("os error 4551"), and the module form does
+# not go through those files. Start any new tool the same way.
 # The dashboard's checks and the Python tests have nothing to say to each other, so they run
 # at the same time, which is what keeps the gate under two minutes; see SPEC for the measured
 # figures. The gate's duration is dominated by the Python tests.

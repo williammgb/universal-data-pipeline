@@ -34,10 +34,13 @@ class SourceItem(BaseModel):
 class DatasetItem(BaseModel):
     source: str
     dataset: str
+    connector_type: str
     table_name: str
     load_mode: str
     schedule: str | None
     recorded_at: datetime
+    # Rows in the table now, counted exactly; None before the table exists.
+    table_rows: int | None
     last_run: RunSummary | None
 
 
@@ -86,6 +89,41 @@ class RowsPage(BaseModel):
     limit: int
     offset: int
     has_more: bool
+
+
+class ValueCount(BaseModel):
+    value: JsonValue
+    count: int
+
+
+ProfileKind = Literal["number", "date", "text", "other"]
+
+
+class ColumnProfile(BaseModel):
+    name: str
+    type: str
+    kind: ProfileKind
+    missing: int
+    # number and date columns: the finite range, and a 20-bar histogram between its ends
+    min: JsonValue = None
+    max: JsonValue = None
+    mean: JsonValue = None
+    histogram: list[int] | None = None
+    # text columns: every value when there are few, otherwise the most and least used
+    distinct: int | None = None
+    appear_once: int | None = None
+    all_values: list[ValueCount] | None = None
+    most_used: list[ValueCount] | None = None
+    least_used: list[ValueCount] | None = None
+    pattern: str | None = None
+    pattern_share: float | None = None
+
+
+class DatasetProfile(BaseModel):
+    table_rows: int
+    profiled_rows: int
+    sampled: bool
+    columns: list[ColumnProfile]
 
 
 class CheckResult(BaseModel):

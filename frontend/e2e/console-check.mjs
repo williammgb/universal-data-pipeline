@@ -23,12 +23,14 @@ const dataset = "/datasets/demo_csv/customers";
 const addresses = [
   "/",
   `${dataset}?tab=schema`,
+  `${dataset}?tab=profile`,
   `${dataset}?tab=preview`,
   `${dataset}?tab=quality`,
   `${dataset}?tab=runs`,
   "/runs",
   "/runs?status=succeeded",
   `/runs/${runId}`,
+  "/settings",
 ];
 
 const browser = await chromium.launch();

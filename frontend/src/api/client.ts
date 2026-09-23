@@ -8,6 +8,9 @@ export type DatasetItem = components["schemas"]["DatasetItem"];
 export type DatasetDetail = components["schemas"]["DatasetDetail"];
 export type RowsPage = components["schemas"]["RowsPage"];
 export type QualityReport = components["schemas"]["QualityReport"];
+export type DatasetProfile = components["schemas"]["DatasetProfile"];
+export type ColumnProfile = components["schemas"]["ColumnProfile"];
+export type ValueCount = components["schemas"]["ValueCount"];
 export type RunsPage = components["schemas"]["RunsPage"];
 export type RunItem = components["schemas"]["RunItem"];
 export type RunDetail = components["schemas"]["RunDetail"];
@@ -117,6 +120,15 @@ export function useRows(source: string, dataset: string, offset: number) {
   });
 }
 
+/** Worked out over the whole table each time, so it is never refetched in the background. */
+export function useProfile(source: string, dataset: string) {
+  return useQuery({
+    queryKey: ["profile", source, dataset],
+    queryFn: () => getJson<DatasetProfile>(`/datasets/${source}/${dataset}/profile`),
+    staleTime: Infinity,
+  });
+}
+
 export function useQuality(source: string, dataset: string) {
   return useQuery({
     queryKey: ["quality", source, dataset],
@@ -147,6 +159,8 @@ export function useStartRun(source: string, dataset: string) {
     onSuccess: () => {
       void queries.invalidateQueries({ queryKey: ["runs"] });
       void queries.invalidateQueries({ queryKey: ["dataset", source, dataset] });
+      // The profile is cached until it is asked for again; a run changes the rows it counted.
+      void queries.invalidateQueries({ queryKey: ["profile", source, dataset] });
       // The datasets list shows each dataset's last run, so it is stale from now too.
       void queries.invalidateQueries({ queryKey: ["datasets"] });
     },

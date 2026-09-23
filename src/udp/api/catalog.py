@@ -21,6 +21,7 @@ from udp.api.models import (
     Column,
     DatasetDetail,
     DatasetItem,
+    DatasetProfile,
     JsonValue,
     QualityReport,
     RowsPage,
@@ -33,6 +34,7 @@ from udp.api.models import (
     SourceDetail,
     SourceItem,
 )
+from udp.api.profile import PROFILE_ROW_LIMIT, profile_table
 
 
 def json_value(value: Any) -> JsonValue:
@@ -54,11 +56,12 @@ def json_value(value: Any) -> JsonValue:
 
 _DATASET_ITEMS = """
     SELECT d.source, d.dataset, d.table_name, d.load_mode, d.primary_key, d.watermark,
-           d.schedule, d.definition, d.recorded_at,
+           d.schedule, d.definition, d.recorded_at, s.connector_type,
            r.run_id AS last_run_id, r.status AS last_status, r.trigger AS last_trigger,
            r.started_at AS last_started_at, r.ended_at AS last_ended_at,
            r.rows_loaded AS last_rows_loaded
     FROM platform.datasets AS d
+    JOIN platform.sources AS s USING (source)
     LEFT JOIN LATERAL (
         SELECT run_id, status, trigger, started_at, ended_at, rows_loaded
         FROM platform.pipeline_runs AS p
@@ -74,7 +77,20 @@ _RUN_COLUMNS = (
 )
 
 
-def _dataset_item(row: dict[str, Any]) -> DatasetItem:
+def _table_rows(conn: psycopg.Connection[dict[str, Any]], table_name: str) -> int | None:
+    """The exact number of rows in a dataset's table, or None when it does not exist yet."""
+    exists = conn.execute(
+        "SELECT to_regclass(%s) IS NOT NULL AS found", [f"datasets.{table_name}"]
+    ).fetchone()
+    if exists is None or not exists["found"]:
+        return None
+    row = conn.execute(
+        sql.SQL("SELECT count(*) AS n FROM {}").format(sql.Identifier("datasets", table_name))
+    ).fetchone()
+    return int(row["n"]) if row else None
+
+
+def _dataset_item(row: dict[str, Any], table_rows: int | None) -> DatasetItem:
     last_run = None
     if row["last_run_id"] is not None:
         last_run = RunSummary(
@@ -88,10 +104,12 @@ def _dataset_item(row: dict[str, Any]) -> DatasetItem:
     return DatasetItem(
         source=row["source"],
         dataset=row["dataset"],
+        connector_type=row["connector_type"],
         table_name=row["table_name"],
         load_mode=row["load_mode"],
         schedule=row["schedule"],
         recorded_at=row["recorded_at"],
+        table_rows=table_rows,
         last_run=last_run,
     )
 
@@ -180,7 +198,10 @@ class PostgresCatalog:
 
     def datasets(self, q: str | None, source: str | None) -> list[DatasetItem]:
         with self._connect() as conn:
-            return [_dataset_item(row) for row in self._dataset_rows(conn, q, source)]
+            return [
+                _dataset_item(row, _table_rows(conn, row["table_name"]))
+                for row in self._dataset_rows(conn, q, source)
+            ]
 
     def source(self, name: str) -> SourceDetail | None:
         with self._connect() as conn:
@@ -191,7 +212,10 @@ class PostgresCatalog:
             ).fetchone()
             if row is None:
                 return None
-            datasets = [_dataset_item(item) for item in self._dataset_rows(conn, None, name)]
+            datasets = [
+                _dataset_item(item, _table_rows(conn, item["table_name"]))
+                for item in self._dataset_rows(conn, None, name)
+            ]
         return SourceDetail(**row, datasets=datasets)
 
     def dataset(self, source: str, dataset: str) -> DatasetDetail | None:
@@ -211,7 +235,7 @@ class PostgresCatalog:
                 "run_id, saved_at FROM platform.source_state WHERE source = %s AND dataset = %s",
                 [source, dataset],
             ).fetchone()
-        item = _dataset_item(row)
+            item = _dataset_item(row, _table_rows(conn, row["table_name"]))
         return DatasetDetail(
             **item.model_dump(),
             primary_key=list(row["primary_key"]),
@@ -266,6 +290,32 @@ class PostgresCatalog:
             offset=offset,
             has_more=len(rows) > limit,
         )
+
+    def profile(
+        self, source: str, dataset: str, row_limit: int = PROFILE_ROW_LIMIT
+    ) -> DatasetProfile | None:
+        with self._connect() as conn:
+            found = conn.execute(
+                "SELECT table_name FROM platform.datasets WHERE source = %s AND dataset = %s",
+                [source, dataset],
+            ).fetchone()
+            if found is None:
+                return None
+            columns = conn.execute(
+                "SELECT attname AS name, format_type(atttypid, atttypmod) AS type "
+                "FROM pg_attribute WHERE attrelid = to_regclass(%s) AND attnum > 0 "
+                "AND NOT attisdropped ORDER BY attnum",
+                [f"datasets.{found['table_name']}"],
+            ).fetchall()
+            if not columns:
+                return DatasetProfile(table_rows=0, profiled_rows=0, sampled=False, columns=[])
+            return profile_table(
+                conn,
+                found["table_name"],
+                [(column["name"], column["type"]) for column in columns],
+                json_value,
+                row_limit,
+            )
 
     def quality(self, source: str, dataset: str) -> QualityReport | None:
         with self._connect() as conn:

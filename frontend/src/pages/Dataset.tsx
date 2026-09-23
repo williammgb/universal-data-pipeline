@@ -10,14 +10,16 @@ import {
   useStartRun,
   type DatasetDetail,
 } from "../api/client";
-import { cell, count, moment } from "../format";
+import { cell, connectorName, count, describeSchedule, moment } from "../format";
 import { runsQuery } from "../runFilters";
 import { Blank, Fact, Problem, Status, Waiting } from "./parts";
+import Profile from "./Profile";
 
-const TABS = ["schema", "preview", "quality", "runs"] as const;
+const TABS = ["schema", "profile", "preview", "quality", "runs"] as const;
 type Tab = (typeof TABS)[number];
 const TAB_NAMES: Record<Tab, string> = {
   schema: "Schema & metadata",
+  profile: "Profile",
   preview: "Preview",
   quality: "Quality",
   runs: "Runs",
@@ -70,6 +72,7 @@ export default function Dataset() {
       {detail.data ? (
         <>
           {tab === "schema" ? <Schema detail={detail.data} /> : null}
+          {tab === "profile" ? <Profile source={source} dataset={dataset} /> : null}
           {tab === "preview" ? <Preview source={source} dataset={dataset} /> : null}
           {tab === "quality" ? <Quality source={source} dataset={dataset} /> : null}
           {tab === "runs" ? <DatasetRuns source={source} dataset={dataset} /> : null}
@@ -83,27 +86,29 @@ function Schema({ detail }: { detail: DatasetDetail }) {
   const declared = detail.definition["columns"];
   const declaredTypes = (declared ?? {}) as Record<string, string>;
   const version = detail.versions.at(-1);
+  const plainSchedule = detail.schedule ? describeSchedule(detail.schedule) : null;
   return (
     <>
-      <dl className="facts">
+      <dl className="strip">
+        <Fact label="Type">{connectorName(detail.connector_type)}</Fact>
         <Fact label="Load mode">
           {detail.load_mode}
           {detail.primary_key.length > 0 ? ` on ${detail.primary_key.join(", ")}` : ""}
         </Fact>
-        <Fact label="Schedule">{detail.schedule ?? "none"}</Fact>
-        <Fact label="Schema version">
-          {version ? `${version.version} · recorded ${moment(version.recorded_at)}` : "none yet"}
+        <Fact label="Schedule">
+          {detail.schedule ?? "none"}
+          {plainSchedule ? ` (${plainSchedule})` : ""}
         </Fact>
-        <Fact label="File last loaded">
-          {detail.state?.file_path
-            ? `${detail.state.file_path} · sha256 ${(detail.state.file_sha256 ?? "").slice(0, 10)}…`
-            : "not a file source"}
+        <Fact label="Rows">{count(detail.table_rows ?? null)}</Fact>
+        <Fact label="Schema">
+          {version ? `v${version.version} · ${moment(version.recorded_at)}` : "none yet"}
         </Fact>
+        {detail.state?.file_path ? <Fact label="File">{detail.state.file_path}</Fact> : null}
         <Fact label="Watermark">
           {detail.watermark ? `${detail.watermark} at ${detail.state?.watermark ?? "—"}` : "none"}
         </Fact>
-        <Fact label="Declared columns">
-          {Object.keys(declaredTypes).length} of {detail.columns.length}
+        <Fact label="Declared">
+          {Object.keys(declaredTypes).length} of {detail.columns.length} columns
         </Fact>
       </dl>
       <div className="panel scroll">

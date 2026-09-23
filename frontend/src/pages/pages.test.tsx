@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   DatasetDetail,
   DatasetItem,
+  DatasetProfile,
   QualityReport,
   RowsPage,
   RunsPage,
@@ -13,6 +14,7 @@ import type {
 } from "../api/client";
 import { rememberKey } from "../api/key";
 import App from "../App";
+import { FULL_CLASS } from "../settings";
 
 const SOURCES: SourceItem[] = [
   { source: "demo_csv", connector_type: "csv", datasets: 1, recorded_at: "2026-09-16T07:14:00Z" },
@@ -23,26 +25,31 @@ const DATASETS: DatasetItem[] = [
   {
     source: "demo_csv",
     dataset: "customers",
+    connector_type: "csv",
     table_name: "demo_csv__customers",
     load_mode: "full",
     schedule: "* * * * *",
     recorded_at: "2026-09-16T07:14:00Z",
+    // The file had not changed, so the last run loaded nothing; the table still has 20 rows.
+    table_rows: 20,
     last_run: {
       run_id: "01a0a3de-9cb0-73ec-be37-1caa01588b64",
       status: "succeeded",
       trigger: "scheduled",
       started_at: "2026-09-16T07:14:00Z",
       ended_at: "2026-09-16T07:14:02Z",
-      rows_loaded: 20,
+      rows_loaded: 0,
     },
   },
   {
     source: "demo_db",
     dataset: "orders",
+    connector_type: "database",
     table_name: "demo_db__orders",
     load_mode: "merge",
     schedule: null,
     recorded_at: "2026-09-16T07:02:31Z",
+    table_rows: 1000,
     last_run: {
       run_id: "01a0a3c1-77be-7d41-9f2e-6b0a6d4b18cc",
       status: "failed",
@@ -117,6 +124,66 @@ const QUALITY: QualityReport = {
   ],
 };
 
+const PROFILE: DatasetProfile = {
+  table_rows: 3_000_000,
+  profiled_rows: 1_000_000,
+  sampled: true,
+  columns: [
+    {
+      name: "amount",
+      type: "numeric(12,2)",
+      kind: "number",
+      missing: 11,
+      min: "0.44",
+      max: "22638.48",
+      mean: "229.8580",
+      histogram: [9618, 258, 68, 23, 12, 1, 1, 5, 3, 2, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1],
+    },
+    {
+      name: "ordered",
+      type: "timestamp with time zone",
+      kind: "date",
+      missing: 0,
+      min: "2015-01-03T00:00:00+00:00",
+      max: "2018-12-30T00:00:00+00:00",
+      histogram: Array.from({ length: 20 }, () => 5),
+    },
+    {
+      name: "colour",
+      type: "text",
+      kind: "text",
+      missing: 0,
+      distinct: 3,
+      appear_once: 0,
+      all_values: [
+        { value: "red", count: 10 },
+        { value: "blue", count: 5 },
+        { value: "green", count: 5 },
+      ],
+    },
+    {
+      name: "code",
+      type: "text",
+      kind: "text",
+      missing: 0,
+      distinct: 793,
+      appear_once: 5,
+      most_used: [
+        { value: "WB-21850", count: 37 },
+        { value: "JL-15835", count: 34 },
+        { value: "MA-17560", count: 34 },
+      ],
+      least_used: [
+        { value: "AO-10810", count: 1 },
+        { value: "CJ-11875", count: 1 },
+        { value: "JR-15700", count: 1 },
+      ],
+      pattern: "^[A-Z]{2}\\-[0-9]{5}$",
+      pattern_share: 0.9957,
+    },
+  ],
+};
+
 const RUNS: RunsPage = {
   runs: [
     {
@@ -183,7 +250,14 @@ describe("the dashboard", () => {
     expect(screen.getByText("* * * * *")).toBeTruthy();
     expect(screen.getByText("succeeded")).toBeTruthy();
     expect(screen.getByText("2026-09-16 07:14:00")).toBeTruthy();
+    // Rows are the table's own count, not what the last run added.
     expect(screen.getByText("20")).toBeTruthy();
+    expect(screen.getByText("1,000")).toBeTruthy();
+    expect(screen.queryByText("0")).toBeNull();
+    expect(screen.getByText("CSV")).toBeTruthy();
+    expect(screen.getByText("Database")).toBeTruthy();
+    expect(screen.getByText("every minute")).toBeTruthy();
+    expect(screen.queryByText(/appears here after its first run/)).toBeNull();
   });
 
   it("asks the API for the typed search text", async () => {
@@ -207,6 +281,55 @@ describe("the dashboard", () => {
     expect(await screen.findByText("integer")).toBeTruthy();
     expect(screen.getByText("inferred")).toBeTruthy();
     expect(screen.getByText("bigint")).toBeTruthy();
+    // One line of facts: the file's path without its sha256, the type and the row count.
+    expect(screen.getByText("data/customers.csv")).toBeTruthy();
+    expect(screen.queryByText(/sha256/)).toBeNull();
+    expect(screen.getByText("CSV")).toBeTruthy();
+    expect(screen.getByText("20")).toBeTruthy();
+    expect(screen.getByText(/\(every minute\)/)).toBeTruthy();
+  });
+
+  it("profiles each kind of column and says when a sample was used", async () => {
+    serve({
+      "GET /api/datasets/demo_csv/customers": { body: DETAIL },
+      "GET /api/datasets/demo_csv/customers/profile": { body: PROFILE },
+    });
+
+    show("/datasets/demo_csv/customers?tab=profile");
+
+    expect(await screen.findByText("profiled on a random 1,000,000 of 3,000,000 rows")).toBeTruthy();
+    const amount = screen.getByRole("article", { name: "column amount" });
+    expect(amount.textContent).toContain("11 missing (0.00%)");
+    expect(amount.textContent).toContain("22638.48");
+    expect(amount.querySelectorAll("rect")).toHaveLength(20);
+    const colour = screen.getByRole("article", { name: "column colour" });
+    expect(colour.textContent).toContain("Every value");
+    expect(colour.textContent).not.toContain("Least used");
+    const code = screen.getByRole("article", { name: "column code" });
+    expect(code.textContent).toContain("^[A-Z]{2}\\-[0-9]{5}$");
+    expect(code.textContent).toContain("99.6% of values match this pattern");
+    expect(code.textContent).toContain("Most used");
+    expect(code.textContent).toContain("5 appear once; the first 3 by value are shown");
+    const day = screen.getByRole("article", { name: "column ordered" });
+    expect(day.textContent).toContain("earliest");
+    expect(day.textContent).toContain("2015-01-03 00:00");
+  });
+
+  it("shows long values in full once the setting says so, and keeps working without storage", async () => {
+    serve({});
+    show("/settings");
+
+    (await screen.findByLabelText(/Show them in full/)).click();
+    await waitFor(() => expect(document.documentElement.classList.contains(FULL_CLASS)).toBe(true));
+    expect(window.localStorage.getItem("udp.longValues")).toBe("full");
+
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("storage is switched off");
+    });
+    screen.getByLabelText(/Shorten them/).click();
+    await waitFor(() => expect(document.documentElement.classList.contains(FULL_CLASS)).toBe(false));
+    vi.restoreAllMocks();
+    window.localStorage.removeItem("udp.longValues");
   });
 
   it("previews rows, marks a null cell and stops Next on the last page", async () => {
@@ -284,7 +407,8 @@ describe("the dashboard", () => {
     expect(screen.getByText("1 rows failed")).toBeTruthy();
   });
 
-  it("says why a run with no checks shows none", async () => {
+  // The note that used to explain an empty list was removed at the user's request.
+  it("shows no checks and no note for a run that has none", async () => {
     serve({
       "GET /api/runs/01a0a3c1-77be-7d41-9f2e-6b0a6d4b18cc": {
         body: { ...RUNS.runs[0]!, error_traceback: null, quality: [] },
@@ -293,7 +417,8 @@ describe("the dashboard", () => {
 
     show("/runs/01a0a3c1-77be-7d41-9f2e-6b0a6d4b18cc");
 
-    expect(await screen.findByText(/Quality results appear here/)).toBeTruthy();
+    expect(await screen.findByText("ExtractError")).toBeTruthy();
+    expect(screen.queryByText(/Quality results appear here/)).toBeNull();
   });
 
   it("puts a refused request into one readable line", async () => {

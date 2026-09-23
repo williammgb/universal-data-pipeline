@@ -1,7 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import { cell, count, duration, moment } from "./format";
+import { cell, connectorName, count, describeSchedule, duration, moment } from "./format";
 
 /** Every shape a preview cell can arrive in, per the API's JSON rule. */
 const values = fc.oneof(
@@ -43,5 +43,45 @@ describe("times and counts", () => {
   it("show a missing count as a dash", () => {
     expect(count(null)).toBe("—");
     expect(count(2000)).toBe("2,000");
+  });
+});
+
+describe("sources and schedules", () => {
+  it("name each connector the way a person does", () => {
+    expect(["csv", "excel", "database", "rest_api"].map(connectorName)).toEqual([
+      "CSV",
+      "Excel",
+      "Database",
+      "API",
+    ]);
+    expect(connectorName("parquet")).toBe("parquet");
+  });
+
+  it.each([
+    ["* * * * *", "every minute"],
+    ["*/15 * * * *", "every 15 minutes"],
+    ["*/1 * * * *", "every minute"],
+    ["5 * * * *", "every hour at :05"],
+    ["30 */6 * * *", "every 6 hours at :30"],
+    ["0 2 * * *", "every day at 02:00 UTC"],
+    ["30 8 * * 1-5", "every weekday at 08:30 UTC"],
+    ["0 9 * * 1", "every Monday at 09:00 UTC"],
+    ["0 9 * * 7", "every Sunday at 09:00 UTC"],
+    ["0 0 1 * *", "on day 1 of every month at 00:00 UTC"],
+  ])("describe %s as %s", (schedule, plain) => {
+    expect(describeSchedule(schedule)).toBe(plain);
+  });
+
+  it.each([
+    "0 0 1 1 *",
+    "0 9 1 * 1",
+    "1,2 * * * *",
+    "60 * * * *",
+    "0 24 * * *",
+    "*/0 * * * *",
+    "0 9 * * 1-3",
+    "* * * *",
+  ])("leave %s undescribed rather than describe it wrongly", (schedule) => {
+    expect(describeSchedule(schedule)).toBeNull();
   });
 });

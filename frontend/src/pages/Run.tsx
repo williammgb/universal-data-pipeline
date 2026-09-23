@@ -91,9 +91,7 @@ export default function Run() {
             </tbody>
           </table>
         </div>
-      ) : (
-        <p className="note">Quality results appear here when the run got as far as checking.</p>
-      )}
+      ) : null}
     </main>
   );
 }

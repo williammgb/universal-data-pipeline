@@ -7,6 +7,8 @@ import Dataset from "./pages/Dataset";
 import Datasets from "./pages/Datasets";
 import Run from "./pages/Run";
 import Runs from "./pages/Runs";
+import Settings from "./pages/Settings";
+import { applyLongValues } from "./settings";
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { problem: Error | null }> {
   state = { problem: null as Error | null };
@@ -46,6 +48,7 @@ function NotFound() {
 export default function App() {
   const [needsKey, setNeedsKey] = useState(keyIsNeeded);
   useEffect(() => whenKeyIsNeeded(setNeedsKey), []);
+  useEffect(() => applyLongValues(), []);
 
   return (
     <>
@@ -60,6 +63,9 @@ export default function App() {
           <NavLink to="/runs" className={({ isActive }) => (isActive ? "current" : "")}>
             Runs
           </NavLink>
+          <NavLink to="/settings" className={({ isActive }) => (isActive ? "current" : "")}>
+            Settings
+          </NavLink>
         </nav>
         <div className="clock">all times UTC</div>
       </header>
@@ -72,6 +78,7 @@ export default function App() {
             <Route path="/datasets/:source/:dataset" element={<Dataset />} />
             <Route path="/runs" element={<Runs />} />
             <Route path="/runs/:runId" element={<Run />} />
+            <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         )}

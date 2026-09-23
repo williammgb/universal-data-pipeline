@@ -442,3 +442,291 @@ td a:hover {
   font-family: var(--mono);
   font-size: 12.5px;
 }
+
+/* Settings: "show them in full" lifts the cut on every table of values. */
+.values-full .clip {
+  max-width: none;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  display: inline;
+}
+
+.values-full td {
+  white-space: normal;
+  min-width: 12ch;
+}
+
+.kind {
+  font-family: var(--mono);
+  font-size: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1px 7px;
+  color: var(--ink-soft);
+  background: var(--panel-sunk);
+}
+
+.cron {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+}
+
+.cron small {
+  font-family: var(--body);
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+/* The schema tab's facts: one line, wrapping only when the screen is narrow. */
+.strip {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0;
+  background: var(--panel-sunk);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+}
+
+.strip .fact {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
+  border: 0;
+  border-right: 1px solid var(--line-soft);
+  border-radius: 0;
+  background: none;
+  padding: 8px 14px;
+  white-space: nowrap;
+}
+
+.strip .fact:last-child {
+  border-right: 0;
+}
+
+.strip .fact dd {
+  word-break: normal;
+}
+
+.summary {
+  display: flex;
+  gap: 22px;
+  flex-wrap: wrap;
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+
+.summary b {
+  font-family: var(--mono);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 12px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.card h3 {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.missing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.missing .track {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+
+.missing .fill {
+  display: block;
+  height: 100%;
+  background: var(--warn);
+}
+
+.range {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+.range span {
+  display: block;
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+svg.hist {
+  width: 100%;
+  height: 70px;
+  display: block;
+}
+
+.hist-bar {
+  fill: var(--accent);
+}
+
+.hist-base {
+  stroke: var(--line);
+  stroke-width: 1;
+}
+
+.axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  margin-top: -6px;
+}
+
+.values {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.values.one {
+  grid-template-columns: 1fr;
+}
+
+.values h4 {
+  margin: 0 0 4px;
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-weight: 600;
+}
+
+.values ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 13px;
+}
+
+.values li {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.values li span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.values-full .values li span:first-child {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.values li span:last-child {
+  font-family: var(--mono);
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.pattern {
+  font-family: var(--mono);
+  font-size: 13px;
+  background: var(--idle-soft);
+  color: var(--ink);
+  border-radius: 6px;
+  padding: 4px 8px;
+  overflow-wrap: anywhere;
+}
+
+.muted {
+  font-size: 12px;
+  color: var(--ink-soft);
+  margin: 0;
+}
+
+.setting {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 640px;
+}
+
+.setting h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.setting label {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.setting label small {
+  display: block;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.setting input {
+  accent-color: var(--accent);
+  margin-top: 4px;
+}
+
+@media (max-width: 520px) {
+  .values {
+    grid-template-columns: 1fr;
+  }
+
+  .strip .fact {
+    border-right: 0;
+  }
+}

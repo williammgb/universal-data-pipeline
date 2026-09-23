@@ -1,7 +1,7 @@
 import { Link, useSearchParams } from "react-router";
 
 import { useDatasets, useSources } from "../api/client";
-import { count, moment } from "../format";
+import { connectorName, count, describeSchedule, moment } from "../format";
 import { Blank, Problem, Status, Waiting } from "./parts";
 
 export default function Datasets() {
@@ -62,12 +62,15 @@ export default function Datasets() {
             <thead>
               <tr>
                 <th>Source</th>
+                <th>Type</th>
                 <th>Dataset</th>
                 <th>Load mode</th>
                 <th>Schedule</th>
                 <th>Last run</th>
                 <th>Started</th>
-                <th className="mono">Rows</th>
+                <th className="num" title="Rows in the table now">
+                  Rows
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -75,26 +78,35 @@ export default function Datasets() {
                 <tr key={`${item.source}.${item.dataset}`}>
                   <td className="mono">{item.source}</td>
                   <td>
+                    <span className="kind">{connectorName(item.connector_type)}</span>
+                  </td>
+                  <td>
                     <Link to={`/datasets/${item.source}/${item.dataset}`}>{item.dataset}</Link>
                   </td>
                   <td>{item.load_mode}</td>
-                  <td className="mono">{item.schedule ?? <span className="null">none</span>}</td>
+                  <td className="mono">
+                    {item.schedule ? (
+                      <span className="cron">
+                        {item.schedule}
+                        {describeSchedule(item.schedule) ? (
+                          <small>{describeSchedule(item.schedule)}</small>
+                        ) : null}
+                      </span>
+                    ) : (
+                      <span className="null">none</span>
+                    )}
+                  </td>
                   <td>{item.last_run ? <Status status={item.last_run.status} /> : <Blank />}</td>
                   <td className="mono">
                     {item.last_run ? moment(item.last_run.started_at) : <Blank />}
                   </td>
-                  <td className="num">{count(item.last_run?.rows_loaded ?? null)}</td>
+                  <td className="num">{count(item.table_rows ?? null)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       ) : null}
-
-      <p className="note">
-        A dataset appears here after its first run, because the list is the copy each run makes of
-        its <code>source.yaml</code>.
-      </p>
     </main>
   );
 }
