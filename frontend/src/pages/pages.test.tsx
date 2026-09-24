@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
+  DatasetConfig,
   DatasetDetail,
   DatasetItem,
   DatasetProfile,
@@ -197,6 +198,58 @@ const PROFILE: DatasetProfile = {
   ],
 };
 
+/** A dataset whose schedule is edited and whose other settings are still the file's. */
+const CONFIG: DatasetConfig = {
+  source: "demo_csv",
+  dataset: "customers",
+  connector_type: "csv",
+  editable: [
+    "schedule",
+    "load_mode",
+    "watermark",
+    "primary_key",
+    "columns",
+    "checks",
+    "quarantine_threshold_percent",
+  ],
+  file: {
+    schedule: null,
+    load_mode: "full",
+    watermark: null,
+    primary_key: null,
+    columns: { customer_id: "integer" },
+    checks: [],
+    quarantine_threshold_percent: 1,
+  },
+  effective: {
+    schedule: "0 6 * * *",
+    load_mode: "full",
+    watermark: null,
+    primary_key: null,
+    columns: { customer_id: "integer" },
+    checks: [],
+    quarantine_threshold_percent: 1,
+  },
+  overridden: ["schedule"],
+  columns: [
+    { name: "customer_id", type: "bigint" },
+    { name: "city", type: "text" },
+  ],
+  checks_yaml: "",
+  file_checks_yaml: "",
+  history: [
+    {
+      changed: { schedule: { from: null, to: "0 6 * * *" } },
+      changed_at: "2026-09-22T16:08:51Z",
+    },
+  ],
+};
+
+const SAVED: DatasetConfig = {
+  ...CONFIG,
+  effective: { ...CONFIG.effective, schedule: "15 */2 * * *" },
+};
+
 const RUNS: RunsPage = {
   runs: [
     {
@@ -221,12 +274,16 @@ const RUNS: RunsPage = {
 
 type Answer = { body: unknown; status?: number };
 
+/** What the pages sent with a POST or a PUT, newest last, cleared before every test. */
+const sent: string[] = [];
+
 function serve(answers: Record<string, Answer>) {
   const asked: string[] = [];
   const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input), "http://console.test");
     const key = `${init?.method ?? "GET"} ${url.pathname}`;
     asked.push(`${key}${url.search}`);
+    if (typeof init?.body === "string") sent.push(init.body);
     const answer = answers[key] ?? { body: { detail: `no fixture for ${key}` }, status: 404 };
     return new Response(JSON.stringify(answer.body), {
       status: answer.status ?? 200,
@@ -250,6 +307,7 @@ function show(path: string) {
 
 beforeEach(() => {
   vi.unstubAllGlobals();
+  sent.length = 0;
 });
 
 describe("the dashboard", () => {
@@ -514,6 +572,56 @@ describe("the dashboard", () => {
     expect(await screen.findByLabelText("API key")).toBeTruthy();
     expect(window.localStorage.getItem("udp.apiKey")).toBe(null);
     rememberKey("");
+  });
+
+  it("marks an edited setting, and saves every field the tab holds", async () => {
+    const asked = serve({
+      "GET /api/datasets/demo_csv/customers": { body: DETAIL },
+      "GET /api/datasets/demo_csv/customers/config": { body: CONFIG },
+      "PUT /api/datasets/demo_csv/customers/config": { body: SAVED },
+    });
+
+    show("/datasets/demo_csv/customers?tab=config");
+
+    const cron = (await screen.findByLabelText(/Cron/)) as HTMLInputElement;
+    expect(cron.value).toBe("0 6 * * *");
+    // The schedule is edited: the file says nothing, so the tag and the way back both appear.
+    expect(screen.getByText("edited")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /use the file/ })).toBeTruthy();
+    expect(screen.getByText("every day at 06:00 UTC")).toBeTruthy();
+
+    fireEvent.change(cron, { target: { value: "15 */2 * * *" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(asked).toContain("PUT /api/datasets/demo_csv/customers/config"));
+    const body = JSON.parse(sent[0]!) as {
+      values: Record<string, unknown>;
+      accept_rebuild: boolean;
+    };
+    expect(body.values.schedule).toBe("15 */2 * * *");
+    expect(body.values.columns).toEqual({ customer_id: "integer" });
+    expect(body.accept_rebuild).toBe(false);
+  });
+
+  it("refuses to save behind your back when the table would have to be rebuilt", async () => {
+    serve({
+      "GET /api/datasets/demo_csv/customers": { body: DETAIL },
+      "GET /api/datasets/demo_csv/customers/config": { body: CONFIG },
+      "PUT /api/datasets/demo_csv/customers/config": {
+        body: { detail: "dataset 'customers' changed load_mode from 'full' to 'append'" },
+        status: 409,
+      },
+    });
+
+    show("/datasets/demo_csv/customers?tab=config");
+
+    const mode = (await screen.findByLabelText("Load mode")) as HTMLSelectElement;
+    fireEvent.change(mode, { target: { value: "append" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText(/needs the table rebuilt/)).toBeTruthy();
+    expect(screen.getByText(/changed load_mode from 'full' to 'append'/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save anyway" })).toBeTruthy();
   });
 
   it("shows what the API said when it cannot answer", async () => {

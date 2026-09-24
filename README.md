@@ -95,6 +95,14 @@ sources/
 
 `docs/adding-a-source.md` walks through writing one, field by field.
 
+A dataset's settings can also be changed from its **Configuration** tab in the dashboard. The
+file is never written to: the edit is stored in the platform and laid over the file on every
+read, so the dataset's next run — by hand, over the API or on its schedule — uses it. A change
+that would need the table rebuilt is refused until you confirm it, and the tab then either saves
+it for you to rebuild later with `udp run <source> --full-refresh`, or rebuilds and runs on the
+spot. An edit may not carry a `${NAME}` reference: those are filled from the platform's own
+environment and belong in the file.
+
 ## Settings
 
 Read from the environment, or from an uncommitted `.env` beside the project:

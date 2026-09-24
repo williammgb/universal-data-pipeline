@@ -38,6 +38,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/datasets/{source}/{dataset}/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Dataset Config */
+        get: operations["dataset_config_api_datasets__source___dataset__config_get"];
+        /** Save Dataset Config */
+        put: operations["save_dataset_config_api_datasets__source___dataset__config_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/datasets/{source}/{dataset}/profile": {
         parameters: {
             query?: never;
@@ -253,6 +271,72 @@ export interface components {
             /** Type */
             type: string;
         };
+        /**
+         * ConfigEdit
+         * @description One save of a dataset's settings: what it changed, and when.
+         */
+        ConfigEdit: {
+            /** Changed */
+            changed: {
+                [key: string]: unknown;
+            };
+            /**
+             * Changed At
+             * Format: date-time
+             */
+            changed_at: string;
+        };
+        /** ConfigUpdate */
+        ConfigUpdate: {
+            /**
+             * Accept Rebuild
+             * @default false
+             */
+            accept_rebuild: boolean;
+            /** Values */
+            values: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * DatasetConfig
+         * @description A dataset's settings as the file has them and as they are actually used.
+         *
+         *     `file` and `effective` hold the same fields, `editable`, in the order they are shown;
+         *     `overridden` names the fields where the two differ, which are the ones stored as an edit.
+         *     `columns` is the table's columns as stored, so the page can offer the names that exist.
+         *
+         *     A dataset's checks are edited as the YAML the file itself holds, so they also come back as
+         *     text: `checks_yaml` is what is in force and `file_checks_yaml` is what the file says.
+         */
+        DatasetConfig: {
+            /** Checks Yaml */
+            checks_yaml: string;
+            /** Columns */
+            columns: components["schemas"]["Column"][];
+            /** Connector Type */
+            connector_type: string;
+            /** Dataset */
+            dataset: string;
+            /** Editable */
+            editable: string[];
+            /** Effective */
+            effective: {
+                [key: string]: unknown;
+            };
+            /** File */
+            file: {
+                [key: string]: unknown;
+            };
+            /** File Checks Yaml */
+            file_checks_yaml: string;
+            /** History */
+            history: components["schemas"]["ConfigEdit"][];
+            /** Overridden */
+            overridden: string[];
+            /** Source */
+            source: string;
+        };
         /** DatasetDetail */
         DatasetDetail: {
             /** Columns */
@@ -456,6 +540,11 @@ export interface components {
         RunRequest: {
             /** Dataset */
             dataset?: string | null;
+            /**
+             * Full Refresh
+             * @default false
+             */
+            full_refresh: boolean;
             /** Source */
             source: string;
         };
@@ -649,6 +738,74 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DatasetDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dataset_config_api_datasets__source___dataset__config_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source: string;
+                dataset: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatasetConfig"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_dataset_config_api_datasets__source___dataset__config_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source: string;
+                dataset: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConfigUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatasetConfig"];
                 };
             };
             /** @description Validation Error */

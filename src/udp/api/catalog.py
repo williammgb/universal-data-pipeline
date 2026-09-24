@@ -19,6 +19,7 @@ from udp.api.metrics import LastRun, MetricsSnapshot, QualityFailures, RunTotals
 from udp.api.models import (
     CheckResult,
     Column,
+    ConfigEdit,
     DatasetDetail,
     DatasetItem,
     DatasetProfile,
@@ -35,6 +36,8 @@ from udp.api.models import (
     SourceItem,
 )
 from udp.api.profile import PROFILE_ROW_LIMIT, profile_table
+from udp.storage import overrides as override_store
+from udp.storage.loader import DatasetState
 
 
 def json_value(value: Any) -> JsonValue:
@@ -316,6 +319,58 @@ class PostgresCatalog:
                 json_value,
                 row_limit,
             )
+
+    def overrides(self, source: str) -> dict[str, dict[str, Any]]:
+        """Every stored configuration edit in force for this source, by dataset name."""
+        with self._connect() as conn:
+            return override_store.read_overrides(conn, source)
+
+    def edits(self, source: str, dataset: str) -> list[ConfigEdit]:
+        """This dataset's saves, newest first."""
+        with self._connect() as conn:
+            return [
+                ConfigEdit(changed=edit.changed, changed_at=edit.changed_at)
+                for edit in override_store.read_edits(conn, source, dataset)
+            ]
+
+    def save_override(
+        self,
+        source: str,
+        dataset: str,
+        override: dict[str, Any],
+        changed: dict[str, Any],
+        changed_at: datetime,
+    ) -> None:
+        with self._connect() as conn:
+            override_store.save_override(conn, source, dataset, override, changed, changed_at)
+
+    def loaded_state(
+        self, source: str, dataset: str
+    ) -> tuple[DatasetState | None, list[tuple[str, str]]]:
+        """What the last load recorded — its settings, and the table's columns as stored.
+
+        Both are what decides whether a change of settings needs the table rebuilt; a dataset
+        that has never run has neither.
+        """
+        with self._connect() as conn:
+            state = conn.execute(
+                "SELECT source, dataset, load_mode, primary_key, watermark_column, "
+                "watermark_type, watermark, file_path, file_sha256, config_sha256, run_id, "
+                "saved_at FROM platform.source_state WHERE source = %s AND dataset = %s",
+                [source, dataset],
+            ).fetchone()
+            version = conn.execute(
+                "SELECT columns FROM platform.schema_versions WHERE source = %s AND dataset = %s "
+                "ORDER BY version DESC LIMIT 1",
+                [source, dataset],
+            ).fetchone()
+        saved = (
+            DatasetState(**{**state, "primary_key": tuple(state["primary_key"]), "watermark": None})
+            if state is not None
+            else None
+        )
+        columns = [(name, kind) for name, kind in version["columns"]] if version else []
+        return saved, columns
 
     def quality(self, source: str, dataset: str) -> QualityReport | None:
         with self._connect() as conn:

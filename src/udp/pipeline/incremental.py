@@ -5,6 +5,7 @@ from hashlib import sha256
 import polars as pl
 import structlog
 
+from udp.config.columns import storage_dtype
 from udp.connectors.base import DatasetBase, FileVersion
 from udp.errors import ConfigError, SchemaDriftError, ValidationError
 from udp.storage.loader import WATERMARK_TYPES, DatasetState, Watermark, column_type
@@ -52,6 +53,34 @@ def check_same_load_settings(state: DatasetState, dataset: DatasetBase) -> None:
             f"dataset '{dataset.name}' changed {', '.join(changed)} since its last load; "
             "run with --full-refresh to rebuild the table"
         )
+
+
+def rebuild_reasons(
+    state: DatasetState | None, columns: Sequence[tuple[str, str]], dataset: DatasetBase
+) -> list[str]:
+    """Why these settings cannot be used without rebuilding the dataset's table first.
+
+    Empty when the next run takes them as they are. It mirrors the two rules a run enforces:
+    how a dataset is loaded may not change under an existing table, and a column may not be
+    stored as one type and then another. A dataset that has never run has nothing recorded to
+    clash with, so it gets no reason. `checks`, `quarantine_threshold_percent`, `schedule` and
+    `exclude_columns` never need a rebuild.
+    """
+    reasons = []
+    if state is not None:
+        try:
+            check_same_load_settings(state, dataset)
+        except ConfigError as error:
+            reasons.append(str(error))
+    stored = dict(columns)
+    for name, declared in dataset.columns.items():
+        kind = column_type(name, storage_dtype(declared))
+        if name in stored and stored[name] != kind:
+            reasons.append(
+                f"column '{name}' is stored as {stored[name]} and would be declared "
+                f"{declared}, which is stored as {kind}"
+            )
+    return reasons
 
 
 @dataclass

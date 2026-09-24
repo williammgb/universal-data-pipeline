@@ -27,6 +27,65 @@ from udp.storage.loader import (
 _DROPPED = object()
 
 
+class MemoryCatalog:
+    """The catalog's configuration reads and writes, without a database.
+
+    Only what the configuration tab's two routes ask for: the stored overrides, the history,
+    and what the last load recorded. Everything else the API reads still needs Postgres.
+    """
+
+    def __init__(
+        self,
+        state: DatasetState | None = None,
+        columns: Sequence[tuple[str, str]] = (),
+    ) -> None:
+        self.saved: list[dict[str, Any]] = []
+        self.state = state
+        self.columns = list(columns)
+
+    def overrides(self, source: str) -> dict[str, dict[str, Any]]:
+        in_force: dict[str, dict[str, Any]] = {}
+        for edit in self.saved:
+            if edit["source"] == source:
+                in_force[edit["dataset"]] = edit["override"]
+        return {name: override for name, override in in_force.items() if override}
+
+    def edits(self, source: str, dataset: str) -> list[Any]:
+        from udp.api.models import ConfigEdit
+
+        return [
+            ConfigEdit(changed=edit["changed"], changed_at=edit["changed_at"])
+            for edit in reversed(self.saved)
+            if (edit["source"], edit["dataset"]) == (source, dataset)
+        ]
+
+    def save_override(
+        self,
+        source: str,
+        dataset: str,
+        override: dict[str, Any],
+        changed: dict[str, Any],
+        changed_at: datetime,
+    ) -> None:
+        self.saved.append(
+            {
+                "source": source,
+                "dataset": dataset,
+                "override": override,
+                "changed": changed,
+                "changed_at": changed_at,
+            }
+        )
+
+    def loaded_state(
+        self, source: str, dataset: str
+    ) -> tuple[DatasetState | None, list[tuple[str, str]]]:
+        return self.state, self.columns
+
+    def close(self) -> None:
+        return None
+
+
 class MemoryTransaction:
     def __init__(self, loader: MemoryLoader) -> None:
         self._loader = loader
@@ -228,6 +287,10 @@ class MemoryLoader:
         self.locks: set[tuple[str, str]] = set()
         self.sources: dict[str, dict[str, Any]] = {}
         self.datasets: dict[tuple[str, str], dict[str, Any]] = {}
+        self.overrides: dict[str, dict[str, dict[str, Any]]] = {}
+
+    def read_overrides(self, source: str) -> dict[str, dict[str, Any]]:
+        return self.overrides.get(source, {})
 
     def record_config(self, copy: ConfigCopy) -> None:
         self.sources[copy.source] = {

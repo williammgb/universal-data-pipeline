@@ -1,7 +1,8 @@
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import psycopg
 import structlog
@@ -16,7 +17,7 @@ from udp.api.app import create_app
 from udp.api.auth import parse_keys
 from udp.api.catalog import PostgresCatalog
 from udp.config.secrets import read_environment
-from udp.config.source import load_source
+from udp.config.source import SourceConfig, load_source
 from udp.errors import ConfigError
 from udp.log import configure_logging
 from udp.orchestration.scheduler import serve
@@ -59,17 +60,24 @@ def run(
     configure_logging()
     settings = Settings()  # type: ignore[call-arg]
     environment = read_environment(Path(".env"))
-    configs = []
-    for source in sources:
+    failed = False
+
+    def read(source: str, overrides: Mapping[str, Mapping[str, Any]]) -> SourceConfig[Any, Any]:
         try:
-            configs.append((source, load_source(settings.sources_dir, source, environment)))
+            return load_source(settings.sources_dir, source, environment, overrides)
         except ConfigError as error:
             structlog.get_logger().error(
                 "invalid source config", step="config", source=source, error=str(error)
             )
             raise typer.Exit(2) from error
-    failed = False
+
+    # Every file is read and checked before anything connects to anything, so a typo in one of
+    # them costs nothing. The settings a run actually uses are read again below, with the edits
+    # made from the dashboard, which are stored in the platform database.
+    for source in sources:
+        read(source, {})
     with PostgresLoader(settings.database_url) as loader:
+        configs = [(source, read(source, loader.read_overrides(source))) for source in sources]
         for source, config in configs:
             outcomes = run_source(
                 source, config, settings.sources_dir, loader, full_refresh=full_refresh

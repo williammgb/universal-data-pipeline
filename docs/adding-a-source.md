@@ -197,6 +197,28 @@ With the API up (`udp api`, or the `api` container), the dashboard lists the dat
 columns, a preview of its rows, its quality results and its run history. If the API has keys
 configured (`UDP_API_KEYS`), the dashboard asks for one the first time it is refused.
 
+## Changing it without editing the file
+
+The dataset's **Configuration** tab edits the settings on this page — the schedule, the load
+mode, the watermark and primary key, the declared column types, the checks, the quarantine
+threshold, and `exclude_columns:` for a database source. The file is never written to: an edit
+is stored in the platform database and laid over the file every time the source is read, so the
+next run of that dataset uses it, whether it is started by hand, by the API or by the scheduler.
+
+Two things follow from that:
+
+- An edit is checked exactly as the same lines in the file would be, and refused with the same
+  message.
+- A change that would need the table rebuilt — the load mode, the watermark, the primary key, or
+  a declared type the table contradicts — is refused once, with its reasons. You then either
+  save it anyway, and rebuild when you choose with `udp run <source> --full-refresh`, or use
+  **Rebuild and run now**, which saves the change and starts that rebuild in one step.
+- An edit may not carry a `${NAME}` reference. Those are filled from the platform's own
+  environment, so they belong in `source.yaml`, which only whoever runs the platform writes.
+
+Every field shows whether it differs from the file and offers the file's value back, and the
+tab's **Changes** list holds every save, newest first.
+
 ## When something goes wrong
 
 - `run failed` with `ConfigError`: the YAML names the file and field that is wrong.

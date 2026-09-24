@@ -12,6 +12,7 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from udp.errors import LoadError
+from udp.storage import overrides as override_store
 from udp.storage.loader import (
     INTERRUPTED,
     Column,
@@ -358,6 +359,9 @@ class PostgresLoader:
         if self._conn is None:
             self._conn = psycopg.connect(self._database_url, autocommit=True)
         return self._conn
+
+    def read_overrides(self, source: str) -> dict[str, dict[str, Any]]:
+        return override_store.read_overrides(self._connection(), source)
 
     def lock_dataset(self, source: str, dataset: str) -> bool:
         key = f"{source}/{dataset}"

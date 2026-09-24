@@ -11,6 +11,8 @@ export type QualityReport = components["schemas"]["QualityReport"];
 export type DatasetProfile = components["schemas"]["DatasetProfile"];
 export type ColumnProfile = components["schemas"]["ColumnProfile"];
 export type ValueCount = components["schemas"]["ValueCount"];
+export type DatasetConfig = components["schemas"]["DatasetConfig"];
+export type ConfigEdit = components["schemas"]["ConfigEdit"];
 export type RunsPage = components["schemas"]["RunsPage"];
 export type RunItem = components["schemas"]["RunItem"];
 export type RunDetail = components["schemas"]["RunDetail"];
@@ -87,6 +89,16 @@ export async function postJson<T>(path: string, body: unknown): Promise<T> {
   return (await response.json()) as T;
 }
 
+export async function putJson<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(`/api${path}`, {
+    method: "PUT",
+    headers: headers({ "Content-Type": "application/json" }),
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw await failure(response);
+  return (await response.json()) as T;
+}
+
 const REFRESH_MS = 5000;
 
 export function useDatasets(q: string, source: string) {
@@ -152,10 +164,34 @@ export function useRun(runId: string) {
   });
 }
 
-export function useStartRun(source: string, dataset: string) {
+export function useConfig(source: string, dataset: string) {
+  return useQuery({
+    queryKey: ["config", source, dataset],
+    queryFn: () => getJson<DatasetConfig>(`/datasets/${source}/${dataset}/config`),
+  });
+}
+
+/** Saving returns the settings as they now stand, so the tab redraws from the platform's answer
+ * rather than from what it sent. */
+export function useSaveConfig(source: string, dataset: string) {
   const queries = useQueryClient();
   return useMutation({
-    mutationFn: () => postJson<RunAccepted>("/runs", { source, dataset }),
+    mutationFn: (body: { values: Record<string, unknown>; accept_rebuild: boolean }) =>
+      putJson<DatasetConfig>(`/datasets/${source}/${dataset}/config`, body),
+    onSuccess: (saved) => {
+      queries.setQueryData(["config", source, dataset], saved);
+      // The schedule, the load mode and the declared types are shown on the other tabs too.
+      void queries.invalidateQueries({ queryKey: ["dataset", source, dataset] });
+      void queries.invalidateQueries({ queryKey: ["datasets"] });
+    },
+  });
+}
+
+export function useStartRun(source: string, dataset: string, fullRefresh = false) {
+  const queries = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      postJson<RunAccepted>("/runs", { source, dataset, full_refresh: fullRefresh }),
     onSuccess: () => {
       void queries.invalidateQueries({ queryKey: ["runs"] });
       void queries.invalidateQueries({ queryKey: ["dataset", source, dataset] });

@@ -266,6 +266,10 @@ class Loader(Protocol):
         logged, and it is freed when the connection closes."""
         ...
 
+    def read_overrides(self, source: str) -> dict[str, dict[str, Any]]:
+        """Each of the source's datasets' stored configuration edits, by dataset name."""
+        ...
+
     def skip_run(self, run: RunStart, *, ended_at: datetime) -> None:
         """Record a run that did not start because another run held the lock. Commits
         immediately."""

@@ -12,10 +12,11 @@ import {
 } from "../api/client";
 import { cell, connectorName, count, describeSchedule, moment } from "../format";
 import { runsQuery } from "../runFilters";
+import Config from "./Config";
 import { Blank, Fact, Problem, Status, Waiting } from "./parts";
 import Profile from "./Profile";
 
-const TABS = ["schema", "profile", "preview", "quality", "runs"] as const;
+const TABS = ["schema", "profile", "preview", "quality", "runs", "config"] as const;
 type Tab = (typeof TABS)[number];
 const TAB_NAMES: Record<Tab, string> = {
   schema: "Schema & metadata",
@@ -23,6 +24,7 @@ const TAB_NAMES: Record<Tab, string> = {
   preview: "Preview",
   quality: "Quality",
   runs: "Runs",
+  config: "Configuration",
 };
 
 export default function Dataset() {
@@ -78,6 +80,7 @@ export default function Dataset() {
           ) : null}
           {tab === "quality" ? <Quality source={source} dataset={dataset} /> : null}
           {tab === "runs" ? <DatasetRuns source={source} dataset={dataset} /> : null}
+          {tab === "config" ? <Config source={source} dataset={dataset} /> : null}
         </>
       ) : null}
     </main>
@@ -119,7 +122,7 @@ function Schema({ detail }: { detail: DatasetDetail }) {
             <tr>
               <th>Column</th>
               <th>Stored type</th>
-              <th>Declared in source.yaml</th>
+              <th>Declared</th>
             </tr>
           </thead>
           <tbody>

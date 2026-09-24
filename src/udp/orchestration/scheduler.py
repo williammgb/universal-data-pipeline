@@ -37,13 +37,21 @@ class ScheduledDataset:
     schedule: str
 
 
-def find_schedules(sources_dir: Path, env: Mapping[str, str]) -> list[ScheduledDataset]:
-    """Every dataset with a schedule; an invalid source is logged and left out."""
+def find_schedules(
+    sources_dir: Path, env: Mapping[str, str], loader: Loader | None
+) -> list[ScheduledDataset]:
+    """Every dataset with a schedule; an invalid source is logged and left out.
+
+    A schedule edited from the dashboard is stored in the platform database, so each source's
+    edits are read from the loader. `None` means the files alone, and is spelled out at every
+    call so that reading no edits is never what a forgotten argument does.
+    """
     found: list[ScheduledDataset] = []
     for path in sorted(sources_dir.glob("*/source.yaml")):
         source = path.parent.name
         try:
-            config = load_source(sources_dir, source, env)
+            overrides = loader.read_overrides(source) if loader is not None else {}
+            config = load_source(sources_dir, source, env, overrides)
         except ConfigError as error:
             log.error(
                 "invalid source config; its datasets are not scheduled",
@@ -66,26 +74,26 @@ def run_scheduled(
     env: Mapping[str, str],
     open_loader: Callable[[], AbstractContextManager[Loader]],
 ) -> list[RunOutcome]:
-    """Run one dataset as a scheduled run, reading its source.yaml as it is now."""
-    try:
-        config = load_source(sources_dir, source, env)
-    except ConfigError as error:
-        log.error(
-            "invalid source config; scheduled run not started",
-            source=source,
-            dataset=dataset,
-            error=str(error),
-        )
-        return []
-    chosen = [item for item in config.datasets if item.name == dataset]
-    if not chosen:
-        log.error(
-            "scheduled dataset is no longer in its source config; run not started",
-            source=source,
-            dataset=dataset,
-        )
-        return []
+    """Run one dataset as a scheduled run, reading its source.yaml and its edits as they are now."""
     with open_loader() as loader:
+        try:
+            config = load_source(sources_dir, source, env, loader.read_overrides(source))
+        except ConfigError as error:
+            log.error(
+                "invalid source config; scheduled run not started",
+                source=source,
+                dataset=dataset,
+                error=str(error),
+            )
+            return []
+        chosen = [item for item in config.datasets if item.name == dataset]
+        if not chosen:
+            log.error(
+                "scheduled dataset is no longer in its source config; run not started",
+                source=source,
+                dataset=dataset,
+            )
+            return []
         return run_source(
             source,
             config.model_copy(update={"datasets": chosen}),
@@ -154,7 +162,8 @@ def serve(sources_dir: Path, database_url: str, env: Mapping[str, str]) -> None:
     def run(source: str, dataset: str) -> None:
         run_scheduled(sources_dir, source, dataset, env, lambda: PostgresLoader(database_url))
 
-    schedules = find_schedules(sources_dir, env)
+    with PostgresLoader(database_url) as loader:
+        schedules = find_schedules(sources_dir, env, loader)
     if not schedules:
         log.warning("no dataset has a schedule")
     add_jobs(scheduler, schedules, run)

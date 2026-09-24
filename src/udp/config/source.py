@@ -9,6 +9,7 @@ import pydantic
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
+from udp.config.overrides import apply_overrides
 from udp.config.secrets import fill_references
 from udp.connectors import CONNECTORS
 from udp.connectors.base import ConnectionBase, DatasetBase
@@ -49,10 +50,15 @@ def _location(loc: tuple[int | str, ...]) -> str:
 
 
 def load_source(
-    sources_dir: Path, name: str, env: Mapping[str, str] = os.environ
+    sources_dir: Path,
+    name: str,
+    env: Mapping[str, str] = os.environ,
+    overrides: Mapping[str, Mapping[str, Any]] = {},
 ) -> SourceConfig[Any, Any]:
     """Read and check sources/<name>/source.yaml, filling ${NAME} from env.
 
+    `overrides` holds each dataset's stored edits, laid over the file before anything is
+    checked, so an edit is refused for exactly the reasons the same lines in the file would be.
     Every problem raises ConfigError.
     """
     path = sources_dir / name / SOURCE_FILE
@@ -74,6 +80,7 @@ def load_source(
         where = f"line {mark.line + 1}: " if mark is not None else ""
         raise fail(f"{where}invalid YAML: {getattr(error, 'problem', error)}") from error
 
+    data = apply_overrides(data, overrides)
     if not isinstance(data, dict):
         raise fail("expected a mapping with 'connection' and 'datasets'")
     written = copy.deepcopy(data)

@@ -420,8 +420,8 @@ DEMO_ENV = {
 
 def test_the_demo_sources_schedule_nothing_unless_the_setting_says_so() -> None:
     # A plain installation must not find demo data loading itself every minute.
-    assert find_schedules(Path("sources"), DEMO_ENV) == []
-    assert find_schedules(Path("sources"), DEMO_ENV | {"DEMO_SCHEDULE": "* * * * *"}) == [
+    assert find_schedules(Path("sources"), DEMO_ENV, None) == []
+    assert find_schedules(Path("sources"), DEMO_ENV | {"DEMO_SCHEDULE": "* * * * *"}, None) == [
         ScheduledDataset("demo_csv", "customers", "* * * * *")
     ]
 
@@ -432,7 +432,7 @@ def test_an_invalid_source_is_logged_and_the_others_are_still_scheduled(tmp_path
     (sources / "broken" / "source.yaml").write_text("connection:\n  type: nope\n", encoding="utf-8")
 
     with capture_logs() as logs:
-        found = find_schedules(sources, {})
+        found = find_schedules(sources, {}, None)
 
     assert found == [ScheduledDataset("shop", "a", "*/5 * * * *")]
     (error,) = [line for line in logs if line["log_level"] == "error"]
@@ -470,7 +470,7 @@ def test_a_firing_runs_only_its_dataset_as_a_scheduled_run(tmp_path: Path) -> No
         fired.set()
 
     scheduler = BackgroundScheduler(timezone=UTC)
-    add_jobs(scheduler, find_schedules(sources, {}), run)
+    add_jobs(scheduler, find_schedules(sources, {}, None), run)
     scheduler.start()
     try:
         scheduler.modify_job("shop.a", next_run_time=datetime.now(UTC))
@@ -484,6 +484,33 @@ def test_a_firing_runs_only_its_dataset_as_a_scheduled_run(tmp_path: Path) -> No
         "scheduled",
         "succeeded",
     )
+
+
+def test_a_dataset_is_scheduled_by_the_edit_made_from_its_configuration_tab(
+    tmp_path: Path,
+) -> None:
+    """The file leaves dataset `b` unscheduled; the stored edit gives it a schedule."""
+    sources = _sources(tmp_path, frozenset({"a"}))
+    loader = MemoryLoader()
+    loader.overrides["shop"] = {"b": {"schedule": "0 6 * * *"}}
+
+    assert find_schedules(sources, {}, loader) == [
+        ScheduledDataset("shop", "a", "*/5 * * * *"),
+        ScheduledDataset("shop", "b", "0 6 * * *"),
+    ]
+    assert find_schedules(sources, {}, None) == [ScheduledDataset("shop", "a", "*/5 * * * *")]
+
+
+def test_a_scheduled_firing_runs_the_dataset_as_its_edits_leave_it(tmp_path: Path) -> None:
+    sources = _sources(tmp_path, frozenset({"a"}))
+    loader = MemoryLoader()
+    loader.overrides["shop"] = {"a": {"quarantine_threshold_percent": 42}}
+
+    (outcome,) = run_scheduled(sources, "shop", "a", {}, lambda: nullcontext(loader))
+
+    assert outcome.status == "succeeded"
+    recorded = loader.datasets[("shop", "a")]["definition"]
+    assert recorded["quarantine_threshold_percent"] == 42
 
 
 @pytest.mark.parametrize(

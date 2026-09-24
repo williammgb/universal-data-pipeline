@@ -1,33 +1,34 @@
 import json
 import math
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, nullcontext
 from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from threading import Event
 from time import monotonic, sleep
-from typing import Any
+from typing import Any, cast
 from urllib.parse import unquote
 from uuid import UUID, uuid4, uuid7
 
 import polars as pl
 import psycopg
 import pytest
-from fakes import MemoryLoader
+from fakes import MemoryCatalog, MemoryLoader
 from fastapi.testclient import TestClient
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from prometheus_client.parser import text_string_to_metric_families
 from psycopg import sql
 
-from udp.api.app import RUNS_QUEUED, create_app
+from udp.api.app import CHECKS_LIMIT, RUNS_QUEUED, create_app
 from udp.api.catalog import PostgresCatalog, json_value
 from udp.config.source import load_source
+from udp.errors import ConfigError
 from udp.pipeline.runner import run_source
 from udp.settings import Settings
-from udp.storage.loader import ConfigCopy, RunFailure, RunStart
+from udp.storage.loader import ConfigCopy, DatasetState, RunFailure, RunStart
 from udp.storage.postgres import PostgresLoader
 
 UNREACHABLE = "postgresql://x:x@127.0.0.1:1/x"
@@ -115,6 +116,7 @@ def test_the_openapi_document_lists_every_route_and_the_docs_page_loads() -> Non
     assert sorted(paths) == [
         "/api/datasets",
         "/api/datasets/{source}/{dataset}",
+        "/api/datasets/{source}/{dataset}/config",
         "/api/datasets/{source}/{dataset}/profile",
         "/api/datasets/{source}/{dataset}/quality",
         "/api/datasets/{source}/{dataset}/rows",
@@ -125,6 +127,7 @@ def test_the_openapi_document_lists_every_route_and_the_docs_page_loads() -> Non
         "/api/sources/{source}",
     ]
     assert set(paths["/api/runs"]) == {"get", "post"}
+    assert set(paths["/api/datasets/{source}/{dataset}/config"]) == {"get", "put"}
     assert client.get("/api/docs").status_code == 200
 
 
@@ -258,7 +261,7 @@ def test_a_malformed_query_is_refused_before_the_database_is_asked(path: str) ->
         ({"source": "../sources"}, 404, "not found"),
         ({"source": "shop"}, 422, "sources/shop/source.yaml: datasets[0].path"),
         ({"source": "demo_csv", "dataset": "orders"}, 404, "dataset 'orders'"),
-        ({"source": "demo_csv", "full_refresh": True}, 422, "full_refresh"),
+        ({"source": "demo_csv", "rebuild": True}, 422, "rebuild"),
     ],
 )
 def test_a_run_request_that_cannot_run_says_why(
@@ -341,6 +344,21 @@ PATHS = st.builds(
 )
 
 
+def test_a_run_started_over_the_api_uses_the_edits_made_from_the_dashboard() -> None:
+    loader = MemoryLoader()
+    loader.overrides["demo_csv"] = {"customers": {"quarantine_threshold_percent": 50}}
+    client, app = _client(loader=loader)
+
+    response = client.post(
+        "/api/runs", json={"source": "demo_csv", "dataset": "customers", "full_refresh": True}
+    )
+    app.state.runs.shutdown(wait=True)
+
+    assert response.status_code == 202
+    recorded = loader.datasets[("demo_csv", "customers")]["definition"]
+    assert recorded["quarantine_threshold_percent"] == 50
+
+
 @settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
 @given(PATHS)
 def test_any_address_gives_a_page_a_file_or_the_apis_own_404(tmp_path: Path, path: str) -> None:
@@ -393,6 +411,207 @@ def test_without_a_built_dashboard_only_the_api_answers(tmp_path: Path) -> None:
 
     assert client.get("/").status_code == 404
     assert client.get("/api/docs").status_code == 200
+
+
+# --- editing a dataset's configuration ----------------------------------------------------------
+
+CONFIG = "/api/datasets/demo_csv/customers/config"
+
+
+def _config_client(
+    state: DatasetState | None = None, columns: Sequence[tuple[str, str]] = ()
+) -> tuple[TestClient, MemoryCatalog]:
+    catalog = MemoryCatalog(state, columns)
+    app = create_app(
+        cast(PostgresCatalog, catalog), SOURCES, {}, lambda: nullcontext(MemoryLoader())
+    )
+    return TestClient(app), catalog
+
+
+def _loaded_state(**settings: Any) -> DatasetState:
+    return DatasetState(
+        source="demo_csv",
+        dataset="customers",
+        load_mode=settings.get("load_mode", "full"),
+        primary_key=settings.get("primary_key", ()),
+        watermark_column=settings.get("watermark_column"),
+        watermark_type=None,
+        watermark=None,
+        file_path="data/customers.csv",
+        file_sha256="abc",
+        config_sha256="def",
+        run_id=uuid7(),
+        saved_at=datetime.now(UTC),
+    )
+
+
+def test_a_dataset_with_no_edits_reads_back_exactly_its_file() -> None:
+    client, _ = _config_client()
+
+    answer = client.get(CONFIG).json()
+
+    assert (answer["overridden"], answer["history"]) == ([], [])
+    assert answer["file"] == answer["effective"]
+    assert answer["file"]["columns"]["lifetime_value"] == "decimal(12,2)"
+    assert answer["checks_yaml"] == answer["file_checks_yaml"]
+    assert "not_null" in answer["checks_yaml"]
+    assert "exclude_columns" not in answer["editable"]  # a csv source has no such setting
+
+
+@pytest.mark.parametrize(
+    ("path", "status"),
+    [
+        ("/api/datasets/nowhere/customers/config", 404),
+        ("/api/datasets/demo_csv/orders/config", 404),
+    ],
+)
+def test_a_configuration_that_is_not_there_is_a_404(path: str, status: int) -> None:
+    client, _ = _config_client()
+
+    assert client.get(path).status_code == status
+    assert client.put(path, json={"values": {}}).status_code == status
+
+
+def test_a_value_the_file_could_not_hold_is_refused_with_the_files_own_message() -> None:
+    client, catalog = _config_client()
+
+    response = client.put(CONFIG, json={"values": {"schedule": "0 6 * *"}})
+
+    # The same value written into the file is refused with the very same words.
+    with pytest.raises(ConfigError) as from_the_file:
+        load_source(SOURCES, "demo_csv", {"DEMO_SCHEDULE": "0 6 * *"})
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == str(from_the_file.value)
+    assert catalog.saved == []
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"schedule": "${DEMO_DB_URL} 1 1 1 1"},
+        {"columns": {"customer_id": "${DEMO_DB_URL}"}},
+        {"columns": {"${DEMO_DB_URL}": "text"}},
+        {"primary_key": ["${DEMO_DB_URL}"]},
+        {"checks": "- check: not_null\n  column: ${DEMO_DB_URL}\n"},
+    ],
+)
+def test_an_edit_may_not_read_the_platforms_own_environment(values: dict[str, Any]) -> None:
+    """A ${NAME} is filled before anything is checked, so it would come back in the refusal."""
+    client, catalog = _config_client()
+
+    response = client.put(CONFIG, json={"values": values})
+
+    assert response.status_code == 422
+    assert "may not name an environment variable" in response.json()["detail"]
+    assert "postgresql" not in response.text
+    assert catalog.saved == []
+
+
+def test_a_field_that_is_not_editable_is_refused() -> None:
+    client, catalog = _config_client()
+
+    response = client.put(CONFIG, json={"values": {"name": "other", "path": "x.csv"}})
+
+    assert response.status_code == 422
+    assert "not editable" in response.json()["detail"]
+    assert catalog.saved == []
+
+
+def test_an_edit_is_stored_and_comes_back_as_what_the_dataset_now_uses() -> None:
+    client, catalog = _config_client()
+
+    saved = client.put(
+        CONFIG, json={"values": {"schedule": "0 6 * * *", "quarantine_threshold_percent": 5}}
+    )
+
+    assert saved.status_code == 200
+    answer = saved.json()
+    assert answer["effective"]["schedule"] == "0 6 * * *"
+    assert answer["file"]["schedule"] is None
+    assert set(answer["overridden"]) == {"schedule", "quarantine_threshold_percent"}
+    (edit,) = catalog.saved
+    assert edit["override"] == {"schedule": "0 6 * * *", "quarantine_threshold_percent": 5.0}
+    assert edit["changed"]["schedule"] == {"from": None, "to": "0 6 * * *"}
+    assert answer["history"][0]["changed"]["schedule"]["to"] == "0 6 * * *"
+
+
+def test_checks_are_edited_as_the_yaml_the_file_holds() -> None:
+    client, catalog = _config_client()
+
+    saved = client.put(
+        CONFIG, json={"values": {"checks": "- check: not_null\n  column: customer_id\n"}}
+    )
+
+    assert saved.status_code == 200
+    assert saved.json()["checks_yaml"].startswith("- check: not_null")
+    assert catalog.saved[0]["override"]["checks"] == [
+        {"check": "not_null", "column": "customer_id", "severity": "error"}
+    ]
+    refused = client.put(CONFIG, json={"values": {"checks": "- check: not_null\n   column: x\n"}})
+    assert refused.status_code == 422
+    assert "invalid YAML" in refused.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("checks", "said"),
+    [
+        # A handful of nested aliases turns a few hundred bytes into billions of values.
+        pytest.param(
+            "a: &a [x,x,x,x]\nb: &b [*a,*a,*a,*a]\nc: [*b,*b,*b,*b]\n",
+            "may not use an alias",
+            id="aliases",
+        ),
+        # Nested deeply enough, PyYAML ends its own recursion rather than its parse.
+        pytest.param("[" * 5000 + "]" * 5000, "too deeply nested", id="deeply nested"),
+        pytest.param("x" * (CHECKS_LIMIT + 1), "more than the", id="longer than the limit"),
+    ],
+)
+def test_checks_that_would_cost_more_to_read_than_to_send_are_refused(
+    checks: str, said: str
+) -> None:
+    client, catalog = _config_client()
+
+    response = client.put(CONFIG, json={"values": {"checks": checks}})
+
+    assert response.status_code == 422
+    assert said in response.json()["detail"]
+    assert catalog.saved == []
+
+
+def test_a_change_that_needs_the_table_rebuilt_is_refused_once_and_then_saved() -> None:
+    client, catalog = _config_client(_loaded_state(), [("customer_id", "bigint")])
+    change = {"values": {"load_mode": "append", "watermark": "signup_date"}}
+
+    refused = client.put(CONFIG, json=change)
+    accepted = client.put(CONFIG, json={**change, "accept_rebuild": True})
+
+    assert refused.status_code == 409
+    assert "load_mode" in refused.json()["detail"]
+    assert accepted.status_code == 200
+    (edit,) = catalog.saved
+    assert edit["override"]["load_mode"] == "append"
+
+
+def test_a_declared_type_the_table_already_contradicts_needs_a_rebuild() -> None:
+    client, _ = _config_client(_loaded_state(), [("city", "text")])
+
+    refused = client.put(CONFIG, json={"values": {"columns": {"city": "integer"}}})
+
+    assert refused.status_code == 409
+    assert "city" in refused.json()["detail"]
+
+
+def test_an_edit_taken_back_leaves_the_dataset_on_its_file_again() -> None:
+    client, catalog = _config_client()
+
+    client.put(CONFIG, json={"values": {"schedule": "0 6 * * *"}})
+    back = client.put(CONFIG, json={"values": {}})
+
+    assert back.status_code == 200
+    assert back.json()["overridden"] == []
+    assert catalog.saved[-1]["override"] == {}
+    assert catalog.saved[-1]["changed"]["schedule"] == {"from": "0 6 * * *", "to": None}
 
 
 # --- the catalog against Postgres ---------------------------------------------------------------
