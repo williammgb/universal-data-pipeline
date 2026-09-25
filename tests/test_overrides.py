@@ -148,6 +148,18 @@ def test_a_file_that_is_not_a_mapping_still_reaches_its_own_error(data: Any) -> 
     assert apply_overrides(data, {"customers": {"schedule": "0 6 * * *"}}) == data
 
 
+@pytest.mark.parametrize(
+    "entry",
+    [{}, {"path": "data/customers.csv"}, {"name": None}, {"name": 5}, "customers", None, 5],
+)
+def test_a_dataset_the_file_did_not_name_is_left_for_validation_to_refuse(entry: Any) -> None:
+    """An entry with no usable name cannot be matched to an override, and must survive to be
+    refused by validation with its own message rather than raising here."""
+    data = {"connection": {"type": "csv"}, "datasets": [entry]}
+
+    assert apply_overrides(data, {"customers": {"schedule": "0 6 * * *"}}) == data
+
+
 # --- what is stored, and what the history says --------------------------------------------------
 
 

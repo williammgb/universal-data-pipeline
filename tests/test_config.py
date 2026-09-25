@@ -381,3 +381,33 @@ def test_every_rejected_dataset_name_raises_naming_its_field(name: str) -> None:
 
         with pytest.raises(ConfigError, match=r"datasets\[0\]\.name"):
             load_source(sources_dir, "shop")
+
+
+def test_a_source_whose_own_name_is_not_allowed_is_refused(tmp_path: Path) -> None:
+    sources_dir = tmp_path / "sources"
+    _write_source(sources_dir, "Bad-Name", f"connection:\n  type: csv\ndatasets:\n{VALID_DATASET}")
+
+    with pytest.raises(ConfigError, match="source name 'Bad-Name' must start with a lowercase"):
+        load_source(sources_dir, "Bad-Name")
+
+
+def test_a_table_name_of_exactly_the_limit_is_allowed_and_one_byte_more_is_not(
+    tmp_path: Path,
+) -> None:
+    # The table is named source__dataset, so how long a dataset name may be depends on the
+    # source's name. "warehouse__" leaves 52 bytes of the 63 for the dataset.
+    source = "warehouse"
+    fits = "d" * (63 - len(f"{source}__"))
+    over = f"{fits}d"
+
+    for label, name, refused in (("fits", fits, False), ("over", over, True)):
+        sources_dir = tmp_path / label / "sources"
+        text = f"connection:\n  type: csv\ndatasets:\n  - name: {name}\n    path: data.csv\n"
+        _write_source(sources_dir, source, text)
+
+        if refused:
+            with pytest.raises(ConfigError, match=r"is longer than 63 bytes"):
+                load_source(sources_dir, source)
+        else:
+            config = load_source(sources_dir, source)
+            assert [dataset.name for dataset in config.datasets] == [name]

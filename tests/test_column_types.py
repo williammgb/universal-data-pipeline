@@ -11,6 +11,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from polars.testing import assert_frame_equal
+from structlog.testing import capture_logs
 
 from udp.errors import ValidationError
 from udp.pipeline.column_types import apply_column_types, convert
@@ -29,6 +30,7 @@ TIMESTAMP_TEXT = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}"
     r"([T ][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]{1,6})?)?(Z|[+-][0-9]{2}:[0-9]{2})?)?"
 )
+OFFSET_MINUTES = re.compile(r"[+-][0-9]{2}:[0-9]{2}$")
 
 
 def _decimal_model(value: Decimal, precision: int, scale: int) -> Any:
@@ -112,8 +114,11 @@ def model(value: Any, source: str, declared: str) -> Any:
         return value
     if declared == "timestamp":
         if source == "text":
-            # Python reads 24:00 as the next midnight; the rules allow hours 00 to 23 only.
+            # Python reads 24:00 as the next midnight, and an offset of +00:60 as the next
+            # hour; the rules allow hours 00 to 23 and offset minutes 00 to 59 only.
             if not TIMESTAMP_TEXT.fullmatch(value) or value[11:13] == "24":
+                return BAD
+            if OFFSET_MINUTES.search(value) and int(value[-2:]) > 59:
                 return BAD
             try:
                 return _utc(datetime.fromisoformat(value))
@@ -338,7 +343,9 @@ def test_a_bad_row_is_quarantined_as_read_with_every_unfit_column_named() -> Non
 
 
 def test_floats_round_half_away_from_zero_to_the_scale_and_text_never_does() -> None:
-    floats = pl.Series("v", [731.9399999999999, 2.675, -0.005, 9999.995, 12.3])
+    # 1234567.891 has more decimals than the scale, so it is on the rounding path, and more
+    # digits than the precision, so it is refused before being rounded rather than after.
+    floats = pl.Series("v", [731.9399999999999, 2.675, -0.005, 9999.995, 12.3, 1234567.891])
     texts = pl.Series("v", ["731.9399999999999", "2.675", "12.345", "12.3"])
 
     assert convert(floats, DECIMAL).to_list() == [
@@ -347,6 +354,7 @@ def test_floats_round_half_away_from_zero_to_the_scale_and_text_never_does() -> 
         Decimal("-0.01"),
         None,  # 10000.00 does not fit decimal(6,2)
         Decimal("12.30"),
+        None,
     ]
     assert convert(texts, DECIMAL).to_list() == [None, None, None, Decimal("12.30")]
 
@@ -408,6 +416,10 @@ NEAR_MISSES = {
         ".", "5.", ".5", "1.2.3", "9999.99", "10000.00", "10000", "-9999.995", "12.345",
         "0012.10", "-0.00", "1E-7", "1e3", "1e4", "1.5e2", "0e5", "1e999", "1e-999", "+-1",
         "1_000", ARABIC_DIGITS, "NaN", "Infinity", "e5", "",
+        # An exponent whose digits carry trailing zeros, or land exactly on the precision or
+        # the scale: writing the number out as plain digits has to move the point by exactly
+        # as many places as it drops zeros.
+        "1.00e2", "1.005e2", "11e0", "9999.99e0",
     ],
     "float": [
         "nan", "+NaN", "-inf", "Infinity", "infinit", "1e999", "-1e999", "1e-999", ".5", "5.",
@@ -416,7 +428,7 @@ NEAR_MISSES = {
     "boolean": ["TRUE", "Yes", "y", "N", "t", "F", "1", "0", "2", "yes!", "", "tru", "01"],
     "date": [
         "2024-02-29", "2023-02-29", "2026-02-30", "0000-01-01", "2024-1-01", "2024-01-1",
-        "20240101", "2024-01-01T00:00", "2024/01/01", "9999-12-31",
+        "20240101", "2024-01-01T00:00", "2024/01/01", "9999-12-31", "0001-01-01",
     ],
     "timestamp": [
         "2024-01-01", "2024-01-01T10:00", "2024-01-01 10:00", "2024-01-01T10",
@@ -425,9 +437,86 @@ NEAR_MISSES = {
         "2024-01-01T10:00+0530", "2024-01-01T10:00+05:30", "2024-01-01T10:00+25:00",
         "2024-01-01T10:00+23:59", "20260913T101010", "2024-01-01T10:00:00Z", "2024-01-01Z",
         "0001-01-01T00:30+01:00", "9999-12-31T23:30-01:00", "2024-01-01t10:00", "0000-01-01",
+        # The first and last moment the rules allow, and the offsets one step past the largest
+        # allowed one, which no time zone uses but a file can still hold.
+        "0001-01-01", "9999-12-31T23:00:00", "2024-01-01T10:00+24:00", "2024-01-01T10:00+00:60",
     ],
     "json": ['{"a":1}', "NaN", "Infinity", "-Infinity", "{", '"x"', "[1,]", "nul", "null", "1e999"],
 }  # fmt: skip
+
+
+def test_the_declared_columns_are_checked_once_for_the_whole_run_not_once_per_chunk() -> None:
+    chunks = [pl.DataFrame({"v": [str(number)]}) for number in range(3)]
+    findings = RunFindings("shop", "orders")
+
+    with capture_logs() as logs:
+        kept = list(apply_column_types(iter(chunks), {"v": "integer"}, findings))
+
+    assert [frame["v"].to_list() for frame in kept] == [[0], [1], [2]]
+    declared = [line for line in logs if line["event"] == "columns declared"]
+    assert declared == [
+        {
+            "event": "columns declared",
+            "log_level": "info",
+            "step": "columns",
+            "columns": {"v": "integer"},
+        }
+    ]
+
+
+def test_a_timestamp_becomes_a_date_only_when_its_utc_time_is_midnight() -> None:
+    column = pl.Series(
+        "v",
+        [
+            datetime(2024, 1, 1),
+            datetime(2024, 1, 1, 0, 0, 1),
+            datetime(2024, 1, 1, 0, 1),
+            datetime(2024, 1, 1, 1),
+            datetime(2024, 1, 1, 0, 0, 0, 1),
+        ],
+    )
+
+    assert convert(column, "date").to_list() == [date(2024, 1, 1), None, None, None, None]
+
+
+def test_a_float_exactly_on_the_integer_limit_converts_and_one_past_it_does_not() -> None:
+    # -2^63 is the smallest integer that can be stored, and it is a float exactly; 2^63 is one
+    # past the largest, because the largest is 2^63 - 1.
+    column = pl.Series("v", [-(2.0**63), 2.0**63, 2.0**63 - 1024.0])
+
+    assert convert(column, "integer").to_list() == [-(2**63), None, int(2.0**63 - 1024.0)]
+
+
+def test_a_whole_number_column_is_a_boolean_only_at_one_and_zero() -> None:
+    column = pl.Series("v", [1, 0, 2, -1, 10])
+
+    assert convert(column, "boolean").to_list() == [True, False, None, None, None]
+
+
+def test_a_whole_number_becomes_a_float_only_while_every_number_still_has_its_own_float() -> None:
+    # Past 2^53 the floats run out: 2^53 and 2^53 + 1 would both be stored as the same value,
+    # so anything beyond the limit is quarantined rather than quietly rounded.
+    column = pl.Series("v", [2**53, 2**53 + 1, -(2**53), -(2**53) - 1, 0])
+
+    assert convert(column, "float").to_list() == [float(2**53), None, float(-(2**53)), None, 0.0]
+
+
+def test_a_nanosecond_column_keeps_whole_microseconds_and_quarantines_the_rest() -> None:
+    # Timestamps are stored to the microsecond, so a nanosecond column may hold a value that
+    # cannot be stored without losing digits. Built from whole nanoseconds, because that is the
+    # only way to write a value between two microseconds.
+    second = int(datetime(2024, 1, 1, 10, tzinfo=UTC).timestamp()) * 1_000_000_000
+    column = (
+        pl.Series("v", [second, second + 123_456_000, second + 123_456_500], dtype=pl.Int64)
+        .cast(pl.Datetime("ns"))
+        .alias("v")
+    )
+
+    assert convert(column, "timestamp").to_list() == [
+        datetime(2024, 1, 1, 10, tzinfo=UTC),
+        datetime(2024, 1, 1, 10, 0, 0, 123456, tzinfo=UTC),
+        None,  # 500 nanoseconds past a microsecond
+    ]
 
 
 @pytest.mark.parametrize(

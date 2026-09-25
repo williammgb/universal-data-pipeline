@@ -441,8 +441,12 @@ case "$task" in
   smoke) gate smoke smoke_gate ;;
   memory) memory_run "$@" ;;
   check)
+    # One file, checked after an edit. `uvx` runs ruff on its own instead of out of .venv:
+    # this is called from the editor's own hook, which on Windows is not the platform .venv
+    # was built for, and `uv run` there tries to replace it and leaves it half deleted. The
+    # version is pinned to the one in uv.lock so this says exactly what the gate says.
     case "${1:-}" in
-      *.py) uv run --locked ruff check "$1" ;;
+      *.py) uvx ruff@0.16.7 check "$1" ;;
       *) ;;
     esac
     ;;
