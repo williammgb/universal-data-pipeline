@@ -5,6 +5,7 @@ import { keyIsNeeded, whenKeyIsNeeded } from "./api/key";
 import ApiKey from "./pages/ApiKey";
 import Dataset from "./pages/Dataset";
 import Datasets from "./pages/Datasets";
+import Guide from "./pages/Guide";
 import Run from "./pages/Run";
 import Runs from "./pages/Runs";
 import Settings from "./pages/Settings";
@@ -66,22 +67,30 @@ export default function App() {
           <NavLink to="/settings" className={({ isActive }) => (isActive ? "current" : "")}>
             Settings
           </NavLink>
+          <NavLink to="/guide" className={({ isActive }) => (isActive ? "current" : "")}>
+            Guide
+          </NavLink>
         </nav>
         <div className="clock">all times UTC</div>
       </header>
       <ErrorBoundary>
-        {needsKey ? (
-          <ApiKey />
-        ) : (
-          <Routes>
-            <Route path="/" element={<Datasets />} />
-            <Route path="/datasets/:source/:dataset" element={<Dataset />} />
-            <Route path="/runs" element={<Runs />} />
-            <Route path="/runs/:runId" element={<Run />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        )}
+        {/* The guide reads nothing from the API, so it stays reachable when the key prompt has
+            taken over every other page: it is the one thing worth reading before you have a key. */}
+        <Routes>
+          <Route path="/guide" element={<Guide />} />
+          {needsKey ? (
+            <Route path="*" element={<ApiKey />} />
+          ) : (
+            <>
+              <Route path="/" element={<Datasets />} />
+              <Route path="/datasets/:source/:dataset" element={<Dataset />} />
+              <Route path="/runs" element={<Runs />} />
+              <Route path="/runs/:runId" element={<Run />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="*" element={<NotFound />} />
+            </>
+          )}
+        </Routes>
       </ErrorBoundary>
     </>
   );

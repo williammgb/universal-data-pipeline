@@ -16,6 +16,7 @@ import type {
 import { rememberKey } from "../api/key";
 import App from "../App";
 import { FULL_CLASS } from "../settings";
+import { TAB_NAMES, TABS } from "./Dataset";
 
 const SOURCES: SourceItem[] = [
   { source: "demo_csv", connector_type: "csv", datasets: 1, recorded_at: "2026-09-16T07:14:00Z" },
@@ -633,5 +634,80 @@ describe("the dashboard", () => {
     show("/");
 
     expect(await screen.findByText("the database is unavailable")).toBeTruthy();
+  });
+
+  it("explains every tab, every loading mode, quarantine, the key and schedules in the guide", () => {
+    const asked = serve({});
+
+    show("/guide");
+
+    const guide = screen.getByRole("main").textContent ?? "";
+    for (const tab of TABS) expect(guide).toContain(TAB_NAMES[tab]);
+    const named = screen.getAllByRole("term").map((node) => node.textContent);
+    for (const mode of ["full", "append", "merge"]) expect(named).toContain(mode);
+    expect(guide).toContain("quarantine");
+    expect(guide).toContain("API key");
+    expect(guide).toContain("schedule");
+    expect(guide).toContain("cron fields in UTC");
+    // A page that reads nothing cannot fail on a machine with no API to read.
+    expect(asked).toEqual([]);
+  });
+
+  it("shows the guide with no key stored, and when the API has refused one", async () => {
+    expect(window.localStorage.getItem("udp.apiKey")).toBe(null);
+    serve({});
+
+    const first = show("/guide");
+
+    expect(screen.getByRole("heading", { level: 1, name: "Guide" })).toBeTruthy();
+    expect(screen.queryByLabelText("API key")).toBeNull();
+    first.unmount();
+
+    // The key prompt replaces every other page once the API refuses a request. The guide is the
+    // one page it must not replace, because it is what explains the key.
+    window.localStorage.setItem("udp.apiKey", "wrong");
+    serve({
+      "GET /api/datasets": { body: { detail: "an API key is required" }, status: 401 },
+      "GET /api/sources": { body: SOURCES },
+    });
+    const refused = show("/");
+    expect(await screen.findByLabelText("API key")).toBeTruthy();
+    refused.unmount();
+
+    serve({});
+    show("/guide");
+
+    expect(screen.getByRole("heading", { level: 1, name: "Guide" })).toBeTruthy();
+    expect(screen.queryByLabelText("API key")).toBeNull();
+    rememberKey("");
+  });
+
+  it("puts a Guide link in the bar that opens the guide and marks itself the current page", async () => {
+    serve({ "GET /api/datasets": { body: DATASETS }, "GET /api/sources": { body: SOURCES } });
+
+    show("/");
+    const link = await screen.findByRole("link", { name: "Guide" });
+    expect(link.className).not.toContain("current");
+
+    fireEvent.click(link);
+
+    expect(screen.getByRole("heading", { level: 1, name: "Guide" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Guide" }).className).toContain("current");
+  });
+
+  it("points every link in the guide's contents at a section that is on the page", () => {
+    serve({});
+
+    show("/guide");
+
+    const headings = screen.getAllByRole("heading", { level: 2 }).map((node) => node.id);
+    const contents = screen
+      .getAllByRole("link")
+      .map((node) => node.getAttribute("href") ?? "")
+      .filter((href) => href.startsWith("#"))
+      .map((href) => href.slice(1));
+    expect(contents.length).toBe(headings.length);
+    expect(contents.length).toBeGreaterThan(5);
+    for (const target of contents) expect(headings).toContain(target);
   });
 });

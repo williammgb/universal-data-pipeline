@@ -915,6 +915,83 @@ textarea:focus-visible {
   word-break: break-word;
 }
 
+/* The guide: one page of prose, so it is narrower than a table page and the sections are panels. */
+.guide-toc {
+  background: var(--panel-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 18px;
+  max-width: 760px;
+}
+
+.guide-toc ol {
+  margin: 0;
+  padding-left: 22px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 4px 20px;
+  font-size: 14px;
+}
+
+.guide-section {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  max-width: 760px;
+  scroll-margin-top: 78px;
+}
+
+.guide-section h2 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+
+.guide-section p {
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.guide-section p:last-child {
+  margin-bottom: 0;
+}
+
+.guide-section pre {
+  background: var(--panel-sunk);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  margin: 0 0 10px;
+}
+
+.guide-section code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.guide-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.guide-list dt {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.guide-list dd {
+  margin: 2px 0 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
 @media (max-width: 520px) {
   .values {
     grid-template-columns: 1fr;

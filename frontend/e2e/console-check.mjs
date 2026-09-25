@@ -32,6 +32,7 @@ const addresses = [
   "/runs?status=succeeded",
   `/runs/${runId}`,
   "/settings",
+  "/guide",
 ];
 
 const browser = await chromium.launch();
