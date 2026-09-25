@@ -16,9 +16,11 @@ import Config from "./Config";
 import { Blank, Fact, Problem, Status, Waiting } from "./parts";
 import Profile from "./Profile";
 
-const TABS = ["schema", "profile", "preview", "quality", "runs", "config"] as const;
+// Exported so the guide names the same six tabs this page renders: renaming one here renames it
+// there too, rather than leaving the guide describing a tab that no longer exists.
+export const TABS = ["schema", "profile", "preview", "quality", "runs", "config"] as const;
 type Tab = (typeof TABS)[number];
-const TAB_NAMES: Record<Tab, string> = {
+export const TAB_NAMES: Record<Tab, string> = {
   schema: "Schema & metadata",
   profile: "Profile",
   preview: "Preview",

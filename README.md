@@ -52,7 +52,8 @@ container that every other container waits for.
 
 **3. Open the dashboard** at http://127.0.0.1:8000 and enter your API key when it asks for it.
 From there you can browse datasets, their columns, previews, quality results and run history,
-and use **Run now** on a dataset page to load it again.
+and use **Run now** on a dataset page to load it again. The **Guide** tab in the bar explains
+every page and tab in plain English, and needs no API key to read.
 
 **4. Load your own data.** Put a folder in `sources/` (see below) and run it by name; several
 names in one command run one after another:
