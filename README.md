@@ -131,24 +131,6 @@ docker compose -f deploy/compose.yaml exec postgres \
 docker compose -f deploy/compose.yaml exec postgres pg_restore -U udp -d udp_restored /tmp/udp.dump
 ```
 
-`./run smoke` does exactly this every time, compares the restored copy with the original, and
-then runs a dataset against the restored database to prove the saved state came back with it.
-
-## What it needs to run
-
-Measured on this project: a five-million-row CSV loads in a container that peaks at **946 MiB**,
-inside the 1 GiB target. Every compose service carries a cpu and memory limit, so one runaway
-container cannot take the machine down with it; `deploy/compose.yaml` holds the numbers.
-
-## How it is checked
-
-- the fast gate after every change: lint, strict typing, the dashboard's own tests, and the
-  Python tests including property tests over generated inputs;
-- the full gate once per slice, at real size (a million-row CSV, a 500,000-row source table, a
-  50,000-row spreadsheet, a paged API) — also run on every pull request;
-- the smoke gate: the real containers, a real browser over every dashboard page, Prometheus
-  scraping the real API, and a backup restored and run against.
-
 ## What it looks like
 
 The datasets list: every dataset, its source type, how many rows its table holds, when it next
