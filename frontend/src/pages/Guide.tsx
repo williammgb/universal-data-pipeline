@@ -318,10 +318,6 @@ export default function Guide() {
         <h1>Guide</h1>
         <div className="sub">what this platform does, and what every page here is for</div>
       </div>
-      <p className="note">
-        Nothing on this page needs an API key, and nothing here changes anything. Start at the
-        top if the platform is new to you; otherwise jump to what you are looking at.
-      </p>
       <nav className="guide-toc" aria-label="Sections of this guide">
         <ol>
           {SECTIONS.map((section) => (
