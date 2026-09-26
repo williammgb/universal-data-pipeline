@@ -25,7 +25,10 @@ What it does, end to end:
 
 ## Getting started
 
-All you need is Docker with Compose. From the project folder:
+All you need is Docker with Compose. On Windows or macOS that means **Docker Desktop must be
+running** before any `docker` command below — start it and wait for its whale icon to say the
+engine is running, or every command fails with `error during connect` or
+`Cannot connect to the Docker daemon`. From the project folder:
 
 **1. Choose a database password and an API key.** Neither one is stored in the project:
 
@@ -145,3 +148,15 @@ container cannot take the machine down with it; `deploy/compose.yaml` holds the 
   50,000-row spreadsheet, a paged API) — also run on every pull request;
 - the smoke gate: the real containers, a real browser over every dashboard page, Prometheus
   scraping the real API, and a backup restored and run against.
+
+## What it looks like
+
+The datasets list: every dataset, its source type, how many rows its table holds, when it next
+runs and how its last run went.
+
+![The datasets list in the dashboard](assets/v1_datasets.png)
+
+A dataset's Profile tab: per column, how many values are missing, how many are distinct, the
+range, the spread, and the most and least used values.
+
+![A dataset's Profile tab in the dashboard](assets/v1_dataprofiling.png)
