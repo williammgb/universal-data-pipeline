@@ -1,10 +1,11 @@
 name: ci
 
-# Pushes to main and pull requests; a branch push with an open pull request would otherwise
-# run every job twice, once for each event.
+# Pushes to main, version tags and pull requests; a branch push with an open pull request would
+# otherwise run every job twice, once for each event.
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 # A newer push to the same branch or pull request replaces the run still going.
@@ -45,7 +46,8 @@ jobs:
       - run: ./run setup
       - run: ./run full
 
-  # Built on every run; published, tagged with the commit and as main, only from main.
+  # Built on every run; published, tagged with the commit and as main, only from main; and on a
+  # version tag such as v1.2.0, published as 1.2.0 and latest.
   image:
     needs: fast-gate
     runs-on: ubuntu-24.04
@@ -64,3 +66,14 @@ jobs:
           docker tag "$IMAGE:${{ github.sha }}" "$IMAGE:main"
           docker push "$IMAGE:${{ github.sha }}"
           docker push "$IMAGE:main"
+      - if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker tag "$IMAGE:${{ github.sha }}" "$IMAGE:${VERSION#v}"
+          docker tag "$IMAGE:${{ github.sha }}" "$IMAGE:latest"
+          docker push "$IMAGE:${VERSION#v}"
+          docker push "$IMAGE:latest"
