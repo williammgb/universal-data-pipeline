@@ -11,6 +11,7 @@ import structlog
 from psycopg import sql
 from psycopg.types.json import Jsonb
 
+from udp.config.columns import is_json, json_text
 from udp.errors import LoadError
 from udp.storage import overrides as override_store
 from udp.storage.loader import (
@@ -106,7 +107,13 @@ class PostgresTransaction:
             for chunk in chain([first], remaining):
                 if chunk.columns != names:
                     raise LoadError(f"chunk columns {chunk.columns} differ from {names}")
-                copy.write(chunk.write_csv(include_header=False, quote_style="non_numeric"))
+                # A JSON column goes in as its text, which the jsonb column parses.
+                as_text = chunk.with_columns(
+                    json_text(pl.col(name)).alias(name)
+                    for name, dtype in chunk.schema.items()
+                    if is_json(dtype)
+                )
+                copy.write(as_text.write_csv(include_header=False, quote_style="non_numeric"))
         return names, changes
 
     def replace_table(self, table: str, chunks: Iterable[pl.DataFrame]) -> LoadResult:

@@ -140,12 +140,12 @@ services:
       timeout: 3s
       retries: 30
 
-  # Loads the four demo sources once, so `--profile demo up` gives a dashboard with data in it.
+  # Loads the five demo sources once, so `--profile demo up` gives a dashboard with data in it.
   # Running it again reloads nothing that has not changed.
   demo-load:
     <<: *app
     profiles: ["demo"]
-    command: ["run", "demo_csv", "demo_excel", "demo_db", "demo_api"]
+    command: ["run", "demo_csv", "demo_excel", "demo_json", "demo_db", "demo_api"]
     depends_on:
       postgres:
         condition: service_healthy

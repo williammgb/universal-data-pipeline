@@ -233,6 +233,11 @@ function Preview({
                     <td key={column.name} className="mono">
                       {shown.isNull ? (
                         <span className="null">null</span>
+                      ) : shown.full !== shown.text ? (
+                        <span className="clip json" title={shown.text}>
+                          <span className="json-line">{shown.text}</span>
+                          <span className="json-full">{shown.full}</span>
+                        </span>
                       ) : (
                         <span className="clip" title={shown.text}>
                           {shown.text}

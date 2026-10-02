@@ -13,6 +13,7 @@ from hypothesis import strategies as st
 from polars.testing import assert_frame_equal
 from structlog.testing import capture_logs
 
+from udp.config.columns import JSON_DTYPE, JSON_FIELD
 from udp.errors import ValidationError
 from udp.pipeline.column_types import apply_column_types, convert
 from udp.storage.loader import RunFindings
@@ -54,6 +55,8 @@ def _utc(moment: datetime) -> Any:
 
 def model(value: Any, source: str, declared: str) -> Any:
     """What a non-null value becomes, or BAD when its row must go to quarantine."""
+    if source == "nested":
+        return value[JSON_FIELD]  # JSON, as text or as JSON: the same JSON text either way
     if declared == "text":
         return value  # compared by round trip in _same
     if declared == "integer":
@@ -144,6 +147,12 @@ def model(value: Any, source: str, declared: str) -> Any:
 
 
 def _same(result: Any, expected: Any, source: str, declared: str) -> bool:
+    if declared == "json":
+        # A JSON column holds its JSON text inside a one-field struct.
+        result = result[JSON_FIELD]
+        if source in ("text", "nested"):
+            return bool(result == expected)
+        return bool(json.loads(result) == expected)
     if declared == "text":
         if source == "float":
             if math.isnan(float(result)):
@@ -158,8 +167,6 @@ def _same(result: Any, expected: Any, source: str, declared: str) -> bool:
         if source == "int":
             return bool(int(result) == expected)
         return bool(result == expected)
-    if declared == "json" and source != "text":
-        return bool(json.loads(result) == expected)
     if isinstance(expected, float) and math.isnan(expected):
         return isinstance(result, float) and math.isnan(result)
     return bool(result == expected and type(result) is type(expected))
@@ -239,6 +246,18 @@ SOURCES: dict[str, tuple[pl.DataType, st.SearchStrategy[Any]]] = {
     ),
     "utc": (pl.Datetime("us", "UTC"), st.datetimes(timezones=st.just(UTC))),
     "empty": (pl.Null(), st.none()),
+    # A JSON column, as the JSON and REST connectors make one for nested values.
+    "nested": (
+        JSON_DTYPE,
+        st.recursive(
+            st.none() | st.booleans() | st.integers() | st.floats(allow_nan=False) | st.text(),
+            lambda inner: (
+                st.lists(inner, max_size=3)
+                | st.dictionaries(st.text(max_size=3), inner, max_size=3)
+            ),
+            max_leaves=6,
+        ).map(lambda value: {JSON_FIELD: json.dumps(value, ensure_ascii=False)}),
+    ),
 }
 
 READABLE = {
@@ -249,7 +268,7 @@ READABLE = {
     "boolean": ["text", "int", "bool", "empty"],
     "date": ["text", "date", "naive", "utc", "empty"],
     "timestamp": ["text", "date", "naive", "utc", "empty"],
-    "json": ["text", "int", "float", "bool", "empty"],
+    "json": ["text", "int", "float", "bool", "empty", "nested"],
 }
 
 
@@ -369,6 +388,11 @@ def test_floats_round_half_away_from_zero_to_the_scale_and_text_never_does() -> 
         ),
         (pl.Series("v", [1.5]), "boolean", "read as Float64 and cannot be stored as boolean"),
         (pl.Series("v", [True]), "timestamp", "read as Boolean and cannot be stored as timestamp"),
+        (
+            pl.Series("v", [{JSON_FIELD: '{"a": 1}'}], dtype=JSON_DTYPE),
+            "integer",
+            "read as json and cannot be stored as integer",
+        ),
     ],
 )
 def test_a_column_that_can_never_convert_fails_the_run(
