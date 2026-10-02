@@ -196,6 +196,7 @@ const PROFILE: DatasetProfile = {
         { value: "city 11", count: 1 },
       ],
     },
+    { name: "details", type: "jsonb", kind: "other", missing: 4 },
   ],
 };
 
@@ -395,6 +396,12 @@ describe("the dashboard", () => {
     const day = screen.getByRole("article", { name: "column ordered" });
     expect(day.textContent).toContain("earliest");
     expect(day.textContent).toContain("2015-01-03 00:00");
+    // A JSON column has its missing count and says its values are not profiled.
+    const details = screen.getByRole("article", { name: "column details" });
+    expect(details.textContent).toContain("jsonb");
+    expect(details.textContent).toContain("4 missing");
+    expect(details.textContent).toContain("values not profiled");
+    expect(code.textContent).not.toContain("values not profiled");
   });
 
   it("shows long values in full once the setting says so, and keeps working without storage", async () => {
@@ -435,6 +442,28 @@ describe("the dashboard", () => {
     for (const button of [...next, ...previous]) {
       expect(button.hasAttribute("disabled")).toBe(true);
     }
+  });
+
+  it("shows a JSON value on one line, and indented once values are shown in full", async () => {
+    const details = { size: "L", tags: ["new", "sale"] };
+    serve({
+      "GET /api/datasets/demo_csv/customers": { body: DETAIL },
+      "GET /api/datasets/demo_csv/customers/rows": {
+        body: {
+          ...ROWS,
+          columns: [...ROWS.columns, { name: "details", type: "jsonb" }],
+          rows: [{ customer_id: 1, city: "Delft", details }],
+        },
+      },
+    });
+
+    show("/datasets/demo_csv/customers?tab=preview");
+
+    const line = await screen.findByText(JSON.stringify(details));
+    expect(line.className).toBe("json-line");
+    const whole = line.parentElement?.querySelector(".json-full");
+    expect(whole?.textContent).toBe(JSON.stringify(details, null, 2));
+    expect(line.parentElement?.getAttribute("title")).toBe(JSON.stringify(details));
   });
 
   it("pages with the buttons above the table", async () => {

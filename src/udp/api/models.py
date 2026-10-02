@@ -7,6 +7,8 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 JsonValue = str | int | float | bool | None
+# A value in a table's row: a jsonb column's value arrives as the JSON it holds.
+CellValue = JsonValue | dict[str, Any] | list[Any]
 RunStatus = Literal["running", "succeeded", "failed", "skipped"]
 RunTrigger = Literal["manual", "scheduled"]
 
@@ -85,7 +87,7 @@ class DatasetDetail(DatasetItem):
 
 class RowsPage(BaseModel):
     columns: list[Column]
-    rows: list[dict[str, JsonValue]]
+    rows: list[dict[str, CellValue]]
     limit: int
     offset: int
     has_more: bool

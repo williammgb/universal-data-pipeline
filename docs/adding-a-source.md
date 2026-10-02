@@ -46,7 +46,7 @@ it cannot hold another `${...}`, and saying so is refused rather than half-read.
 ```yaml
 # a folder of files
 connection:
-  type: csv          # or: excel
+  type: csv          # or: excel, json
 
 # a database, any SQLAlchemy URL (tested against PostgreSQL and SQLite)
 connection:
@@ -71,6 +71,7 @@ its connector:
 | --- | --- | --- |
 | `csv` | `path:` relative to the source folder | — |
 | `excel` | `path:` plus `sheet:` | — |
+| `json` | `path:` to a file or a folder | `records_path:` (where each document keeps its list of records) |
 | `database` | `table:` | `schema:`, `exclude_columns:` (source column names never read) |
 | `rest_api` | `endpoint:` and `records_path:` | `params:`, `pagination:` (`page`, `offset`, `cursor`, `next_link`) |
 
@@ -103,7 +104,8 @@ schema version 1. With `columns:`, the storage type is yours:
 
 The types are `text`, `integer`, `decimal(P,S)`, `float`, `boolean`, `date`, `timestamp` and
 `json`. A value that does not fit its declared type is quarantined with the reason, rather than
-quietly becoming null. Timestamps are stored with a time zone, in UTC.
+quietly becoming null. Timestamps are stored with a time zone, in UTC. A `json` column is stored
+as PostgreSQL `jsonb`, and text in it must be valid JSON.
 
 Numbers with too many decimals for `decimal(P,S)` depend on where they came from. Spreadsheets
 and JSON store numbers as binary floats, so 731.94 arrives as 731.9399999999999; those are
@@ -115,6 +117,52 @@ declaration; unbounded `numeric` arrives as text until you declare it. A domain 
 with a rule, like Pagila's `year`) is read as the type underneath; enums as text; arrays as JSON
 text. Binary columns cannot be read — list them under `exclude_columns:`. Any other type is read
 as its text, and the run logs a `column read as text` warning naming the column.
+
+## JSON files
+
+A `json` dataset reads one file, or every `.json`, `.jsonl` and `.ndjson` file in a folder (in
+name order, not looking in folders inside it). Each file is either one JSON document or
+newline-delimited JSON, one document per line; blank lines are skipped. A document is a list of
+objects, one row each, or a single object, which is one row.
+
+```yaml
+connection:
+  type: json
+datasets:
+  # {"meta": {...}, "data": {"items": [{"id": 1, ...}, ...]}}
+  - name: orders
+    path: data/orders.json
+    records_path: data.items
+    load_mode: merge
+    watermark: updated_at
+    primary_key: [id]
+  # a folder of files with one event per line
+  - name: events
+    path: data/events
+    load_mode: append
+    watermark: seq
+```
+
+`records_path` is the list's place in each document, as object keys joined by dots; without it
+the document itself is the list. A document without that path, or whose records are not
+objects, fails the run and names the file and line.
+
+Every top-level key of any record is a column. Records may differ in shape: a key one record
+lacks is null there, and each column's type is worked out over every record of the dataset, not
+only the first ones. A column that holds an object or an array anywhere becomes `jsonb`, and
+keeps each value as the JSON it was — nothing is flattened. Declare such a column `text` to keep
+it as JSON text instead, or declare a text column `json` to store it as `jsonb`. The same holds
+for nested values from a `rest_api` source.
+
+Every file is read before anything is loaded, so a malformed file — broken JSON, `NaN`, text
+that is not UTF-8 — fails the run with its file, line and column, and nothing of that run is
+kept. An empty file or an empty list has no rows: a dataset that declares its `columns:` loads
+none, and one that does not stops with "the source has no columns", because there is nothing to
+learn them from. For the unchanged-file skip, a folder counts as changed when any of its JSON
+files is added, removed, renamed or edited.
+
+The dashboard shows a `jsonb` value on one line, or indented over several when values are shown
+in full; the profile counts its missing values and does not profile the values themselves.
 
 ## Checks
 

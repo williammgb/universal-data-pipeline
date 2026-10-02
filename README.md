@@ -6,7 +6,8 @@ YAML file and, where the data needs it, one Python function — never a change t
 
 What it does, end to end:
 
-- **Connectors** for CSV files, Excel workbooks, database tables and REST APIs.
+- **Connectors** for CSV files, Excel workbooks, JSON files, database tables and REST APIs.
+  Nested JSON — from a JSON file or an API — is stored as `jsonb`, not flattened.
 - **One pipeline** per dataset: extract in chunks, check the values, clean the column names,
   apply the declared storage types, run the source's own `transform.py`, check the rows, keep
   only what is new, load it in one transaction.
@@ -44,7 +45,7 @@ docker compose -f deploy/compose.yaml up -d --build --wait
 ```
 
 Or start it with the demo in place — the same platform plus a sample business database and a
-sample REST API, with all four demo sources already loaded:
+sample REST API, with all five demo sources already loaded:
 
 ```
 docker compose -f deploy/compose.yaml --profile demo up -d --build --wait

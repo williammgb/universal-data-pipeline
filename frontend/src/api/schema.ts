@@ -439,7 +439,9 @@ export interface components {
             offset: number;
             /** Rows */
             rows: {
-                [key: string]: string | number | boolean | null;
+                [key: string]: string | number | boolean | {
+                    [key: string]: unknown;
+                } | unknown[] | null;
             }[];
         };
         /** RunAccepted */

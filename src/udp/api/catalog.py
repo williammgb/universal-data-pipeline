@@ -17,6 +17,7 @@ from psycopg_pool import ConnectionPool
 from udp import __version__
 from udp.api.metrics import LastRun, MetricsSnapshot, QualityFailures, RunTotals
 from udp.api.models import (
+    CellValue,
     CheckResult,
     Column,
     ConfigEdit,
@@ -55,6 +56,14 @@ def json_value(value: Any) -> JsonValue:
     if isinstance(value, date | time):  # datetime is a date
         return value.isoformat()
     return str(value)  # UUID, and any other stored type, as its text form
+
+
+def cell_value(value: Any) -> CellValue:
+    """A value from a table's row as JSON: a jsonb value, which the driver has already read
+    into Python, as the JSON it holds; anything else by json_value's rule."""
+    if isinstance(value, dict | list):
+        return value
+    return json_value(value)
 
 
 _DATASET_ITEMS = """
@@ -288,7 +297,7 @@ class PostgresCatalog:
             ).fetchall()
         return RowsPage(
             columns=[Column.model_validate(column) for column in columns],
-            rows=[{name: json_value(value) for name, value in row.items()} for row in rows[:limit]],
+            rows=[{name: cell_value(value) for name, value in row.items()} for row in rows[:limit]],
             limit=limit,
             offset=offset,
             has_more=len(rows) > limit,

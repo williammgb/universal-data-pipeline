@@ -7,6 +7,7 @@ from uuid import UUID
 
 import polars as pl
 
+from udp.config.columns import is_json
 from udp.errors import LoadError, SchemaDriftError
 
 Column = tuple[str, str]
@@ -54,6 +55,8 @@ def column_type(name: str, dtype: pl.DataType) -> str:
         return "timestamp with time zone" if dtype.time_zone else "timestamp without time zone"
     if isinstance(dtype, pl.Decimal):
         return f"numeric({dtype.precision},{dtype.scale})"
+    if is_json(dtype):
+        return "jsonb"
     simple = _SIMPLE_TYPES.get(dtype.base_type())
     if simple is None:
         raise LoadError(f"column '{name}' has type {dtype}, which cannot be stored yet")

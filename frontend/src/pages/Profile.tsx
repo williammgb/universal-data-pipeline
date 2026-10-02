@@ -133,6 +133,7 @@ function Card({ column, rows }: { column: ColumnProfile; rows: number }) {
           {column.least_used ? <Values title="Least used" values={column.least_used} /> : null}
         </div>
       ) : null}
+      {column.kind === "other" ? <p className="muted">values not profiled</p> : null}
       {column.kind === "text" ? (
         <p className="muted">
           {count(column.distinct ?? 0)} distinct values

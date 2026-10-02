@@ -13,14 +13,11 @@ from hypothesis import given
 from hypothesis import strategies as st
 from mock_api import create_app
 
+from udp.config.columns import JSON_DTYPE, JSON_FIELD
 from udp.config.source import load_source
 from udp.connectors.base import ExtractRequest
-from udp.connectors.rest_api import (
-    RestApiConnection,
-    RestApiConnector,
-    RestApiDataset,
-    records_frame,
-)
+from udp.connectors.records import records_frame
+from udp.connectors.rest_api import RestApiConnection, RestApiConnector, RestApiDataset
 from udp.errors import ConfigError, ExtractError
 
 BASE = "http://api.test"
@@ -194,11 +191,16 @@ def _expected_column(values: list[Any]) -> tuple[pl.DataType, list[Any]]:
         if isinstance(v, float)
         else "str"
         if isinstance(v, str)
+        else "nested"
+        if isinstance(v, dict | list)
         else "other"
         for v in present
     }
     if not kinds:
         return pl.Null(), values
+    if "nested" in kinds:
+        # Any object or array makes the column JSON, every value in it the JSON it was.
+        return JSON_DTYPE, values
     if kinds == {"int"}:
         return pl.Int64(), values
     if kinds <= {"int", "float"}:
@@ -253,7 +255,10 @@ def test_api_columns_are_typed_over_the_whole_dataset(
     for name in whole.columns:
         dtype, values = _expected_column([record.get(name) for record in records])
         assert whole.schema[name] == dtype, name
-        assert whole[name].to_list() == values, name
+        stored = whole[name].to_list()
+        if dtype == JSON_DTYPE:
+            stored = [None if v is None else json.loads(v[JSON_FIELD]) for v in stored]
+        assert stored == values, name
 
 
 def test_mixed_booleans_and_numbers_become_text() -> None:
@@ -341,7 +346,9 @@ def test_every_pagination_mode_loads_every_mock_record(mode: str) -> None:
     frame = pl.concat(list(_mock_api_connector().extract(request)))
 
     assert frame["id"].to_list() == list(range(1, 251))
-    assert frame.schema["attributes"] == pl.String
+    # A nested object is kept as JSON, for a jsonb column.
+    assert frame.schema["attributes"] == JSON_DTYPE
+    assert json.loads(frame["attributes"][0][JSON_FIELD]) == {"colour": "red", "size": 0}
     assert frame.schema["discontinued_note"] == pl.String
 
 

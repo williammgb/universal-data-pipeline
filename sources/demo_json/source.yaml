@@ -1,0 +1,24 @@
+connection:
+  type: json
+datasets:
+  # One document that wraps its rows: the list of orders is at data.items.
+  - name: orders
+    path: data/orders.json
+    records_path: data.items
+    load_mode: merge
+    watermark: updated_at
+    primary_key: [id]
+    columns:
+      id: integer
+      total: decimal(10,2)
+      updated_at: timestamp
+    checks:
+      - check: not_null
+        column: id
+      - check: unique
+        columns: [id]
+  # A folder of newline-delimited JSON files, one event per line.
+  - name: events
+    path: data/events
+    load_mode: append
+    watermark: seq

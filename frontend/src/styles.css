@@ -451,6 +451,21 @@ td a:hover {
   display: inline;
 }
 
+/* A JSON value: one line when values are shortened, indented over several when shown in full. */
+.json-full {
+  display: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.values-full .json-line {
+  display: none;
+}
+
+.values-full .json-full {
+  display: block;
+}
+
 /* A floor so a column is readable, and a ceiling so one long JSON column cannot squeeze every
    other column down to the floor. */
 .values-full td {
