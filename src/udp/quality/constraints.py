@@ -57,7 +57,9 @@ class Outcome:
     def message(self) -> str:
         if self.passed:
             return "every row holds"
-        return f"{self.failing_rows} rows and {self.failing_values} values break it"
+        rows = "1 row" if self.failing_rows == 1 else f"{self.failing_rows} rows"
+        values = "1 value" if self.failing_values == 1 else f"{self.failing_values} values"
+        return f"{rows} and {values} break it"
 
     def result(
         self,
@@ -94,8 +96,8 @@ def _text(value: Any) -> str | None:
         return None
     if isinstance(value, bool):
         return "true" if value else "false"
-    if isinstance(value, dict):
-        return json.dumps(value)
+    if isinstance(value, dict | list):
+        return json.dumps(value, default=json_value)
     return str(json_value(value))
 
 
@@ -260,11 +262,18 @@ def _unique_in_table(
     ).format(names=names, table=table, present=present)
     row = conn.execute(sql.SQL("SELECT count(*) FROM {} WHERE {}").format(table, shared)).fetchone()
     rows = int(row[0]) if row else 0
-    keys: list[sql.Composable] = [sql.Identifier(name) for name in key] or [sql.SQL("ctid::text")]
+    # Without a key a row is named by its position in table order, as check_stage numbers it.
+    rows_from: sql.Composable = table
+    keys = [sql.Identifier(name) for name in key]
+    if not key:
+        rows_from = sql.SQL(
+            "(SELECT row_number() OVER (ORDER BY ctid) AS {}, * FROM {}) AS numbered"
+        ).format(sql.Identifier(_POSITION), table)
+        keys = [sql.Identifier(_POSITION)]
     texts = [sql.SQL("{}::text").format(sql.Identifier(name)) for name in columns]
     found = conn.execute(
         sql.SQL("SELECT {} FROM {} WHERE {} ORDER BY {} LIMIT %s").format(
-            sql.SQL(", ").join([*keys, *texts]), table, shared, names
+            sql.SQL(", ").join([*keys, *texts]), rows_from, shared, names
         ),
         [-(-MAX_VIOLATIONS // len(columns))],
     ).fetchall()
@@ -309,6 +318,8 @@ def check_stage(
         query = sql.SQL("SELECT {} FROM {}").format(
             sql.SQL(", ").join(reads[name][0] for name in chosen), table
         )
+        if not key:
+            query += sql.SQL(" ORDER BY ctid")
         tallies = [_Tally() for _ in constraints]
         offset = 0
         for batch in _batches(conn, query, frame_schema):

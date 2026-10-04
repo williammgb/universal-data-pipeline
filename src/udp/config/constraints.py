@@ -65,6 +65,13 @@ class UniqueConstraint(ConstraintBase):
     constraint: Literal["unique"]
     columns: list[str] = Field(min_length=1)
 
+    @field_validator("columns")
+    @classmethod
+    def _each_once(cls, value: list[str]) -> list[str]:
+        if len(set(value)) != len(value):
+            raise ValueError("lists a column more than once")
+        return value
+
 
 class AllowedValues(ConstraintBase):
     constraint: Literal["allowed_values"]

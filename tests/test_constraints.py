@@ -3,7 +3,7 @@ data left untouched, counts per constraint, and results stored against a stage a
 
 import uuid
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -76,7 +76,8 @@ def test_each_constraint_type_counts_its_known_violations(
     assert (outcome.failing_rows, outcome.failing_values) == (len(ids), len(ids))
     assert [v.row_key for v in outcome.violations] == [{"id": i} for i in ids]
     assert [v.value for v in outcome.violations] == values
-    assert outcome.message == f"{len(ids)} rows and {len(ids)} values break it"
+    shown = "1 row and 1 value" if len(ids) == 1 else f"{len(ids)} rows and {len(ids)} values"
+    assert outcome.message == f"{shown} break it"
 
 
 def test_a_constraint_every_row_holds_passes() -> None:
@@ -127,6 +128,7 @@ def test_unique_over_two_columns_counts_rows_and_values() -> None:
 
     # Rows with a missing value in the key are never duplicates, as in V1's unique check.
     assert (outcome.failing_rows, outcome.failing_values) == (2, 4)
+    assert outcome.message == "2 rows and 4 values break it"
     assert [(v.column, v.row_key, v.value) for v in outcome.violations] == [
         ("a", {"row": 1}, "1"),
         ("b", {"row": 1}, "x"),
@@ -149,6 +151,19 @@ def test_missing_values_break_only_not_null() -> None:
     outcomes = check_frame(frame, constraints)
 
     assert [o.failing_rows for o in outcomes] == [1, 0, 0, 0, 0, 2]
+
+
+def test_a_broken_list_or_struct_is_recorded_as_json() -> None:
+    frame = pl.DataFrame({"tags": [["a", "b"], None], "s": [{"d": date(2024, 1, 1), "n": 1}, None]})
+    constraints = _constraints(
+        {"constraint": "datatype", "column": "tags", "type": "integer"},
+        {"constraint": "datatype", "column": "s", "type": "integer"},
+    )
+
+    tags, struct = check_frame(frame, constraints)
+
+    assert [v.value for v in tags.violations] == ['["a", "b"]']
+    assert [v.value for v in struct.violations] == ['{"d": "2024-01-01", "n": 1}']
 
 
 def test_a_row_is_named_by_its_record_hash_without_a_primary_key() -> None:
@@ -313,6 +328,39 @@ def test_constraints_on_a_stage_are_stored_and_read_back_by_run(
     unique = read[4]
     assert sorted(v.value or "" for v in unique.violations) == ["a@x.io", "a@x.io"]
     assert all(set(v.row_key) == {"_record_hash"} for r in read for v in r.violations)
+
+
+@pytest.mark.db
+def test_without_a_key_every_constraint_names_a_row_by_the_same_position(
+    loader: PostgresLoader, source: str
+) -> None:
+    raw = sql.Identifier(*stage_table(Stage.RAW, source, "orders"))
+    with psycopg.connect(Settings().database_url, autocommit=True) as conn:  # type: ignore[call-arg]
+        conn.execute(sql.SQL("CREATE TABLE {} (email text)").format(raw))
+        conn.execute(
+            sql.SQL("INSERT INTO {} VALUES ('a@x.io'), (NULL), ('a@x.io'), ('b@x.io')").format(raw)
+        )
+    dataset = CsvDataset.model_validate(
+        {
+            "name": "orders",
+            "path": "orders.csv",
+            "constraints": [
+                {"constraint": "not_null", "column": "email"},
+                {"constraint": "unique", "columns": ["email"]},
+            ],
+        }
+    )
+
+    run = RunStart(uuid.uuid7(), source, "orders", "manual", NOW)
+    loader.start_run(run)
+
+    with loader.stages() as stages:
+        missing, unique = stages.check_constraints(
+            Stage.RAW, source, dataset, RunRef(ingest_run_id=run.run_id), checked_at=NOW
+        )
+
+    assert [v.row_key for v in missing.violations] == [{"row": 2}]
+    assert [v.row_key for v in unique.violations] == [{"row": 1}, {"row": 3}]
 
 
 @pytest.mark.db

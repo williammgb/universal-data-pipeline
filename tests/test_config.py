@@ -308,6 +308,11 @@ MERGE_ON_UPDATED = "    load_mode: merge\n    watermark: updated\n    primary_ke
             "at least 1",
         ),
         (
+            "    constraints:\n      - constraint: unique\n        columns: [id, id]\n",
+            "datasets[0].constraints[0].unique.columns",
+            "lists a column more than once",
+        ),
+        (
             "    constraints:\n      - constraint: allowed_values\n        column: id\n"
             "        values: []\n",
             "datasets[0].constraints[0].allowed_values.values",
