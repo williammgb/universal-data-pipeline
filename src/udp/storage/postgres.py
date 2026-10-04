@@ -1,3 +1,4 @@
+import json
 from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from datetime import date, datetime
@@ -13,17 +14,30 @@ from psycopg.types.json import Jsonb
 
 from udp.config.columns import is_json, json_text
 from udp.errors import LoadError
+from udp.names import Stage, stage_table
 from udp.storage import overrides as override_store
 from udp.storage.loader import (
     INTERRUPTED,
     Column,
     ColumnChanges,
     ConfigCopy,
+    ConstraintResult,
     DatasetState,
+    Execution,
+    ExecutionStart,
+    LineageNode,
     LoadResult,
+    PipelineVersion,
+    Profile,
     RunFailure,
     RunFindings,
+    RunRef,
     RunStart,
+    StepDefinition,
+    StepRun,
+    StoredProfile,
+    Violation,
+    check_chain,
     column_changes,
     interrupted_message,
     table_columns,
@@ -45,12 +59,12 @@ class PostgresTransaction:
     def __init__(self, conn: psycopg.Connection) -> None:
         self._conn = conn
 
-    def _columns(self, table: str) -> list[Column]:
+    def _columns(self, table: str, schema: str = "datasets") -> list[Column]:
         rows = self._conn.execute(
             "SELECT attname, format_type(atttypid, atttypmod) FROM pg_attribute "
             "WHERE attrelid = to_regclass(%s) AND attnum > 0 AND NOT attisdropped "
             "ORDER BY attnum",
-            [f"datasets.{table}"],
+            [f"{schema}.{table}"],
         ).fetchall()
         return [(name, kind) for name, kind in rows]
 
@@ -60,18 +74,19 @@ class PostgresTransaction:
         chunks: Iterable[pl.DataFrame],
         primary_key: Sequence[str] = (),
         numbered: bool = False,
+        schema: str = "datasets",
     ) -> tuple[list[str], ColumnChanges]:
         """Create or widen the table, then COPY every chunk into a temporary stage table."""
         remaining = iter(chunks)
         first = next(remaining, None)
         if first is None:
-            raise LoadError(f"no data to load into datasets.{table}")
+            raise LoadError(f"no data to load into {schema}.{table}")
         names = first.columns
-        target = sql.Identifier("datasets", table)
+        target = sql.Identifier(schema, table)
 
-        existing = self._columns(table)
+        existing = self._columns(table, schema)
         if existing:
-            changes = column_changes(table, existing, first.schema)
+            changes = column_changes(table, existing, first.schema, schema)
             for name, kind in changes.added:
                 self._conn.execute(
                     sql.SQL("ALTER TABLE {} ADD COLUMN {} {}").format(
@@ -341,6 +356,516 @@ class PostgresTransaction:
             raise LoadError(f"run {run_id} is not a running run")
 
 
+_RAW_GUARD = sql.Identifier("raw_append_only")
+
+
+def _stage_identifier(stage: Stage, source: str, dataset: str) -> sql.Identifier:
+    return sql.Identifier(*stage_table(stage, source, dataset))
+
+
+def _stage_value(stage: Stage | None) -> str | None:
+    """The stage as the text the tables hold; never the enum, whose adaptation is psycopg's call."""
+    return None if stage is None else Stage(stage).value
+
+
+def _run_values(run: RunRef) -> list[UUID | None]:
+    return [run.ingest_run_id, run.execution_id]
+
+
+def _run_filter(run: RunRef) -> sql.Composed:
+    column = "ingest_run_id" if run.ingest_run_id is not None else "execution_id"
+    return sql.SQL("{} = %s").format(sql.Identifier(column))
+
+
+class PostgresStages:
+    """A dataset's RAW, STAGING and CLEAN tables, and the V2 records, inside one transaction.
+
+    The caller holds the dataset's lock (`PostgresLoader.lock_dataset`): STAGING is one table per
+    dataset, so two executions over one dataset at once would share it.
+    """
+
+    def __init__(self, conn: psycopg.Connection) -> None:
+        self._conn = conn
+        self._tables = PostgresTransaction(conn)
+
+    def exists(self, stage: Stage, source: str, dataset: str) -> bool:
+        row = self._conn.execute(
+            "SELECT to_regclass(%s) IS NOT NULL", [".".join(stage_table(stage, source, dataset))]
+        ).fetchone()
+        return bool(row and row[0])
+
+    def append_raw(self, source: str, dataset: str, chunks: Iterable[pl.DataFrame]) -> LoadResult:
+        """Add one ingest's rows, platform columns included, to RAW. The table is created on first
+        use with a trigger that refuses every UPDATE, DELETE and TRUNCATE from then on."""
+        schema, table = stage_table(Stage.RAW, source, dataset)
+        created = not self.exists(Stage.RAW, source, dataset)
+        names, changes = self._tables._stage(table, chunks, schema=schema)
+        if "_run_id" not in names:
+            raise LoadError(f"rows for {schema}.{table} must say which run ingested them (_run_id)")
+        target = sql.Identifier(schema, table)
+        if created:
+            self._conn.execute(
+                sql.SQL(
+                    "CREATE TRIGGER {} BEFORE UPDATE OR DELETE OR TRUNCATE ON {} "
+                    "FOR EACH STATEMENT EXECUTE FUNCTION platform.refuse_raw_change()"
+                ).format(_RAW_GUARD, target)
+            )
+        inserted = self._conn.execute(
+            sql.SQL("INSERT INTO {} ({}) SELECT {} FROM {}").format(
+                target, _identifiers(names), _identifiers(names), _STAGE
+            )
+        )
+        return LoadResult(inserted.rowcount, changes.added, changes.missing)
+
+    def start_staging(
+        self, source: str, dataset: str, *, ingest_runs: Sequence[UUID] | None = None
+    ) -> int:
+        """Make STAGING a fresh copy of RAW: of the rows the named ingest runs added, or of every
+        row. Returns the rows copied. A STAGING table left from before is replaced."""
+        if not self.exists(Stage.RAW, source, dataset):
+            raise LoadError(f"{source}.{dataset} has no RAW table to copy into STAGING")
+        raw = _stage_identifier(Stage.RAW, source, dataset)
+        staging = _stage_identifier(Stage.STAGING, source, dataset)
+        self._conn.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(staging))
+        self._conn.execute(sql.SQL("CREATE TABLE {} (LIKE {})").format(staging, raw))
+        copy = sql.SQL("INSERT INTO {} SELECT * FROM {}").format(staging, raw)
+        if ingest_runs is None:
+            return self._conn.execute(copy).rowcount
+        chosen = copy + sql.SQL(" WHERE _run_id = ANY(%s)")
+        return self._conn.execute(chosen, [list(ingest_runs)]).rowcount
+
+    def save_pipeline(
+        self,
+        source: str,
+        dataset: str,
+        name: str,
+        definition: dict[str, Any],
+        steps: Sequence[StepDefinition],
+        created_at: datetime,
+    ) -> PipelineVersion:
+        """Store a pipeline definition. When it equals the newest version, that version is
+        returned unchanged; otherwise it becomes the next version, and older ones stay as they are.
+        """
+        stage_table(Stage.CLEAN, source, dataset)
+        if not name:
+            raise ValueError("a pipeline needs a name")
+        newest = self.read_pipeline(source, dataset, name)
+        if (
+            newest is not None
+            and newest.definition == json.loads(json.dumps(definition))
+            and newest.steps == tuple(_round_trip(step) for step in steps)
+        ):
+            return newest
+        self._conn.execute(
+            "INSERT INTO platform.pipelines (source, dataset, name, created_at) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (source, dataset, name) DO NOTHING",
+            [source, dataset, name, created_at],
+        )
+        row = self._conn.execute(
+            "SELECT pipeline_id FROM platform.pipelines "
+            "WHERE source = %s AND dataset = %s AND name = %s",
+            [source, dataset, name],
+        ).fetchone()
+        assert row is not None
+        pipeline_id = int(row[0])
+        version = 1 if newest is None else newest.version + 1
+        self._conn.execute(
+            "INSERT INTO platform.pipeline_versions (pipeline_id, version, definition, created_at) "
+            "VALUES (%s, %s, %s, %s)",
+            [pipeline_id, version, Jsonb(definition), created_at],
+        )
+        with self._conn.cursor() as cursor:
+            cursor.executemany(
+                "INSERT INTO platform.pipeline_steps "
+                "(pipeline_id, version, position, step_type, configuration) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                [
+                    [pipeline_id, version, position, step.step_type, Jsonb(step.configuration)]
+                    for position, step in enumerate(steps, start=1)
+                ],
+            )
+        saved = self.read_pipeline(source, dataset, name, version)
+        assert saved is not None
+        return saved
+
+    def read_pipeline(
+        self, source: str, dataset: str, name: str, version: int | None = None
+    ) -> PipelineVersion | None:
+        """One version of a pipeline, the newest when no version is given."""
+        row = self._conn.execute(
+            "SELECT pipelines.pipeline_id, versions.version, versions.definition, "
+            "versions.created_at FROM platform.pipelines AS pipelines "
+            "JOIN platform.pipeline_versions AS versions USING (pipeline_id) "
+            "WHERE pipelines.source = %s AND pipelines.dataset = %s AND pipelines.name = %s "
+            "AND (%s::integer IS NULL OR versions.version = %s) "
+            "ORDER BY versions.version DESC LIMIT 1",
+            [source, dataset, name, version, version],
+        ).fetchone()
+        if row is None:
+            return None
+        pipeline_id, found, definition, created_at = row
+        steps = self._conn.execute(
+            "SELECT step_type, configuration FROM platform.pipeline_steps "
+            "WHERE pipeline_id = %s AND version = %s ORDER BY position",
+            [pipeline_id, found],
+        ).fetchall()
+        return PipelineVersion(
+            pipeline_id=pipeline_id,
+            source=source,
+            dataset=dataset,
+            name=name,
+            version=found,
+            definition=definition,
+            steps=tuple(StepDefinition(kind, configuration) for kind, configuration in steps),
+            created_at=created_at,
+        )
+
+    def start_execution(self, start: ExecutionStart) -> None:
+        self._conn.execute(
+            "INSERT INTO platform.pipeline_executions "
+            "(execution_id, pipeline_id, version, trigger, status, started_at) "
+            "VALUES (%s, %s, %s, %s, 'running', %s)",
+            [start.execution_id, start.pipeline_id, start.version, start.trigger, start.started_at],
+        )
+
+    def record_step(self, execution_id: UUID, step: StepRun) -> None:
+        """Write a step's record, or update it while it is still running."""
+        known = self._conn.execute(
+            "SELECT 1 FROM platform.pipeline_executions AS runs "
+            "JOIN platform.pipeline_steps AS steps USING (pipeline_id, version) "
+            "WHERE runs.execution_id = %s AND steps.position = %s",
+            [execution_id, step.position],
+        ).fetchone()
+        if known is None:
+            raise LoadError(f"execution {execution_id} ran no pipeline with a step {step.position}")
+        written = self._conn.execute(
+            "INSERT INTO platform.step_executions (execution_id, position, status, started_at, "
+            "ended_at, rows_in, rows_out, values_changed, error_class, error_message) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (execution_id, position) DO UPDATE SET status = EXCLUDED.status, "
+            "started_at = EXCLUDED.started_at, ended_at = EXCLUDED.ended_at, "
+            "rows_in = EXCLUDED.rows_in, rows_out = EXCLUDED.rows_out, "
+            "values_changed = EXCLUDED.values_changed, error_class = EXCLUDED.error_class, "
+            "error_message = EXCLUDED.error_message "
+            "WHERE step_executions.status = 'running'",
+            [
+                execution_id,
+                step.position,
+                step.status,
+                step.started_at,
+                step.ended_at,
+                step.rows_in,
+                step.rows_out,
+                step.values_changed,
+                step.error_class,
+                step.error_message,
+            ],
+        )
+        if written.rowcount != 1:
+            raise LoadError(f"step {step.position} of execution {execution_id} has already ended")
+
+    def finish_execution(
+        self,
+        execution_id: UUID,
+        *,
+        ended_at: datetime,
+        rows_in: int | None,
+        rows_out: int | None,
+        failure: RunFailure | None = None,
+        failed_step: int | None = None,
+    ) -> None:
+        """End a running execution. Without a failure it succeeded, and its STAGING table becomes
+        the dataset's CLEAN table, replacing the old one. With a failure STAGING is dropped and
+        CLEAN stays exactly as it was."""
+        if failed_step is not None and failure is None:
+            raise ValueError("only a failed execution names the step that failed")
+        row = self._conn.execute(
+            "UPDATE platform.pipeline_executions AS runs SET status = %s, ended_at = %s, "
+            "rows_in = %s, rows_out = %s, failed_step = %s, error_class = %s, "
+            "error_message = %s, error_traceback = %s FROM platform.pipelines AS pipelines "
+            "WHERE runs.execution_id = %s AND runs.status = 'running' "
+            "AND pipelines.pipeline_id = runs.pipeline_id "
+            "RETURNING pipelines.source, pipelines.dataset",
+            [
+                "succeeded" if failure is None else "failed",
+                ended_at,
+                rows_in,
+                rows_out,
+                failed_step,
+                None if failure is None else failure.error_class,
+                None if failure is None else failure.message,
+                None if failure is None else failure.traceback,
+                execution_id,
+            ],
+        ).fetchone()
+        if row is None:
+            raise LoadError(f"execution {execution_id} is not running")
+        source, dataset = row
+        staging = _stage_identifier(Stage.STAGING, source, dataset)
+        if failure is not None:
+            self._conn.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(staging))
+            return
+        if not self.exists(Stage.STAGING, source, dataset):
+            raise LoadError(f"execution {execution_id} has no STAGING table to publish as CLEAN")
+        clean_schema, _ = stage_table(Stage.CLEAN, source, dataset)
+        self._conn.execute(
+            sql.SQL("DROP TABLE IF EXISTS {}").format(
+                _stage_identifier(Stage.CLEAN, source, dataset)
+            )
+        )
+        self._conn.execute(
+            sql.SQL("ALTER TABLE {} SET SCHEMA {}").format(staging, sql.Identifier(clean_schema))
+        )
+
+    def read_execution(self, execution_id: UUID) -> Execution | None:
+        row = self._conn.execute(
+            "SELECT runs.pipeline_id, runs.version, pipelines.source, pipelines.dataset, "
+            "runs.trigger, runs.status, runs.started_at, runs.ended_at, runs.rows_in, "
+            "runs.rows_out, runs.failed_step, runs.error_class, runs.error_message "
+            "FROM platform.pipeline_executions AS runs "
+            "JOIN platform.pipelines AS pipelines USING (pipeline_id) "
+            "WHERE runs.execution_id = %s",
+            [execution_id],
+        ).fetchone()
+        if row is None:
+            return None
+        steps = self._conn.execute(
+            "SELECT position, status, started_at, ended_at, rows_in, rows_out, values_changed, "
+            "error_class, error_message FROM platform.step_executions "
+            "WHERE execution_id = %s ORDER BY position",
+            [execution_id],
+        ).fetchall()
+        (
+            pipeline_id,
+            version,
+            source,
+            dataset,
+            trigger,
+            status,
+            started_at,
+            ended_at,
+            rows_in,
+            rows_out,
+            failed_step,
+            error_class,
+            error_message,
+        ) = row
+        return Execution(
+            execution_id=execution_id,
+            pipeline_id=pipeline_id,
+            version=version,
+            source=source,
+            dataset=dataset,
+            trigger=trigger,
+            status=status,
+            started_at=started_at,
+            ended_at=ended_at,
+            rows_in=rows_in,
+            rows_out=rows_out,
+            failed_step=failed_step,
+            error_class=error_class,
+            error_message=error_message,
+            steps=tuple(StepRun(*step) for step in steps),
+        )
+
+    def record_profile(self, profile: Profile) -> int:
+        row = self._conn.execute(
+            "INSERT INTO platform.profiles (source, dataset, stage, after_step, ingest_run_id, "
+            "execution_id, table_rows, result, profiled_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING profile_id",
+            [
+                profile.source,
+                profile.dataset,
+                Stage(profile.stage).value,
+                profile.after_step,
+                *_run_values(profile.run),
+                profile.table_rows,
+                Jsonb(profile.result),
+                profile.profiled_at,
+            ],
+        ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    def read_profiles(
+        self, source: str, dataset: str, stage: Stage | None = None
+    ) -> list[StoredProfile]:
+        """The dataset's profiles in the order they were taken, of one stage or of every stage."""
+        rows = self._conn.execute(
+            "SELECT profile_id, stage, after_step, ingest_run_id, execution_id, table_rows, "
+            "result, profiled_at FROM platform.profiles "
+            "WHERE source = %s AND dataset = %s AND (%s::text IS NULL OR stage = %s) "
+            "ORDER BY profile_id",
+            [source, dataset, *[_stage_value(stage)] * 2],
+        ).fetchall()
+        return [
+            StoredProfile(
+                profile_id,
+                Profile(
+                    source=source,
+                    dataset=dataset,
+                    stage=Stage(found),
+                    run=RunRef(ingest_run_id, execution_id),
+                    table_rows=table_rows,
+                    result=result,
+                    profiled_at=profiled_at,
+                    after_step=after_step,
+                ),
+            )
+            for (
+                profile_id,
+                found,
+                after_step,
+                ingest_run_id,
+                execution_id,
+                table_rows,
+                result,
+                profiled_at,
+            ) in rows
+        ]
+
+    def record_constraint_results(self, results: Sequence[ConstraintResult]) -> None:
+        for result in results:
+            row = self._conn.execute(
+                "INSERT INTO platform.constraint_results (source, dataset, stage, after_step, "
+                "ingest_run_id, execution_id, position, constraint_type, columns, critical, "
+                "passed, failing_rows, failing_values, message, settings, checked_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "RETURNING result_id",
+                [
+                    result.source,
+                    result.dataset,
+                    Stage(result.stage).value,
+                    result.after_step,
+                    *_run_values(result.run),
+                    result.position,
+                    result.constraint_type,
+                    list(result.columns),
+                    result.critical,
+                    result.passed,
+                    result.failing_rows,
+                    result.failing_values,
+                    result.message,
+                    Jsonb(result.settings),
+                    result.checked_at,
+                ],
+            ).fetchone()
+            assert row is not None
+            if result.violations:
+                with self._conn.cursor() as cursor:
+                    cursor.executemany(
+                        "INSERT INTO platform.constraint_violations "
+                        "(result_id, column_name, row_key, value) VALUES (%s, %s, %s, %s)",
+                        [
+                            [row[0], violation.column, Jsonb(violation.row_key), violation.value]
+                            for violation in result.violations
+                        ],
+                    )
+
+    def read_constraint_results(
+        self, source: str, dataset: str, stage: Stage | None = None
+    ) -> list[ConstraintResult]:
+        """The dataset's constraint results in the order they were recorded."""
+        rows = self._conn.execute(
+            "SELECT result_id, stage, after_step, ingest_run_id, execution_id, position, "
+            "constraint_type, columns, critical, passed, failing_rows, failing_values, message, "
+            "settings, checked_at FROM platform.constraint_results "
+            "WHERE source = %s AND dataset = %s AND (%s::text IS NULL OR stage = %s) "
+            "ORDER BY result_id",
+            [source, dataset, *[_stage_value(stage)] * 2],
+        ).fetchall()
+        violations: dict[int, list[Violation]] = {}
+        for result_id, column, row_key, value in self._conn.execute(
+            "SELECT result_id, column_name, row_key, value FROM platform.constraint_violations "
+            "WHERE result_id = ANY(%s) ORDER BY violation_id",
+            [[row[0] for row in rows]],
+        ):
+            violations.setdefault(result_id, []).append(Violation(column, row_key, value))
+        return [
+            ConstraintResult(
+                source=source,
+                dataset=dataset,
+                stage=Stage(found),
+                run=RunRef(ingest_run_id, execution_id),
+                position=position,
+                constraint_type=constraint_type,
+                columns=tuple(columns),
+                critical=critical,
+                passed=passed,
+                failing_rows=failing_rows,
+                failing_values=failing_values,
+                message=message,
+                settings=settings,
+                checked_at=checked_at,
+                after_step=after_step,
+                violations=tuple(violations.get(result_id, ())),
+            )
+            for (
+                result_id,
+                found,
+                after_step,
+                ingest_run_id,
+                execution_id,
+                position,
+                constraint_type,
+                columns,
+                critical,
+                passed,
+                failing_rows,
+                failing_values,
+                message,
+                settings,
+                checked_at,
+            ) in rows
+        ]
+
+    def record_lineage(
+        self,
+        source: str,
+        dataset: str,
+        run: RunRef,
+        nodes: Sequence[LineageNode],
+        recorded_at: datetime,
+    ) -> None:
+        """Add nodes to the end of the run's lineage, as the run reaches them."""
+        recorded = self.read_lineage(run)
+        check_chain(source, dataset, run, [*recorded, *nodes])
+        with self._conn.cursor() as cursor:
+            cursor.executemany(
+                "INSERT INTO platform.lineage (source, dataset, ingest_run_id, execution_id, "
+                "position, node, name, step_position, recorded_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                [
+                    [
+                        source,
+                        dataset,
+                        *_run_values(run),
+                        position,
+                        node.kind,
+                        node.name,
+                        node.step_position,
+                        recorded_at,
+                    ]
+                    for position, node in enumerate(nodes, start=len(recorded) + 1)
+                ],
+            )
+
+    def read_lineage(self, run: RunRef) -> tuple[LineageNode, ...]:
+        """The run's lineage, in the order the data passed through it."""
+        rows = self._conn.execute(
+            sql.SQL(
+                "SELECT node, name, step_position FROM platform.lineage WHERE {} ORDER BY position"
+            ).format(_run_filter(run)),
+            [run.ingest_run_id or run.execution_id],
+        ).fetchall()
+        return tuple(LineageNode(kind, name, step) for kind, name, step in rows)
+
+
+def _round_trip(step: StepDefinition) -> StepDefinition:
+    """The step as it reads back from jsonb, so an unchanged definition compares equal."""
+    return StepDefinition(step.step_type, json.loads(json.dumps(step.configuration)))
+
+
 class PostgresLoader:
     """Writes to the platform database. Connects on first use.
 
@@ -471,6 +996,13 @@ class PostgresLoader:
         conn = self._connection()
         with conn.transaction():
             yield PostgresTransaction(conn)
+
+    @contextmanager
+    def stages(self) -> Iterator[PostgresStages]:
+        """The stage tables and the V2 records; everything done through them commits together."""
+        conn = self._connection()
+        with conn.transaction():
+            yield PostgresStages(conn)
 
     def fail_run(
         self,
