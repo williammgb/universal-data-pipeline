@@ -84,6 +84,9 @@ by `UDP_DATABASE_URL`:
 ```
 uv run --locked udp migrate                 create or update the platform's tables
 uv run --locked udp run demo_csv            load one source now (or several, by name)
+uv run --locked udp profile shop orders --stage raw
+                                            profile a dataset's RAW, STAGING or CLEAN table,
+                                            print it and store it (docs/stages-and-pipelines.md)
 uv run --locked udp schedule                run every scheduled dataset until stopped
 uv run --locked udp api                     serve the dashboard and the API on 127.0.0.1:8000
 uv run --locked udp doctor                  check the database connection

@@ -108,7 +108,7 @@ def apply_column_types(
         for name, kind in declared.items():
             values = convert(chunk[name], kind)
             converted.append(values)
-            unfit.append((values.is_null() & chunk[name].is_not_null()).alias(name))
+            unfit.append(unfit_values(chunk[name], values))
         result = chunk.with_columns(converted)
         flags = pl.DataFrame(unfit)
         rejected = flags.select(pl.any_horizontal(pl.all())).to_series()
@@ -126,6 +126,12 @@ def apply_column_types(
             quarantine(findings, chunk.filter(rejected), reasons.to_series())
             result = result.filter(~rejected)
         yield result
+
+
+def unfit_values(series: pl.Series, converted: pl.Series) -> pl.Series:
+    """True where a value is present but did not survive `convert`: the one definition of an
+    invalid value, shared by the load's quarantine and the profile's data-quality count."""
+    return (converted.is_null() & series.is_not_null()).alias(series.name)
 
 
 def convert(series: pl.Series, declared: str) -> pl.Series:

@@ -1,10 +1,8 @@
 """Every read the API makes, as plain SQL against the platform database."""
 
-import math
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import date, datetime, time
-from decimal import Decimal
+from datetime import datetime
 from threading import Lock
 from typing import Any
 from uuid import UUID
@@ -24,7 +22,6 @@ from udp.api.models import (
     DatasetDetail,
     DatasetItem,
     DatasetProfile,
-    JsonValue,
     QualityReport,
     RowsPage,
     RunDetail,
@@ -37,25 +34,13 @@ from udp.api.models import (
     SourceItem,
 )
 from udp.api.profile import PROFILE_ROW_LIMIT, profile_table
+
+# How a stored value becomes JSON is the profile's rule as much as the catalog's: one function.
+from udp.profiling.models import json_value
 from udp.storage import overrides as override_store
 from udp.storage.loader import DatasetState
 
-
-def json_value(value: Any) -> JsonValue:
-    """A stored value as JSON: exact decimals and non-finite floats become text."""
-    if value is None or isinstance(value, bool | int | str):
-        return value
-    if isinstance(value, float):
-        if math.isnan(value):
-            return "NaN"
-        if math.isinf(value):
-            return "Infinity" if value > 0 else "-Infinity"
-        return value
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, date | time):  # datetime is a date
-        return value.isoformat()
-    return str(value)  # UUID, and any other stored type, as its text form
+__all__ = ["PostgresCatalog", "cell_value", "json_value"]
 
 
 def cell_value(value: Any) -> CellValue:
