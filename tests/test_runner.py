@@ -5,7 +5,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 import yaml
-from fakes import MemoryLoader
+from fakes import MemoryLoader, raw_table
 
 from udp.config.source import load_source
 from udp.connectors import CONNECTORS
@@ -15,7 +15,7 @@ from udp.connectors.rest_api import RestApiConnector
 from udp.errors import ConfigError, ExtractError
 from udp.log import configure_logging
 from udp.names import RESERVED_COLUMNS
-from udp.pipeline.runner import run_source
+from udp.pipeline.runner import RunOutcome, run_source
 
 SOURCES = Path("sources")
 DEMO_TABLE = "demo_csv__customers"
@@ -81,6 +81,54 @@ def test_second_run_replaces_rows_instead_of_adding_them() -> None:
     assert loader.tables[DEMO_TABLE].height == 20
     assert set(loader.tables[DEMO_TABLE]["_record_hash"]) == first_hashes
     assert len(loader.runs) == 2
+
+
+def _run_orders(
+    sources_dir: Path, loader: MemoryLoader, rows: str, *, full_refresh: bool = False
+) -> RunOutcome:
+    (sources_dir / "shop" / "orders.csv").write_text(f"sku,qty\n{rows}", encoding="utf-8")
+    config = load_source(sources_dir, "shop")
+    (outcome,) = run_source("shop", config, sources_dir, loader, full_refresh=full_refresh)
+    return outcome
+
+
+def test_each_run_adds_its_rows_to_raw_and_a_full_refresh_starts_raw_over(
+    tmp_path: Path,
+) -> None:
+    sources_dir = tmp_path / "sources"
+    _write_source(sources_dir, "shop", "  - name: orders\n    path: orders.csv\n")
+    loader = MemoryLoader()
+
+    first = _run_orders(sources_dir, loader, "A,1\nB,2\n")
+    second = _run_orders(sources_dir, loader, "A,1\nB,3\n")
+
+    raw = loader.raw[raw_table("shop", "orders")]
+    assert raw.columns == loader.tables["shop__orders"].columns
+    assert raw["_run_id"].to_list() == [str(first.run_id)] * 2 + [str(second.run_id)] * 2
+    assert raw["qty"].to_list() == [1, 2, 1, 3]
+    assert loader.tables["shop__orders"].height == 2
+
+    refreshed = _run_orders(sources_dir, loader, "C,4\n", full_refresh=True)
+
+    raw = loader.raw[raw_table("shop", "orders")]
+    assert (raw["_run_id"].to_list(), raw["sku"].to_list()) == ([str(refreshed.run_id)], ["C"])
+
+
+def test_a_failed_run_adds_nothing_to_raw(tmp_path: Path) -> None:
+    sources_dir = tmp_path / "sources"
+    _write_source(
+        sources_dir,
+        "shop",
+        "  - name: orders\n    path: orders.csv\n    columns:\n      qty: integer\n",
+    )
+    loader = MemoryLoader()
+    assert _run_orders(sources_dir, loader, "A,1\nB,2\n").status == "succeeded"
+    before = loader.raw[raw_table("shop", "orders")]
+
+    # Half the rows are quarantined, over the default limit, after the load has read them.
+    assert _run_orders(sources_dir, loader, "A,1\nB,x\n").status == "failed"
+
+    assert loader.raw[raw_table("shop", "orders")].equals(before)
 
 
 def test_missing_file_fails_the_run_and_the_next_dataset_still_runs(tmp_path: Path) -> None:

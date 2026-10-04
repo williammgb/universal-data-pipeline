@@ -9,6 +9,7 @@ from uuid import UUID
 import polars as pl
 
 from udp.errors import LoadError
+from udp.names import Stage, stage_table
 from udp.storage.loader import (
     INTERRUPTED,
     Column,
@@ -25,6 +26,11 @@ from udp.storage.loader import (
 )
 
 _DROPPED = object()
+
+
+def raw_table(source: str, dataset: str) -> str:
+    """The key of a dataset's RAW table in `MemoryLoader.raw`: its schema-qualified name."""
+    return ".".join(stage_table(Stage.RAW, source, dataset))
 
 
 class MemoryCatalog:
@@ -90,6 +96,8 @@ class MemoryTransaction:
     def __init__(self, loader: MemoryLoader) -> None:
         self._loader = loader
         self.tables: dict[str, Any] = {}
+        self.raw: dict[str, Any] = {}
+        self._loaded: pl.DataFrame | None = None
         self.states: dict[tuple[str, str], DatasetState] = {}
         self.versions: dict[tuple[str, str], list[list[Column]]] = {}
         self.run_updates: dict[UUID, dict[str, Any]] = {}
@@ -112,6 +120,8 @@ class MemoryTransaction:
         batch = pl.concat(frames)
         table_columns(batch)
         existing = self.table(table)
+        # What Postgres leaves in its stage table: the batch, with the table's columns.
+        self._loaded = self._widen(existing, batch)
         if existing is None:
             return None, batch, ColumnChanges((), ())
         return existing, batch, column_changes(table, table_columns(existing), batch.schema)
@@ -184,6 +194,20 @@ class MemoryTransaction:
 
     def drop_table(self, table: str) -> None:
         self.tables[table] = _DROPPED
+
+    def drop_raw(self, source: str, dataset: str) -> None:
+        self.raw[raw_table(source, dataset)] = _DROPPED
+
+    def append_raw(self, source: str, dataset: str) -> int:
+        if self._loaded is None:
+            raise LoadError(f"nothing was loaded for {source}.{dataset} to add to RAW")
+        name = raw_table(source, dataset)
+        existing = self.raw.get(name, self._loader.raw.get(name))
+        if existing is None or existing is _DROPPED:
+            self.raw[name] = self._loaded
+        else:
+            self.raw[name] = pl.concat([existing, self._loaded], how="diagonal_relaxed")
+        return self._loaded.height
 
     def read_state(self, source: str, dataset: str) -> DatasetState | None:
         key = (source, dataset)
@@ -279,6 +303,7 @@ class MemoryLoader:
 
     def __init__(self) -> None:
         self.tables: dict[str, pl.DataFrame] = {}
+        self.raw: dict[str, pl.DataFrame] = {}
         self.states: dict[tuple[str, str], DatasetState] = {}
         self.versions: dict[tuple[str, str], list[list[Column]]] = {}
         self.runs: dict[UUID, dict[str, Any]] = {}
@@ -373,6 +398,11 @@ class MemoryLoader:
                 self.tables.pop(name, None)
             else:
                 self.tables[name] = frame
+        for name, frame in transaction.raw.items():
+            if frame is _DROPPED:
+                self.raw.pop(name, None)
+            else:
+                self.raw[name] = frame
         self.states.update(transaction.states)
         for key, added in transaction.versions.items():
             self.versions.setdefault(key, []).extend(added)
