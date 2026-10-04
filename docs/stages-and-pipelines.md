@@ -150,3 +150,7 @@ Profiling is `src/udp/profiling/`: `profile_frame` profiles any table given as a
 both and stores the result with its dataset, stage, run and — between two steps — the step it
 followed. A pipeline step builds its `ProfileSettings` with `ProfileSettings.for_dataset`, giving
 any column its own `OutlierRule`.
+
+Constraints are checked the same way: `PostgresStages.check_constraints` checks a dataset's
+`constraints:` against one stage table and stores a result per constraint with its run; what they
+are and what they record is in `constraints.md`.

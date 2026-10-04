@@ -9,6 +9,7 @@ import polars as pl
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 from udp.config.columns import WATERMARK_DECLARED_TYPES, DeclaredType
+from udp.config.constraints import Constraint
 from udp.config.quality import Check
 from udp.config.schedule import CronSchedule
 from udp.names import RESERVED_COLUMNS, name_problem
@@ -42,6 +43,8 @@ class DatasetBase(BaseModel):
     primary_key: list[str] | None = Field(default=None, validate_default=True)
     columns: dict[str, DeclaredType] = {}
     checks: list[Check] = []
+    # V2: what the dataset should look like, checked at any stage without changing it.
+    constraints: list[Constraint] = []
     quarantine_threshold_percent: float = Field(default=1, ge=0, le=100)
     schedule: CronSchedule | None = None
 
