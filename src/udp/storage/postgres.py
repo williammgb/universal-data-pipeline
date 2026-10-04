@@ -13,12 +13,14 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from udp.config.columns import is_json, json_text
+from udp.connectors.base import DatasetBase
 from udp.errors import LoadError, SchemaDriftError
 from udp.names import Stage, stage_table
 from udp.profiling.frame import ProfileSettings
 from udp.profiling.models import ProfileComparison, StageProfile, compare_profiles
 from udp.profiling.stage import profile_stage
 from udp.profiling.table import PROFILE_ROW_LIMIT
+from udp.quality.constraints import check_stage
 from udp.storage import overrides as override_store
 from udp.storage.loader import (
     INTERRUPTED,
@@ -834,6 +836,25 @@ class PostgresStages:
         )
         return StoredProfile(self.record_profile(profile), profile)
 
+    def check_constraints(
+        self,
+        stage: Stage,
+        source: str,
+        dataset: DatasetBase,
+        run: RunRef,
+        *,
+        checked_at: datetime,
+        after_step: int | None = None,
+    ) -> list[ConstraintResult]:
+        """Check the dataset's constraints against its table at this stage and store each result,
+        tagged with the run. The table is only read. Raises LoadError when it does not exist."""
+        results = [
+            outcome.result(source, dataset.name, Stage(stage), run, checked_at, after_step)
+            for outcome in check_stage(self._conn, stage, source, dataset)
+        ]
+        self.record_constraint_results(results)
+        return results
+
     def compare_profiles(self, before: int, after: int) -> ProfileComparison:
         """Rows, missing values, invalid values, outliers and duplicates of two stored profiles,
         before and after. Raises LookupError when either profile is not stored."""
@@ -910,16 +931,26 @@ class PostgresStages:
                     )
 
     def read_constraint_results(
-        self, source: str, dataset: str, stage: Stage | None = None
+        self, source: str, dataset: str, stage: Stage | None = None, run: RunRef | None = None
     ) -> list[ConstraintResult]:
-        """The dataset's constraint results in the order they were recorded."""
+        """The dataset's constraint results in the order they were recorded, of one stage or of
+        every stage, and of one run or of every run."""
+        ingest_run_id, execution_id = (None, None) if run is None else _run_values(run)
         rows = self._conn.execute(
             "SELECT result_id, stage, after_step, ingest_run_id, execution_id, position, "
             "constraint_type, columns, critical, passed, failing_rows, failing_values, message, "
             "settings, checked_at FROM platform.constraint_results "
             "WHERE source = %s AND dataset = %s AND (%s::text IS NULL OR stage = %s) "
+            "AND (%s::uuid IS NULL OR ingest_run_id = %s) "
+            "AND (%s::uuid IS NULL OR execution_id = %s) "
             "ORDER BY result_id",
-            [source, dataset, *[_stage_value(stage)] * 2],
+            [
+                source,
+                dataset,
+                *[_stage_value(stage)] * 2,
+                *[ingest_run_id] * 2,
+                *[execution_id] * 2,
+            ],
         ).fetchall()
         violations: dict[int, list[Violation]] = {}
         for result_id, column, row_key, value in self._conn.execute(

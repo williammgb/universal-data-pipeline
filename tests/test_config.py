@@ -1,12 +1,14 @@
 import dataclasses
 import json
 import tempfile
+from datetime import date
 from pathlib import Path
 
 import pytest
 from hypothesis import assume, given
 from hypothesis import strategies as st
 
+from udp.config.constraints import Datatype
 from udp.config.source import load_source
 from udp.connectors.csv import CsvDataset
 from udp.errors import ConfigError
@@ -282,6 +284,58 @@ MERGE_ON_UPDATED = "    load_mode: merge\n    watermark: updated\n    primary_ke
             "datasets[0].checks[0].freshness.max_age",
             "longer than zero",
         ),
+        ("    constraints:\n      - constraint: foo\n", "datasets[0].constraints[0]", "foo"),
+        (
+            "    constraints:\n      - constraint: datatype\n        column: id\n"
+            "        type: money\n",
+            "datasets[0].constraints[0].datatype.type",
+            "unknown type",
+        ),
+        (
+            "    constraints:\n      - constraint: min\n        column: amount\n",
+            "datasets[0].constraints[0].min.value",
+            "Field required",
+        ),
+        (
+            "    constraints:\n      - constraint: max\n        column: amount\n"
+            "        value: lots\n",
+            "datasets[0].constraints[0].max.value.int",
+            "valid integer",
+        ),
+        (
+            "    constraints:\n      - constraint: unique\n        columns: []\n",
+            "datasets[0].constraints[0].unique.columns",
+            "at least 1",
+        ),
+        (
+            "    constraints:\n      - constraint: unique\n        columns: [id, id]\n",
+            "datasets[0].constraints[0].unique.columns",
+            "lists a column more than once",
+        ),
+        (
+            "    constraints:\n      - constraint: allowed_values\n        column: id\n"
+            "        values: []\n",
+            "datasets[0].constraints[0].allowed_values.values",
+            "at least 1",
+        ),
+        (
+            "    constraints:\n      - constraint: pattern\n        column: city\n"
+            "        pattern: '('\n",
+            "datasets[0].constraints[0].pattern.pattern",
+            "not a valid regular expression",
+        ),
+        (
+            "    constraints:\n      - constraint: not_null\n        column: id\n"
+            "        critical: sometimes\n",
+            "datasets[0].constraints[0].not_null.critical",
+            "valid boolean",
+        ),
+        (
+            "    constraints:\n      - constraint: not_null\n        column: id\n"
+            "        severity: error\n",
+            "datasets[0].constraints[0].not_null.severity",
+            "Extra inputs are not permitted",
+        ),
         (
             "    quarantine_threshold_percent: 101\n",
             "datasets[0].quarantine_threshold_percent",
@@ -336,6 +390,38 @@ def test_columns_and_checks_load() -> None:
     assert dataset.columns == {"amount": "decimal(12,2)", "signup_date": "date"}
     assert [check.check for check in dataset.checks] == ["unique", "freshness"]
     assert dataset.checks[1].severity == "warn"
+
+
+def test_constraints_load_apart_from_checks() -> None:
+    dataset = CsvDataset.model_validate(
+        {
+            "name": "customers",
+            "path": "data.csv",
+            "constraints": [
+                {"constraint": "datatype", "column": "amount", "type": "decimal( 10 , 2 )"},
+                {"constraint": "not_null", "column": "email", "critical": True},
+                {"constraint": "min", "column": "amount", "value": 0},
+                {"constraint": "max", "column": "signup", "value": date(2030, 1, 1)},
+                {"constraint": "unique", "columns": ["email"]},
+                {"constraint": "allowed_values", "column": "status", "values": ["open"]},
+                {"constraint": "pattern", "column": "email", "pattern": "[^@]+@[^@]+"},
+            ],
+        }
+    )
+
+    assert dataset.checks == []
+    assert [c.constraint for c in dataset.constraints] == [
+        "datatype",
+        "not_null",
+        "min",
+        "max",
+        "unique",
+        "allowed_values",
+        "pattern",
+    ]
+    assert isinstance(dataset.constraints[0], Datatype)
+    assert dataset.constraints[0].type == "decimal(10,2)"
+    assert [c.critical for c in dataset.constraints] == [False, True, *[False] * 5]
 
 
 @pytest.mark.parametrize(
