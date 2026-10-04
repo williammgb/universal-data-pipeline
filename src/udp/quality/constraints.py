@@ -162,7 +162,7 @@ def _as_declared(series: pl.Series, declared: str) -> pl.Series:
     return convert(series, declared)
 
 
-def _breaks(frame: pl.DataFrame, constraint: Constraint) -> pl.Series:
+def breaks(frame: pl.DataFrame, constraint: Constraint) -> pl.Series:
     """True for each row that breaks the constraint; nulls break only not_null."""
     if isinstance(constraint, UniqueConstraint):
         columns = constraint.columns
@@ -197,7 +197,7 @@ def _tally_batch(
     for constraint, tally in zip(constraints, tallies, strict=True):
         if isinstance(constraint, UniqueConstraint) and not unique:
             continue
-        broken = numbered.filter(_breaks(frame, constraint))
+        broken = numbered.filter(breaks(frame, constraint))
         room = MAX_VIOLATIONS - len(tally.violations)
         columns = len(constraint.columns_checked)
         shown = broken.head(-(-room // columns)) if room > 0 else broken.clear()
