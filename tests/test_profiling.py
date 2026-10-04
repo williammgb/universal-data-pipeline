@@ -293,6 +293,13 @@ def test_histogram_bars_are_drawn_as_the_dashboard_draws_them() -> None:
     assert histogram(pl.Series([], dtype=pl.Float64)) == [0] * 20
 
 
+def test_histogram_draws_a_range_too_narrow_or_too_wide_to_divide_by() -> None:
+    # One over 2.2e-313 is beyond the largest float; 1.7e308 - -1.7e308 is beyond it too.
+    for values in ([0.0, 1e-313, 2.2250738585e-313], [-1.7e308, 0.0, 1.7e308]):
+        bars = histogram(pl.Series(values))
+        assert (bars[0], sum(bars[1:-1]), bars[-1]) == (1, 1, 1)
+
+
 def test_an_empty_table_has_zero_of_everything() -> None:
     frame = pl.DataFrame(schema={"v": pl.Int64, "t": pl.String})
 

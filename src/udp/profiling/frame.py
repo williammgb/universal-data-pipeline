@@ -266,10 +266,25 @@ def histogram(numbers: pl.Series) -> list[int]:
     if low == high:
         bars[0] = numbers.len()
         return bars
+    # Polars divides by multiplying by one over the divisor, so the range and one over it must
+    # both be finite floats: a range wider than the largest float is halved, and one so narrow
+    # that one over it overflows is scaled up. A power of two moves no number between bars.
+    scale = 1.0
+    if math.isinf(high - low):
+        scale = 0.5
+    elif math.isinf(1 / (high - low)):
+        scale = 2.0**600
     found = (
         numbers.to_frame("x")
         .select(
-            (((pl.col("x") - low) / (high - low) * HISTOGRAM_BARS).floor() + 1)
+            (
+                (
+                    (pl.col("x") * scale - low * scale)
+                    / (high * scale - low * scale)
+                    * HISTOGRAM_BARS
+                ).floor()
+                + 1
+            )
             .clip(1, HISTOGRAM_BARS)
             .cast(pl.Int64)
             .alias("bar")
