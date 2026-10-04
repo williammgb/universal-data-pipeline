@@ -9,8 +9,8 @@ What it reports, per column and for the whole table:
 - **descriptive**: the dashboard's view (missing values, range, histogram, values, pattern),
   computed by the same rules as the SQL profile in `udp.profiling.table`, plus the number of
   distinct values of every column;
-- **data-quality problems**: a value that does not fit the column's declared type (by
-  `does_not_fit`, the rule a load quarantines rows by), including an invalid date, and a missing
+- **data-quality problems**: a value that does not fit the column's declared type (`convert`
+  then `unfit_values`, the rule a load quarantines rows by), including an invalid date, a missing
   value in a column that must have one (the primary key's, or one with a `not_null` check);
 - **statistical outliers**: among the numbers that are valid and finite only, the values outside
   the column's `OutlierRule` bounds (IQR by default);

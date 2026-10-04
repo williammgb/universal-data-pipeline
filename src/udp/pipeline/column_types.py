@@ -134,11 +134,6 @@ def unfit_values(series: pl.Series, converted: pl.Series) -> pl.Series:
     return (converted.is_null() & series.is_not_null()).alias(series.name)
 
 
-def does_not_fit(series: pl.Series, declared: str) -> pl.Series:
-    """True where a present value cannot be stored exactly as the declared type."""
-    return unfit_values(series, convert(series, declared))
-
-
 def convert(series: pl.Series, declared: str) -> pl.Series:
     """The series in the declared type; null where a value does not convert exactly."""
     digits = decimal_digits(declared)
