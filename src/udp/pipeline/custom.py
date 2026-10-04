@@ -5,7 +5,8 @@ to 100,000 rows, after the common transforms, and each result must be a DataFram
 column names, storable types and the same schema as the first result. The file is read once,
 hashed, and those same bytes are compiled and run, so the stored hash always describes the
 code that ran. It is not imported: nothing goes into `sys.modules` and no `__pycache__` is
-written next to it.
+written next to it (`udp.script_child.compile_script`). A V2 `python` pipeline step reads, loads
+and checks its script the same way (`udp.transformations.python_step`).
 
 It is not sandboxed either: it runs in the pipeline process with the pipeline's permissions,
 environment and network, so writing to `sources/` carries the same trust as editing the repo.
@@ -16,7 +17,6 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from types import ModuleType
 from typing import cast
 from uuid import UUID
 
@@ -26,6 +26,7 @@ import structlog
 from udp.errors import LoadError, TransformError
 from udp.names import RESERVED_COLUMNS
 from udp.pipeline.transform import clean_column_names
+from udp.script_child import ScriptLoadError, compile_script
 from udp.storage.loader import column_type
 
 log = structlog.get_logger(step="transform")
@@ -60,11 +61,18 @@ class TransformFile:
 
 
 def find_transform(source_dir: Path) -> TransformFile | None:
-    path = source_dir / FILE_NAME
+    try:
+        return read_script(source_dir / FILE_NAME)
+    except FileNotFoundError:
+        return None
+
+
+def read_script(path: Path) -> TransformFile:
+    """The file's bytes and their hash, read once. Raises FileNotFoundError when it is missing."""
     try:
         code = path.read_bytes()
     except FileNotFoundError:
-        return None
+        raise
     except OSError as error:
         raise TransformError(
             f"{path.as_posix()}: could not be read: {type(error).__name__}: {error}"
@@ -73,18 +81,10 @@ def find_transform(source_dir: Path) -> TransformFile | None:
 
 
 def load_transform(file: TransformFile) -> TransformFunction:
-    module = ModuleType("udp_custom_transform")
-    module.__file__ = str(file.path)
     try:
-        code = compile(file.code, str(file.path), "exec", dont_inherit=True)
-        exec(code, module.__dict__)
-    except (Exception, SystemExit) as error:
-        raise TransformError(
-            f"{file.name}: could not be loaded: {type(error).__name__}: {error}"
-        ) from error
-    function = module.__dict__.get("transform")
-    if not callable(function):
-        raise TransformError(f"{file.name}: defines no function 'transform'")
+        function = compile_script(file.code, file.path)
+    except ScriptLoadError as error:
+        raise TransformError(f"{file.name}: {error}") from error.__cause__
     return cast(TransformFunction, function)
 
 
@@ -124,7 +124,7 @@ def apply_transform(
                 "expected a polars DataFrame"
             )
         if schema is None:
-            _check_columns(file, result.schema)
+            check_columns(file.name, result.schema)
             schema = result.schema
         elif result.schema != schema:
             raise TransformError(
@@ -136,24 +136,22 @@ def apply_transform(
     log.info("custom transform applied", path=file.name, rows_in=rows_in, rows_out=rows_out)
 
 
-def _check_columns(file: TransformFile, schema: pl.Schema) -> None:
+def check_columns(script: str, schema: pl.Schema) -> None:
+    """A script's result has columns, each with a clean name and a type that can be stored."""
     if not schema:
-        raise TransformError(f"{file.name}: transform returned no columns")
+        raise TransformError(f"{script}: transform returned no columns")
     for name, dtype in schema.items():
         if name in RESERVED_COLUMNS:
-            raise TransformError(
-                f"{file.name}: returned column '{name}', which is a platform column"
-            )
+            raise TransformError(f"{script}: returned column '{name}', which is a platform column")
         (clean,) = clean_column_names([name])
         if clean != name:
             raise TransformError(
-                f"{file.name}: returned column '{name}', which is not a clean column name "
+                f"{script}: returned column '{name}', which is not a clean column name "
                 f"(lowercase letters, digits and _, starting with a letter); use '{clean}'"
             )
         try:
             column_type(name, dtype)
         except LoadError as error:
             raise TransformError(
-                f"{file.name}: returned column '{name}', which has type {dtype} "
-                "that cannot be stored"
+                f"{script}: returned column '{name}', which has type {dtype} that cannot be stored"
             ) from error

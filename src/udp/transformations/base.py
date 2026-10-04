@@ -7,9 +7,10 @@ chunk by chunk, so a mean or a percentile is taken over every row. They take and
 and never write a table, so none of them can touch RAW.
 """
 
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
 import polars as pl
 from pydantic import BaseModel, ConfigDict
@@ -28,8 +29,25 @@ class StepConfigError(Exception):
         self.message = message
 
 
+OnFailure = Literal["stop", "continue"]
+
+
+@dataclass(frozen=True)
+class ScriptRun:
+    """What a python step's script left behind: which code ran, what it printed, and the line of
+    the script it failed on, when it failed there."""
+
+    sha256: str
+    output: str
+    error_line: int | None = None
+
+
 class StepFailed(Exception):
     """A step could not do what it was asked; the frame is left as it was."""
+
+    def __init__(self, message: str, script: ScriptRun | None = None) -> None:
+        super().__init__(message)
+        self.script = script
 
 
 @dataclass(frozen=True)
@@ -45,10 +63,12 @@ class Applied:
     frame: pl.DataFrame
     values_changed: int
     message: str | None = None
+    script: ScriptRun | None = None
 
 
 class StepResult(BaseModel):
-    """One step's outcome, as a person reads it."""
+    """One step's outcome, as a person reads it. A python step also says which code ran
+    (`script_sha256`), what it printed, and the script line it failed on."""
 
     position: int
     type: str
@@ -56,8 +76,12 @@ class StepResult(BaseModel):
     rows_in: int
     rows_out: int
     values_changed: int
+    duration_seconds: float = 0.0
     error: str | None = None
     message: str | None = None
+    script_sha256: str | None = None
+    output: str | None = None
+    error_line: int | None = None
 
 
 class Transformation(BaseModel):
@@ -97,10 +121,12 @@ def run_step(
     context: StepContext | None = None,
 ) -> tuple[pl.DataFrame, StepResult]:
     """Run one step. Never raises: a step that fails returns the frame unchanged with the error."""
+    started = time.monotonic()
     try:
         applied = step.apply(frame, context or StepContext())
     except Exception as error:
         reason = str(error) if isinstance(error, StepFailed) else f"{type(error).__name__}: {error}"
+        script = error.script if isinstance(error, StepFailed) else None
         return frame, StepResult(
             position=position,
             type=step.type,
@@ -108,7 +134,9 @@ def run_step(
             rows_in=frame.height,
             rows_out=frame.height,
             values_changed=0,
+            duration_seconds=time.monotonic() - started,
             error=reason,
+            **_script_fields(script),
         )
     return applied.frame, StepResult(
         position=position,
@@ -117,5 +145,52 @@ def run_step(
         rows_in=frame.height,
         rows_out=applied.frame.height,
         values_changed=applied.values_changed,
+        duration_seconds=time.monotonic() - started,
         message=applied.message,
+        **_script_fields(applied.script),
     )
+
+
+def _script_fields(script: ScriptRun | None) -> dict[str, Any]:
+    if script is None:
+        return {}
+    return {
+        "script_sha256": script.sha256,
+        "output": script.output,
+        "error_line": script.error_line,
+    }
+
+
+def run_steps(
+    frame: pl.DataFrame,
+    steps: Sequence[Transformation],
+    context: StepContext | None = None,
+    on_failure: OnFailure = "stop",
+) -> tuple[pl.DataFrame, list[StepResult]]:
+    """Run steps in order, each on the frame the steps before it left.
+
+    Each step is checked again against that frame first, because a python step can change the
+    columns in ways nothing knew when the steps were loaded. A step that fails leaves the frame as
+    it was; `stop` ends the run there, `continue` hands that frame to the next step. Either way
+    the results of the steps before it are kept.
+    """
+    results: list[StepResult] = []
+    for position, step in enumerate(steps, 1):
+        try:
+            step.check(frame.schema)
+        except StepConfigError as error:
+            result = StepResult(
+                position=position,
+                type=step.type,
+                status="failed",
+                rows_in=frame.height,
+                rows_out=frame.height,
+                values_changed=0,
+                error=f"{error.field}: {error.message}",
+            )
+        else:
+            frame, result = run_step(frame, step, position, context)
+        results.append(result)
+        if result.status == "failed" and on_failure == "stop":
+            break
+    return frame, results
