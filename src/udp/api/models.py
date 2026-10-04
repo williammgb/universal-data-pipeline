@@ -6,7 +6,17 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
-JsonValue = str | int | float | bool | None
+# The profile's models live with the profiling engine; the API returns them as they are.
+from udp.profiling.models import (
+    ColumnProfile,
+    DatasetProfile,
+    JsonValue,
+    ProfileKind,
+    ValueCount,
+)
+
+__all__ = ["ColumnProfile", "DatasetProfile", "JsonValue", "ProfileKind", "ValueCount"]
+
 # A value in a table's row: a jsonb column's value arrives as the JSON it holds.
 CellValue = JsonValue | dict[str, Any] | list[Any]
 RunStatus = Literal["running", "succeeded", "failed", "skipped"]
@@ -91,41 +101,6 @@ class RowsPage(BaseModel):
     limit: int
     offset: int
     has_more: bool
-
-
-class ValueCount(BaseModel):
-    value: JsonValue
-    count: int
-
-
-ProfileKind = Literal["number", "date", "text", "other"]
-
-
-class ColumnProfile(BaseModel):
-    name: str
-    type: str
-    kind: ProfileKind
-    missing: int
-    # number and date columns: the finite range, and a 20-bar histogram between its ends
-    min: JsonValue = None
-    max: JsonValue = None
-    mean: JsonValue = None
-    histogram: list[int] | None = None
-    # text columns: every value when there are few, otherwise the most and least used
-    distinct: int | None = None
-    appear_once: int | None = None
-    all_values: list[ValueCount] | None = None
-    most_used: list[ValueCount] | None = None
-    least_used: list[ValueCount] | None = None
-    pattern: str | None = None
-    pattern_share: float | None = None
-
-
-class DatasetProfile(BaseModel):
-    table_rows: int
-    profiled_rows: int
-    sampled: bool
-    columns: list[ColumnProfile]
 
 
 class CheckResult(BaseModel):

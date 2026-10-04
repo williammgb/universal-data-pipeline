@@ -1,6 +1,7 @@
 import json
 import logging
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -18,10 +19,14 @@ from udp.api.auth import parse_keys
 from udp.api.catalog import PostgresCatalog
 from udp.config.secrets import read_environment
 from udp.config.source import SourceConfig, load_source
-from udp.errors import ConfigError
+from udp.errors import ConfigError, LoadError
 from udp.log import configure_logging
+from udp.names import Stage
 from udp.orchestration.scheduler import serve
 from udp.pipeline.runner import run_source
+from udp.profiling.frame import ProfileSettings, parse_outlier_rule
+from udp.profiling.models import StageProfile
+from udp.profiling.stage import describe
 from udp.settings import Settings
 from udp.storage.postgres import PostgresLoader
 
@@ -86,6 +91,80 @@ def run(
                 failed = True
     if failed:
         raise typer.Exit(1)
+
+
+def _fail(message: str, code: int) -> typer.Exit:
+    typer.echo(message, err=True)
+    return typer.Exit(code)
+
+
+@app.command()
+def profile(
+    source: Annotated[str, typer.Argument(help="Folder name under sources/.")],
+    dataset: Annotated[str, typer.Argument(help="Dataset name in the source's source.yaml.")],
+    stage: Annotated[
+        Stage, typer.Option(help="Which copy of the dataset to profile.", case_sensitive=False)
+    ] = Stage.RAW,
+    outliers: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--outliers",
+            help="How outliers are found: [COLUMN=]iqr[:K], percentile[:LOWER:UPPER] or none; "
+            "without COLUMN= it sets every column's rule. Repeat it for more columns. "
+            "Default: iqr:1.5.",
+        ),
+    ] = None,
+) -> None:
+    """Profile a dataset's RAW, STAGING or CLEAN table, print the profile and store it.
+
+    The profile belongs to the newest run that made the table. Exit 0 when it was stored, 1 when
+    no run has made the table, 2 on invalid config or settings.
+    """
+    configure_logging()
+    settings = Settings()  # type: ignore[call-arg]
+    environment = read_environment(Path(".env"))
+    try:
+        rules = [parse_outlier_rule(text) for text in outliers or []]
+        load_source(settings.sources_dir, source, environment)
+    except (ConfigError, ValueError) as error:
+        raise _fail(str(error), 2) from error
+    per_column = {column: rule for column, rule in rules if column is not None}
+    every = [rule for column, rule in rules if column is None]
+    with PostgresLoader(settings.database_url) as loader:
+        try:
+            config = load_source(
+                settings.sources_dir, source, environment, loader.read_overrides(source)
+            )
+        except ConfigError as error:
+            raise _fail(str(error), 2) from error
+        found = next((item for item in config.datasets if item.name == dataset), None)
+        if found is None:
+            raise _fail(f"source '{source}' has no dataset '{dataset}'", 2)
+        chosen = ProfileSettings.for_dataset(found, per_column, every[-1] if every else None)
+        named = f"{source}.{dataset}"
+        with loader.stages() as stages:
+            run = stages.newest_run(stage, source, dataset)
+            if run is None:
+                raise _fail(f"no run has made the {stage.value} table of {named} yet", 1)
+            try:
+                stored = stages.profile(
+                    stage, source, dataset, run, profiled_at=datetime.now(UTC), settings=chosen
+                )
+            except LoadError as error:
+                raise _fail(str(error), 1) from error
+    result = StageProfile.model_validate(stored.profile.result)
+    typer.echo(describe(result, f"{named} at {stage.value}"))
+    by = (
+        f"ingest run {run.ingest_run_id}"
+        if run.ingest_run_id is not None
+        else f"pipeline run {run.execution_id}"
+    )
+    typer.echo(f"\nStored as profile {stored.profile_id}, of {by}.")
+    profiled = {column.name for column in result.columns}
+    for column in per_column:
+        if column not in profiled:
+            unused = f"no column '{column}' in this table: its outlier rule was not used"
+            typer.echo(unused, err=True)
 
 
 @app.command()

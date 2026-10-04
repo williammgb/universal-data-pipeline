@@ -15,6 +15,10 @@ from psycopg.types.json import Jsonb
 from udp.config.columns import is_json, json_text
 from udp.errors import LoadError
 from udp.names import Stage, stage_table
+from udp.profiling.frame import ProfileSettings
+from udp.profiling.models import ProfileComparison, StageProfile, compare_profiles
+from udp.profiling.stage import profile_stage
+from udp.profiling.table import PROFILE_ROW_LIMIT
 from udp.storage import overrides as override_store
 from udp.storage.loader import (
     INTERRUPTED,
@@ -723,6 +727,93 @@ class PostgresStages:
                 profiled_at,
             ) in rows
         ]
+
+    def read_profile(self, profile_id: int) -> StoredProfile | None:
+        row = self._conn.execute(
+            "SELECT source, dataset, stage, after_step, ingest_run_id, execution_id, table_rows, "
+            "result, profiled_at FROM platform.profiles WHERE profile_id = %s",
+            [profile_id],
+        ).fetchone()
+        if row is None:
+            return None
+        source, dataset, stage, after_step, ingest_run_id, execution_id, rows, result, at = row
+        return StoredProfile(
+            profile_id,
+            Profile(
+                source=source,
+                dataset=dataset,
+                stage=Stage(stage),
+                run=RunRef(ingest_run_id, execution_id),
+                table_rows=rows,
+                result=result,
+                profiled_at=at,
+                after_step=after_step,
+            ),
+        )
+
+    def profile(
+        self,
+        stage: Stage,
+        source: str,
+        dataset: str,
+        run: RunRef,
+        *,
+        profiled_at: datetime,
+        settings: ProfileSettings | None = None,
+        after_step: int | None = None,
+        row_limit: int = PROFILE_ROW_LIMIT,
+    ) -> StoredProfile:
+        """Profile the dataset's table at this stage and store the profile, tagged with the run.
+        Raises LoadError when the table does not exist."""
+        result = profile_stage(self._conn, stage, source, dataset, settings, row_limit)
+        profile = Profile(
+            source=source,
+            dataset=dataset,
+            stage=Stage(stage),
+            run=run,
+            table_rows=result.table_rows,
+            result=result.model_dump(mode="json"),
+            profiled_at=profiled_at,
+            after_step=after_step,
+        )
+        return StoredProfile(self.record_profile(profile), profile)
+
+    def compare_profiles(self, before: int, after: int) -> ProfileComparison:
+        """Rows, missing values, invalid values, outliers and duplicates of two stored profiles,
+        before and after. Raises LookupError when either profile is not stored."""
+        found = []
+        for profile_id in (before, after):
+            stored = self.read_profile(profile_id)
+            if stored is None:
+                raise LookupError(f"no profile {profile_id} is stored")
+            found.append(StageProfile.model_validate(stored.profile.result))
+        return compare_profiles(*found)
+
+    def newest_run(self, stage: Stage, source: str, dataset: str) -> RunRef | None:
+        """The run a profile of the stage taken now belongs to: for RAW the newest succeeded
+        ingest run that added rows to it, for STAGING the execution running over it, and for
+        CLEAN the newest execution that succeeded. None when no run has made the table."""
+        if Stage(stage) is Stage.RAW:
+            if not self.exists(Stage.RAW, source, dataset):
+                return None
+            row = self._conn.execute(
+                sql.SQL(
+                    "SELECT run_id FROM platform.pipeline_runs AS runs "
+                    "WHERE source = %s AND dataset = %s AND status = 'succeeded' "
+                    "AND EXISTS (SELECT 1 FROM {} WHERE _run_id = runs.run_id) "
+                    "ORDER BY started_at DESC LIMIT 1"
+                ).format(_stage_identifier(Stage.RAW, source, dataset)),
+                [source, dataset],
+            ).fetchone()
+            return None if row is None else RunRef(ingest_run_id=row[0])
+        row = self._conn.execute(
+            "SELECT runs.execution_id FROM platform.pipeline_executions AS runs "
+            "JOIN platform.pipelines AS pipelines USING (pipeline_id) "
+            "WHERE pipelines.source = %s AND pipelines.dataset = %s AND runs.status = %s "
+            "ORDER BY runs.started_at DESC LIMIT 1",
+            [source, dataset, "running" if Stage(stage) is Stage.STAGING else "succeeded"],
+        ).fetchone()
+        return None if row is None else RunRef(execution_id=row[0])
 
     def record_constraint_results(self, results: Sequence[ConstraintResult]) -> None:
         for result in results:
