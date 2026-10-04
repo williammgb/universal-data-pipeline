@@ -194,6 +194,15 @@ class LoadTransaction(Protocol):
         """Remove datasets.<table> if it exists."""
         ...
 
+    def drop_raw(self, source: str, dataset: str) -> None:
+        """Remove the dataset's RAW table if it exists, so the next load starts it over."""
+        ...
+
+    def append_raw(self, source: str, dataset: str) -> int:
+        """Add the rows the last load in this transaction read, platform columns included, to the
+        dataset's RAW table, creating it on first use. Returns the rows added."""
+        ...
+
     def replace_table(self, table: str, chunks: Iterable[pl.DataFrame]) -> LoadResult:
         """Replace every row of datasets.<table> with the chunks."""
         ...

@@ -13,7 +13,7 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from udp.config.columns import is_json, json_text
-from udp.errors import LoadError
+from udp.errors import LoadError, SchemaDriftError
 from udp.names import Stage, stage_table
 from udp.profiling.frame import ProfileSettings
 from udp.profiling.models import ProfileComparison, StageProfile, compare_profiles
@@ -51,8 +51,21 @@ from udp.storage.loader import (
 
 log = structlog.get_logger(step="run")
 
-_STAGE = sql.Identifier("udp_stage")
-_STAGE_ROW = sql.Identifier("_stage_row")
+_STAGE_TABLE = "udp_stage"
+_STAGE = sql.Identifier(_STAGE_TABLE)
+_STAGE_ROW_COLUMN = "_stage_row"
+_STAGE_ROW = sql.Identifier(_STAGE_ROW_COLUMN)
+_RAW_GUARD = sql.Identifier("raw_append_only")
+
+
+def _guard_raw(conn: psycopg.Connection, target: sql.Identifier) -> None:
+    """Make a new RAW table refuse every UPDATE, DELETE and TRUNCATE from now on."""
+    conn.execute(
+        sql.SQL(
+            "CREATE TRIGGER {} BEFORE UPDATE OR DELETE OR TRUNCATE ON {} "
+            "FOR EACH STATEMENT EXECUTE FUNCTION platform.refuse_raw_change()"
+        ).format(_RAW_GUARD, target)
+    )
 
 
 def _identifiers(names: Sequence[str]) -> sql.Composed:
@@ -192,6 +205,57 @@ class PostgresTransaction:
         self._conn.execute(
             sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier("datasets", table))
         )
+
+    def drop_raw(self, source: str, dataset: str) -> None:
+        # The guard refuses UPDATE, DELETE and TRUNCATE; dropping the table is how a full
+        # refresh, and nothing else, starts RAW over.
+        self._conn.execute(
+            sql.SQL("DROP TABLE IF EXISTS {}").format(_stage_identifier(Stage.RAW, source, dataset))
+        )
+
+    def append_raw(self, source: str, dataset: str) -> int:
+        # The stage table still holds the load's rows, typed as the dataset table types them, so
+        # RAW gets exactly what the load read without reading the source twice.
+        schema, table = stage_table(Stage.RAW, source, dataset)
+        target = sql.Identifier(schema, table)
+        loaded = [
+            (name, kind)
+            for name, kind in self._columns(_STAGE_TABLE, "pg_temp")
+            if name != _STAGE_ROW_COLUMN
+        ]
+        if not loaded:
+            raise LoadError(f"nothing was loaded for {source}.{dataset} to add to RAW")
+        stored = dict(self._columns(table, schema))
+        if stored:
+            for name, kind in loaded:
+                if name not in stored:
+                    self._conn.execute(
+                        sql.SQL("ALTER TABLE {} ADD COLUMN {} {}").format(
+                            target, sql.Identifier(name), sql.SQL(kind)
+                        )
+                    )
+                elif kind != stored[name]:
+                    raise SchemaDriftError(
+                        f"column '{name}' of {schema}.{table} is {stored[name]} but this run "
+                        f"loaded it as {kind}; RAW keeps what was ingested, so run with "
+                        "--full-refresh to start it over"
+                    )
+        else:
+            definition = [
+                sql.SQL("{} {}").format(sql.Identifier(name), sql.SQL(kind))
+                for name, kind in loaded
+            ]
+            self._conn.execute(
+                sql.SQL("CREATE TABLE {} ({})").format(target, sql.SQL(", ").join(definition))
+            )
+            _guard_raw(self._conn, target)
+        names = [name for name, _ in loaded]
+        inserted = self._conn.execute(
+            sql.SQL("INSERT INTO {} ({}) SELECT {} FROM {}").format(
+                target, _identifiers(names), _identifiers(names), _STAGE
+            )
+        )
+        return inserted.rowcount
 
     def read_state(self, source: str, dataset: str) -> DatasetState | None:
         row = self._conn.execute(
@@ -360,9 +424,6 @@ class PostgresTransaction:
             raise LoadError(f"run {run_id} is not a running run")
 
 
-_RAW_GUARD = sql.Identifier("raw_append_only")
-
-
 def _stage_identifier(stage: Stage, source: str, dataset: str) -> sql.Identifier:
     return sql.Identifier(*stage_table(stage, source, dataset))
 
@@ -408,12 +469,7 @@ class PostgresStages:
             raise LoadError(f"rows for {schema}.{table} must say which run ingested them (_run_id)")
         target = sql.Identifier(schema, table)
         if created:
-            self._conn.execute(
-                sql.SQL(
-                    "CREATE TRIGGER {} BEFORE UPDATE OR DELETE OR TRUNCATE ON {} "
-                    "FOR EACH STATEMENT EXECUTE FUNCTION platform.refuse_raw_change()"
-                ).format(_RAW_GUARD, target)
-            )
+            _guard_raw(self._conn, target)
         inserted = self._conn.execute(
             sql.SQL("INSERT INTO {} ({}) SELECT {} FROM {}").format(
                 target, _identifiers(names), _identifiers(names), _STAGE

@@ -653,6 +653,50 @@ def test_the_profile_command_refuses_a_stage_no_run_has_made(
     assert f"source '{source}' has no dataset 'lost'" in unknown.output
 
 
+@pytest.mark.db
+def test_the_profile_command_profiles_the_raw_table_the_run_command_made(
+    source: str, tmp_path: Path
+) -> None:
+    sources_dir = tmp_path / "sources"
+    _write_source(sources_dir, source)
+    orders = sources_dir / source / "orders.csv"
+    env = {"UDP_SOURCES_DIR": str(sources_dir)}
+    runner = CliRunner()
+    raw = sql.Identifier(*stage_table(Stage.RAW, source, "orders"))
+
+    def run(rows: str, *options: str) -> list[tuple[str, int]]:
+        """Load the rows; returns RAW's row count per ingest run, oldest first."""
+        orders.write_text(f"id,name,amount,day\n{rows}", encoding="utf-8")
+        loaded = runner.invoke(app, ["run", source, *options], env=env)
+        assert loaded.exit_code == 0, loaded.output
+        with psycopg.connect(Settings().database_url) as conn:  # type: ignore[call-arg]
+            counted = conn.execute(
+                sql.SQL(
+                    "SELECT _run_id::text, count(*) FROM {} GROUP BY _run_id "
+                    "ORDER BY min(_loaded_at)"
+                ).format(raw)
+            ).fetchall()
+        return [(run_id, count) for run_id, count in counted]
+
+    (first,) = run("1,ada,10,2024-01-01\n2,bo,11,2024-01-02\n")
+    profiled = runner.invoke(app, ["profile", source, "orders"], env=env)
+
+    assert profiled.exit_code == 0, profiled.output
+    lines = profiled.output.splitlines()
+    assert f"{source}.orders at raw: 2 rows, every one profiled" in lines
+    assert lines[-1].endswith(f"of ingest run {first[0]}.")
+    assert first[1] == 2
+
+    # A merge reads from the saved watermark, id 2, again: RAW gains ids 2 and 3 and keeps the
+    # first run's rows as they were.
+    kept, added = run("1,ada,10,2024-01-01\n2,bo,12,2024-01-02\n3,cy,13,2024-01-03\n")
+    assert kept == first
+    assert added[1] == 2
+
+    (refreshed,) = run("4,di,14,2024-01-04\n", "--full-refresh")
+    assert refreshed[1] == 1
+
+
 def test_the_profile_command_refuses_a_bad_outlier_rule_before_connecting(
     tmp_path: Path,
 ) -> None:
