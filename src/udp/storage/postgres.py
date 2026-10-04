@@ -602,13 +602,15 @@ class PostgresStages:
             raise LoadError(f"execution {execution_id} ran no pipeline with a step {step.position}")
         written = self._conn.execute(
             "INSERT INTO platform.step_executions (execution_id, position, status, started_at, "
-            "ended_at, rows_in, rows_out, values_changed, error_class, error_message) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ended_at, rows_in, rows_out, values_changed, error_class, error_message, "
+            "script_sha256, output, error_line) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
             "ON CONFLICT (execution_id, position) DO UPDATE SET status = EXCLUDED.status, "
             "started_at = EXCLUDED.started_at, ended_at = EXCLUDED.ended_at, "
             "rows_in = EXCLUDED.rows_in, rows_out = EXCLUDED.rows_out, "
             "values_changed = EXCLUDED.values_changed, error_class = EXCLUDED.error_class, "
-            "error_message = EXCLUDED.error_message "
+            "error_message = EXCLUDED.error_message, script_sha256 = EXCLUDED.script_sha256, "
+            "output = EXCLUDED.output, error_line = EXCLUDED.error_line "
             "WHERE step_executions.status = 'running'",
             [
                 execution_id,
@@ -621,6 +623,9 @@ class PostgresStages:
                 step.values_changed,
                 step.error_class,
                 step.error_message,
+                step.script_sha256,
+                step.output,
+                step.error_line,
             ],
         )
         if written.rowcount != 1:
@@ -693,7 +698,8 @@ class PostgresStages:
             return None
         steps = self._conn.execute(
             "SELECT position, status, started_at, ended_at, rows_in, rows_out, values_changed, "
-            "error_class, error_message FROM platform.step_executions "
+            "error_class, error_message, script_sha256, output, error_line "
+            "FROM platform.step_executions "
             "WHERE execution_id = %s ORDER BY position",
             [execution_id],
         ).fetchall()

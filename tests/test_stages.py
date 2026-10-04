@@ -294,6 +294,34 @@ def test_a_step_record_ends_once_and_must_be_a_step_of_the_pipeline(shop: Shop) 
         stages.record_step(execution_id, StepRun(3, "running", NOW))
 
 
+def test_a_python_step_record_keeps_the_scripts_hash_output_and_failing_line(shop: Shop) -> None:
+    shop.ingest()
+    execution_id, _ = shop.start()
+    failed = StepRun(
+        1,
+        "failed",
+        NOW,
+        NOW + timedelta(seconds=2),
+        rows_in=4,
+        rows_out=4,
+        values_changed=0,
+        error_class="StepFailed",
+        error_message="scripts/custom/x.py: transform failed: KeyError: 'id' (line 7)",
+        script_sha256="ab" * 32,
+        output="4 rows came in\nlooking up ids\n",
+        error_line=7,
+    )
+    with shop.stages() as stages:
+        stages.record_step(execution_id, StepRun(1, "running", NOW))
+        stages.record_step(execution_id, failed)
+        execution = stages.read_execution(execution_id)
+
+    assert execution is not None
+    assert execution.steps == (failed,)
+    with pytest.raises(errors.CheckViolation), shop.stages() as stages:
+        stages.record_step(execution_id, StepRun(2, "running", NOW, script_sha256="not a hash"))
+
+
 def test_editing_a_pipeline_adds_a_version_and_keeps_the_old_one(shop: Shop) -> None:
     def save(stages: PostgresStages, steps: tuple[StepDefinition, ...]) -> Any:
         return stages.save_pipeline(
