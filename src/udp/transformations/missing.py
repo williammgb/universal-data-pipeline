@@ -5,6 +5,7 @@ rounded to the nearest whole number, so the column keeps its type. A column with
 no mean, median or mode: the step fails and the nulls stay — it never writes a zero.
 """
 
+import math
 from typing import Literal
 
 import polars as pl
@@ -19,6 +20,22 @@ from udp.transformations.base import (
     require_columns,
 )
 from udp.transformations.registry import register
+
+
+def _fits(value: bool | int | float | str | None, dtype: pl.DataType) -> bool:
+    """The value is of the column's kind and survives conversion to its type unchanged: 1.5
+    does not fit an integer column, nor True or "7" a number column."""
+    if isinstance(value, bool) or dtype == pl.Boolean:
+        return isinstance(value, bool) and dtype == pl.Boolean
+    if dtype.is_numeric() and isinstance(value, str):
+        return False
+    if dtype == pl.String:
+        return isinstance(value, str)
+    try:
+        converted = pl.Series([value]).cast(dtype, strict=True)
+    except pl.exceptions.PolarsError:
+        return False
+    return not dtype.is_numeric() or bool(converted[0] == value)
 
 
 @register
@@ -62,13 +79,10 @@ class FillMissing(Transformation):
                     "columns",
                     f"column '{name}' holds {dtype}, and a {self.method} needs a number column",
                 )
-            if self.method == "value":
-                try:
-                    pl.Series([self.value]).cast(dtype, strict=True)
-                except pl.exceptions.PolarsError:
-                    raise StepConfigError(
-                        "value", f"{self.value!r} does not fit column '{name}', which holds {dtype}"
-                    ) from None
+            if self.method == "value" and not _fits(self.value, dtype):
+                raise StepConfigError(
+                    "value", f"{self.value!r} does not fit column '{name}', which holds {dtype}"
+                )
         return schema
 
     def _fill(self, series: pl.Series) -> pl.Series:
@@ -84,7 +98,7 @@ class FillMissing(Transformation):
             return present.mode().sort().head(1)
         found = present.mean() if self.method == "mean" else present.median()
         if series.dtype.is_integer():
-            found = round(float(found))  # type: ignore[arg-type]
+            found = math.floor(float(found) + 0.5)  # type: ignore[arg-type]
         return pl.Series([found]).cast(series.dtype)
 
     def apply(self, frame: pl.DataFrame, context: StepContext) -> Applied:

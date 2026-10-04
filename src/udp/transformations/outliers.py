@@ -1,7 +1,7 @@
 """Outliers: values below a lower or above an upper percentile of a number column.
 
 The bounds are taken over the whole frame with nearest interpolation, so each is a value that is
-in the data and a capped column keeps its type. Nulls are never outliers. `flag` adds a
+in the data and a capped column keeps its type. Nulls and NaNs are never outliers. `flag` adds a
 `<column>_outlier` column, `cap` moves each outlier to the bound it passed, `remove` drops its
 row; values changed is the number of outliers flagged or capped.
 """
@@ -54,6 +54,8 @@ class Outliers(Transformation):
 
     def apply(self, frame: pl.DataFrame, context: StepContext) -> Applied:
         series = frame[self.column]
+        if series.dtype.is_float():
+            series = series.fill_nan(None)
         lower = series.quantile(self.lower_percentile / 100, interpolation="nearest")
         upper = series.quantile(self.upper_percentile / 100, interpolation="nearest")
         if lower is None or upper is None:

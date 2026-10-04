@@ -101,6 +101,12 @@ def test_fill_with_the_mode_takes_the_most_common_value_and_the_smallest_on_a_ti
     assert filled["n"].to_list() == [5, 2, 2, 5, 2]
 
 
+def test_a_whole_number_fill_rounds_a_half_up() -> None:
+    frame = pl.DataFrame({"n": [2, 3, None]})
+    filled, _ = _run({"type": "fill_missing", "columns": ["n"], "method": "mean"}, frame)
+    assert filled["n"].to_list() == [2, 3, 3]
+
+
 def test_mean_uses_the_whole_frame_not_a_chunk_of_it() -> None:
     # A V1 load reads 100,000 rows at a time; the first chunk's mean here would be 0.
     values = [0.0] * 100_000 + [10.0] * 100_000 + [None]
@@ -197,6 +203,15 @@ def test_removing_outliers_drops_their_rows_and_keeps_nulls() -> None:
     frame, result = _run({"type": "outliers", "column": "v", "action": "remove", **BOUNDS}, TEN)
     assert frame["v"].to_list() == [2, 3, 4, 5, 6, 7, 8, 9, None]
     assert (result.rows_in, result.rows_out) == (11, 9)
+
+
+def test_a_nan_is_never_an_outlier_and_never_a_bound() -> None:
+    # Nearest percentiles of 1, 2, 3, 100: the 25th is 2 and the 75th is 3.
+    frame = pl.DataFrame({"v": [1.0, 2.0, 3.0, float("nan"), 100.0]})
+    quartiles = {"lower_percentile": 25, "upper_percentile": 75}
+    capped, result = _run({"type": "outliers", "column": "v", "action": "cap", **quartiles}, frame)
+    assert capped["v"].to_list()[:3] + capped["v"].to_list()[4:] == [2.0, 2.0, 3.0, 3.0]
+    assert result.message == "2 outliers outside 2.0 to 3.0"
 
 
 def test_flagging_outliers_adds_a_column_and_changes_no_value() -> None:
@@ -379,6 +394,23 @@ def test_the_standard_types_are_registered() -> None:
         (
             {"type": "sharpen"},
             "step 1: type: unknown transformation type 'sharpen'",
+        ),
+        # A value that converting would change or reinterpret is refused, never truncated.
+        (
+            {"type": "fill_missing", "columns": ["age"], "method": "value", "value": 1.5},
+            "step 1 (fill_missing): value: 1.5 does not fit column 'age', which holds Int64",
+        ),
+        (
+            {"type": "fill_missing", "columns": ["age"], "method": "value", "value": True},
+            "step 1 (fill_missing): value: True does not fit column 'age', which holds Int64",
+        ),
+        (
+            {"type": "fill_missing", "columns": ["score"], "method": "value", "value": "7"},
+            "step 1 (fill_missing): value: '7' does not fit column 'score', which holds Float64",
+        ),
+        (
+            {"type": "fill_missing", "columns": ["name"], "method": "value", "value": 7},
+            "step 1 (fill_missing): value: 7 does not fit column 'name', which holds String",
         ),
     ],
 )
