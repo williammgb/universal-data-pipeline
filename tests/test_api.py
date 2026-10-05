@@ -24,8 +24,10 @@ from psycopg import sql
 
 from udp.api.app import CHECKS_LIMIT, RUNS_QUEUED, create_app
 from udp.api.catalog import PostgresCatalog, json_value
+from udp.config.pipeline import load_pipeline
 from udp.config.source import load_source
 from udp.errors import ConfigError
+from udp.pipeline.execution import start_pipeline
 from udp.pipeline.runner import run_source
 from udp.settings import Settings
 from udp.storage.loader import ConfigCopy, DatasetState, RunFailure, RunStart
@@ -121,12 +123,15 @@ def test_the_openapi_document_lists_every_route_and_the_docs_page_loads() -> Non
         "/api/datasets/{source}/{dataset}/quality",
         "/api/datasets/{source}/{dataset}/rows",
         "/api/health",
+        "/api/pipeline-runs/{execution_id}",
+        "/api/pipelines/{name}/runs",
         "/api/runs",
         "/api/runs/{run_id}",
         "/api/sources",
         "/api/sources/{source}",
     ]
     assert set(paths["/api/runs"]) == {"get", "post"}
+    assert set(paths["/api/pipelines/{name}/runs"]) == {"post"}
     assert set(paths["/api/datasets/{source}/{dataset}/config"]) == {"get", "put"}
     assert client.get("/api/docs").status_code == 200
 
@@ -298,6 +303,103 @@ def test_a_run_request_starts_the_run_in_the_background_as_a_manual_run() -> Non
     assert (record["status"], record["trigger"]) == ("succeeded", "manual")
     assert record["started_at"] >= datetime.fromisoformat(accepted["requested_at"])
     assert ("demo_csv", "customers") in loader.datasets
+
+
+# --- pipeline runs -------------------------------------------------------------------------------
+
+
+def _loaded_demo() -> MemoryLoader:
+    """A store whose RAW holds demo_csv, as `udp run demo_csv` leaves it."""
+    loader = MemoryLoader()
+    run_source("demo_csv", load_source(SOURCES, "demo_csv", {}), SOURCES, loader)
+    return loader
+
+
+def test_a_pipeline_run_started_over_the_api_can_be_read_back_by_its_id() -> None:
+    loader = _loaded_demo()
+    client, app = _client(loader=loader)
+
+    response = client.post("/api/pipelines/demo_csv_customers/runs")
+    app.state.runs.shutdown(wait=True)
+
+    assert response.status_code == 202
+    accepted = response.json()
+    assert (accepted["pipeline"], accepted["version"]) == ("demo_csv_customers", 1)
+    assert (accepted["source"], accepted["dataset"]) == ("demo_csv", "customers")
+    record = client.get(f"/api/pipeline-runs/{accepted['execution_id']}")
+    assert record.status_code == 200
+    run = record.json()
+    assert (run["status"], run["version"], run["rows_in"], run["rows_out"]) == (
+        "succeeded",
+        1,
+        20,
+        20,
+    )
+    assert [step["type"] for step in run["steps"]] == ["normalize_values", "fill_missing"]
+    assert run["steps"][1]["values_changed"] == 1
+    assert [profile["stage"] for profile in run["profiles"]] == ["raw", "clean"]
+    assert all(check["passed"] for check in run["validation"])
+    assert [node["kind"] for node in run["lineage"]] == ["source", "raw", "step", "step", "clean"]
+    assert run["lineage"][0]["ingest_run_id"] == run["input_run_id"] is not None
+    assert ".".join(["clean", "demo_csv__customers"]) in loader.clean
+
+
+def test_a_pipeline_run_of_a_dataset_already_being_prepared_is_refused_naming_the_run() -> None:
+    loader = _loaded_demo()
+    pipeline = load_pipeline(SOURCES, "demo_csv_customers", {})
+    going = start_pipeline(loader, pipeline)
+    client, _ = _client(loader=loader)
+
+    refused = client.post("/api/pipelines/demo_csv_customers/runs")
+
+    assert refused.status_code == 409
+    assert str(going.execution_id) in refused.json()["detail"]
+    assert client.get(f"/api/pipeline-runs/{going.execution_id}").json()["status"] == "running"
+
+
+@pytest.mark.parametrize(
+    ("path", "status", "detail"),
+    [
+        ("/api/pipelines/nope/runs", 404, "pipeline 'nope' not found"),
+        ("/api/pipelines/Not-A-Name/runs", 404, "pipeline 'Not-A-Name' not found"),
+    ],
+)
+def test_a_pipeline_run_that_cannot_start_says_why(path: str, status: int, detail: str) -> None:
+    client, _ = _client()
+
+    response = client.post(path)
+
+    assert (response.status_code, response.json()["detail"]) == (status, detail)
+
+
+def test_an_invalid_pipeline_file_is_refused_naming_the_step(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    (sources / "demo_csv").mkdir(parents=True)
+    (sources / "demo_csv" / "source.yaml").write_text(
+        (SOURCES / "demo_csv" / "source.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (tmp_path / "pipelines").mkdir()
+    (tmp_path / "pipelines" / "bad.yaml").write_text(
+        "source: demo_csv\ndataset: customers\nsteps:\n  - type: fill_missing\n    columns: [a]\n",
+        encoding="utf-8",
+    )
+    client, _ = _client(sources=sources)
+
+    response = client.post("/api/pipelines/bad/runs")
+
+    assert response.status_code == 422
+    assert "step 1 (fill_missing): method: Field required" in response.json()["detail"]
+
+
+def test_an_unknown_pipeline_run_is_not_found() -> None:
+    client, _ = _client()
+
+    response = client.get("/api/pipeline-runs/01a0a3de-9cb0-73ec-be37-1caa01588b64")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == (
+        "pipeline run 01a0a3de-9cb0-73ec-be37-1caa01588b64 not found"
+    )
 
 
 # --- serving the built dashboard -----------------------------------------------------------------
@@ -827,6 +929,62 @@ def test_a_run_requested_over_http_is_recorded_as_a_manual_run(tmp_path: Path) -
         "/api/runs", params={"source": source, "since": accepted["requested_at"]}
     ).json()["runs"]
     assert [(run["status"], run["trigger"]) for run in runs] == [("succeeded", "manual")]
+
+
+@pytest.mark.db
+def test_a_pipeline_run_requested_over_http_runs_against_postgres_and_reads_back(
+    tmp_path: Path,
+) -> None:
+    # The route opens a real loader in the request, takes the dataset's lock on its connection,
+    # and hands both to the background thread that carries the run out and frees the lock.
+    source = _prefix()
+    sources = tmp_path / "sources"
+    (sources / source).mkdir(parents=True)
+    (sources / source / "source.yaml").write_text(
+        "connection:\n  type: csv\ndatasets:\n  - name: items\n    path: items.csv\n",
+        encoding="utf-8",
+    )
+    (sources / source / "items.csv").write_text("id,name\n1, ada \n2,bo\n", encoding="utf-8")
+    (tmp_path / "pipelines").mkdir()
+    (tmp_path / "pipelines" / f"{source}_items.yaml").write_text(
+        f"source: {source}\ndataset: items\n"
+        "constraints:\n  - constraint: not_null\n    column: id\n    critical: true\n"
+        "steps:\n  - type: normalize_values\n    columns: [name]\n    trim: true\n",
+        encoding="utf-8",
+    )
+    with PostgresLoader(_url()) as loader:
+        (ingest,) = run_source(source, load_source(sources, source, {}), sources, loader)
+    assert ingest.status == "succeeded"
+    client, app = _db_client(sources)
+
+    accepted = client.post(f"/api/pipelines/{source}_items/runs")
+    app.state.runs.shutdown(wait=True)
+
+    assert accepted.status_code == 202, accepted.text
+    execution_id = accepted.json()["execution_id"]
+    run = client.get(f"/api/pipeline-runs/{execution_id}").json()
+    assert (run["status"], run["rows_in"], run["rows_out"], run["error"]) == (
+        "succeeded",
+        2,
+        2,
+        None,
+    )
+    assert run["input_run_id"] == str(ingest.run_id)
+    assert [(node["kind"], node["ingest_run_id"] is not None) for node in run["lineage"]] == [
+        ("source", True),
+        ("raw", True),
+        ("step", False),
+        ("clean", False),
+    ]
+    assert [check["passed"] for check in run["validation"]] == [True]
+    with psycopg.connect(_url()) as conn:
+        clean = sql.Identifier("clean", f"{source}__items")
+        rows = conn.execute(sql.SQL("SELECT id, name FROM {} ORDER BY id").format(clean))
+        assert rows.fetchall() == [(1, "ada"), (2, "bo")]
+    # The background thread freed the dataset's lock: another connection can take it.
+    with PostgresLoader(_url()) as other:
+        assert other.lock_dataset(source, "items")
+        other.unlock_dataset(source, "items")
 
 
 SEARCHED_DATASETS = ["orders", "order_lines", "ordersx", "a_b", "ab"]

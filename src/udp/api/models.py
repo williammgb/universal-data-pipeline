@@ -6,6 +6,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+# So is a pipeline run's record, with the engine that writes it.
+from udp.pipeline.execution import PipelineRun
+
 # The profile's models live with the profiling engine; the API returns them as they are.
 from udp.profiling.models import (
     ColumnProfile,
@@ -15,7 +18,14 @@ from udp.profiling.models import (
     ValueCount,
 )
 
-__all__ = ["ColumnProfile", "DatasetProfile", "JsonValue", "ProfileKind", "ValueCount"]
+__all__ = [
+    "ColumnProfile",
+    "DatasetProfile",
+    "JsonValue",
+    "PipelineRun",
+    "ProfileKind",
+    "ValueCount",
+]
 
 # A value in a table's row: a jsonb column's value arrives as the JSON it holds.
 CellValue = JsonValue | dict[str, Any] | list[Any]
@@ -199,4 +209,15 @@ class RunRequest(BaseModel):
 class RunAccepted(BaseModel):
     source: str
     datasets: list[str]
+    requested_at: datetime
+
+
+class PipelineRunAccepted(BaseModel):
+    """A pipeline run recorded as running; `GET /api/pipeline-runs/{execution_id}` follows it."""
+
+    execution_id: UUID
+    pipeline: str
+    version: int
+    source: str
+    dataset: str
     requested_at: datetime

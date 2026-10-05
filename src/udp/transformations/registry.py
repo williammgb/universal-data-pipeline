@@ -37,24 +37,32 @@ def load_steps(definitions: Sequence[Mapping[str, Any]], schema: pl.Schema) -> l
     """
     steps: list[Transformation] = []
     for position, definition in enumerate(definitions, 1):
-        name = definition.get("type")
-        if not isinstance(name, str) or name not in TRANSFORMATIONS:
-            known = ", ".join(sorted(TRANSFORMATIONS))
-            raise ConfigError(
-                f"step {position}: type: unknown transformation type {name!r}; known: {known}"
-            )
-        label = f"step {position} ({name})"
-        settings = {key: value for key, value in definition.items() if key != "type"}
-        try:
-            step = TRANSFORMATIONS[name].model_validate(settings)
-        except pydantic.ValidationError as error:
-            problems = "; ".join(
-                f"{_field(problem['loc'])}: {problem['msg']}" for problem in error.errors()
-            )
-            raise ConfigError(f"{label}: {problems}") from None
+        step = parse_step(position, definition)
         try:
             schema = step.check(schema)
         except StepConfigError as error:
+            label = f"step {position} ({step.type})"
             raise ConfigError(f"{label}: {error.field}: {error.message}") from None
         steps.append(step)
     return steps
+
+
+def parse_step(position: int, definition: Mapping[str, Any]) -> Transformation:
+    """One declared step with its settings validated, before any data is known.
+
+    Raises ConfigError naming the step, its type and the setting that is wrong.
+    """
+    name = definition.get("type")
+    if not isinstance(name, str) or name not in TRANSFORMATIONS:
+        known = ", ".join(sorted(TRANSFORMATIONS))
+        raise ConfigError(
+            f"step {position}: type: unknown transformation type {name!r}; known: {known}"
+        )
+    settings = {key: value for key, value in definition.items() if key != "type"}
+    try:
+        return TRANSFORMATIONS[name].model_validate(settings)
+    except pydantic.ValidationError as error:
+        problems = "; ".join(
+            f"{_field(problem['loc'])}: {problem['msg']}" for problem in error.errors()
+        )
+        raise ConfigError(f"step {position} ({name}): {problems}") from None

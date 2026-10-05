@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
+from uuid import UUID
 
 import psycopg
 import structlog
@@ -17,12 +18,14 @@ from udp import __version__
 from udp.api.app import create_app
 from udp.api.auth import parse_keys
 from udp.api.catalog import PostgresCatalog
+from udp.config.pipeline import load_pipeline, read_pipeline_file
 from udp.config.secrets import read_environment
 from udp.config.source import SourceConfig, load_source
 from udp.errors import ConfigError, LoadError
 from udp.log import configure_logging
 from udp.names import Stage
 from udp.orchestration.scheduler import serve
+from udp.pipeline.execution import PipelineBusy, describe_run, read_run, run_pipeline
 from udp.pipeline.runner import run_source
 from udp.profiling.frame import ProfileSettings, parse_outlier_rule
 from udp.profiling.models import StageProfile
@@ -165,6 +168,65 @@ def profile(
         if column not in profiled:
             unused = f"no column '{column}' in this table: its outlier rule was not used"
             typer.echo(unused, err=True)
+
+
+pipeline_app = typer.Typer(
+    no_args_is_help=True, help="Run a pipeline over its dataset, and read its runs back."
+)
+app.add_typer(pipeline_app, name="pipeline")
+
+
+@pipeline_app.command("run")
+def pipeline_run(
+    name: Annotated[str, typer.Argument(help="File name under pipelines/, without .yaml.")],
+) -> None:
+    """Run pipelines/<name>.yaml: its dataset's rows from RAW through each step to CLEAN.
+
+    Exit 0 when the run succeeded, 1 when it failed or another run holds the dataset, 2 on
+    invalid config.
+    """
+    configure_logging()
+    settings = Settings()  # type: ignore[call-arg]
+    environment = read_environment(Path(".env"))
+    try:
+        written = read_pipeline_file(settings.sources_dir, name)
+        load_source(settings.sources_dir, written.source, environment)
+    except ConfigError as error:
+        raise _fail(str(error), 2) from error
+    with PostgresLoader(settings.database_url) as loader:
+        try:
+            pipeline = load_pipeline(
+                settings.sources_dir, name, environment, loader.read_overrides(written.source)
+            )
+        except ConfigError as error:
+            raise _fail(str(error), 2) from error
+        try:
+            record = run_pipeline(loader, pipeline)
+        except PipelineBusy as busy:
+            raise _fail(str(busy), 1) from busy
+    typer.echo(describe_run(record))
+    if record.status != "succeeded":
+        raise typer.Exit(1)
+
+
+@pipeline_app.command("status")
+def pipeline_status(
+    run_id: Annotated[UUID, typer.Argument(help="The run's id, as `udp pipeline run` printed.")],
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print the whole record as JSON.")
+    ] = False,
+) -> None:
+    """Print a pipeline run's record: its status, steps, constraints and profiles.
+
+    Exit 0 when the run is found, 1 when there is no such run.
+    """
+    configure_logging()
+    settings = Settings()  # type: ignore[call-arg]
+    with PostgresLoader(settings.database_url) as loader, loader.stages() as stages:
+        record = read_run(stages, run_id)
+    if record is None:
+        raise _fail(f"no pipeline run {run_id}", 1)
+    typer.echo(record.model_dump_json(indent=2) if as_json else describe_run(record))
 
 
 @app.command()
