@@ -31,6 +31,7 @@ from udp.storage.loader import (
     DatasetState,
     Execution,
     ExecutionStart,
+    ExecutionSummary,
     LineageNode,
     LoadResult,
     PipelineVersion,
@@ -585,6 +586,18 @@ class PostgresStages:
             [source, dataset],
         ).fetchall()
         return [row[0] for row in rows]
+
+    def executions(self, source: str, dataset: str, limit: int) -> list[ExecutionSummary]:
+        """The dataset's executions of any pipeline and status, newest first, at most `limit`."""
+        rows = self._conn.execute(
+            "SELECT runs.execution_id, pipelines.name, runs.version, runs.status, runs.started_at "
+            "FROM platform.pipeline_executions AS runs "
+            "JOIN platform.pipelines AS pipelines USING (pipeline_id) "
+            "WHERE pipelines.source = %s AND pipelines.dataset = %s "
+            "ORDER BY runs.started_at DESC, runs.execution_id DESC LIMIT %s",
+            [source, dataset, limit],
+        ).fetchall()
+        return [ExecutionSummary(*row) for row in rows]
 
     def read_pipeline_version(self, pipeline_id: int, version: int) -> PipelineVersion | None:
         """One version of a pipeline, by the pipeline's id."""

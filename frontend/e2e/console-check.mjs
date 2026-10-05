@@ -1,5 +1,7 @@
 // Opens every dashboard page in headless chromium and fails when any page logs a console error,
 // throws, has a request fail, or never finishes loading. Usage: node console-check.mjs <base url>
+import { mkdirSync } from "node:fs";
+
 import { chromium } from "playwright";
 
 const base = (process.argv[2] ?? "").replace(/\/$/, "");
@@ -28,6 +30,7 @@ const addresses = [
   `${dataset}?tab=quality`,
   `${dataset}?tab=runs`,
   `${dataset}?tab=config`,
+  `${dataset}?tab=lineage`,
   "/runs",
   "/runs?status=succeeded",
   `/runs/${runId}`,
@@ -36,6 +39,21 @@ const addresses = [
   "/pipeline",
   "/pipeline?source=demo_csv&dataset=customers",
 ];
+
+// With UDP_SCREENS=<folder>, each page is also saved as a picture at a desktop and a phone width.
+const screens = process.env.UDP_SCREENS ?? "";
+if (screens) mkdirSync(screens, { recursive: true });
+
+async function shoot(page, address) {
+  const name = address.replace(/[^a-z0-9_]+/gi, "-").replace(/^-+|-+$/g, "") || "home";
+  for (const [width, label] of [
+    [1280, "wide"],
+    [380, "narrow"],
+  ]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.screenshot({ path: `${screens}/${name}-${label}.png`, fullPage: true });
+  }
+}
 
 const browser = await chromium.launch();
 let failed = false;
@@ -124,6 +142,7 @@ try {
       await page.goto(base + address, { waitUntil: "networkidle", timeout: 30_000 });
       await page.locator("main h1").first().waitFor({ timeout: 10_000 });
       if (await page.getByText("Loading…").count()) problems.push("still loading");
+      if (screens) await shoot(page, address);
     } catch (error) {
       problems.push(`did not load: ${error.message.split("\n")[0]}`);
     }
