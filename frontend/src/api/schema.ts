@@ -124,6 +124,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/pipeline-runs/{execution_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pipeline Run
+         * @description A pipeline run's record: its steps, constraints, profiles and lineage so far.
+         */
+        get: operations["pipeline_run_api_pipeline_runs__execution_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/pipelines/{name}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Pipeline Run
+         * @description Start a run of pipelines/<name>.yaml. It is recorded as running before this answers,
+         *     so its id can be followed at once; a dataset another run holds is refused (409).
+         */
+        post: operations["start_pipeline_run_api_pipelines__name__runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs": {
         parameters: {
             query?: never;
@@ -420,6 +461,135 @@ export interface components {
              */
             status: "ok" | "unavailable";
         };
+        /**
+         * LineageRecord
+         * @description One place the data passed through, in order; a step with the settings it ran with.
+         */
+        LineageRecord: {
+            /** Configuration */
+            configuration?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "source" | "raw" | "step" | "clean";
+            /** Name */
+            name: string;
+            /** Step Position */
+            step_position?: number | null;
+        };
+        /**
+         * PipelineRun
+         * @description One run of one pipeline version: what ran, over what, how it ended, and what it measured.
+         *
+         *     `failed_step` is the step it failed at; a run that failed elsewhere — its input, validation
+         *     or publishing — has none, and `error` says where.
+         */
+        PipelineRun: {
+            /** Dataset */
+            dataset: string;
+            /** Ended At */
+            ended_at: string | null;
+            /** Error */
+            error: string | null;
+            /** Error Class */
+            error_class: string | null;
+            /**
+             * Execution Id
+             * Format: uuid
+             */
+            execution_id: string;
+            /** Failed Step */
+            failed_step: number | null;
+            /** Lineage */
+            lineage: components["schemas"]["LineageRecord"][];
+            /** Pipeline */
+            pipeline: string;
+            /** Pipeline Id */
+            pipeline_id: number;
+            /** Profiles */
+            profiles: components["schemas"]["ProfileRecord"][];
+            /** Rows In */
+            rows_in: number | null;
+            /** Rows Out */
+            rows_out: number | null;
+            /** Source */
+            source: string;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "succeeded" | "failed";
+            /** Steps */
+            steps: components["schemas"]["StepRecord"][];
+            /** Trigger */
+            trigger: string;
+            /** Validation */
+            validation: components["schemas"]["ValidationRecord"][];
+            /** Version */
+            version: number;
+        };
+        /**
+         * PipelineRunAccepted
+         * @description A pipeline run recorded as running; `GET /api/pipeline-runs/{execution_id}` follows it.
+         */
+        PipelineRunAccepted: {
+            /** Dataset */
+            dataset: string;
+            /**
+             * Execution Id
+             * Format: uuid
+             */
+            execution_id: string;
+            /** Pipeline */
+            pipeline: string;
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            requested_at: string;
+            /** Source */
+            source: string;
+            /** Version */
+            version: number;
+        };
+        /**
+         * ProfileRecord
+         * @description One profile the run took: where, and its totals. The whole profile is stored by id.
+         */
+        ProfileRecord: {
+            /** After Step */
+            after_step: number | null;
+            /** Duplicates */
+            duplicates: number;
+            /** Invalid Values */
+            invalid_values: number;
+            /** Missing Values */
+            missing_values: number;
+            /** Outliers */
+            outliers: number;
+            /** Profile Id */
+            profile_id: number;
+            /**
+             * Profiled At
+             * Format: date-time
+             */
+            profiled_at: string;
+            /**
+             * Stage
+             * @enum {string}
+             */
+            stage: "raw" | "staging" | "clean";
+            /** Table Rows */
+            table_rows: number;
+        };
         /** QualityReport */
         QualityReport: {
             /** Results */
@@ -660,6 +830,45 @@ export interface components {
             /** Source */
             source: string;
         };
+        /**
+         * StepRecord
+         * @description One step of the version the run ran: its settings, and what it did in this run.
+         */
+        StepRecord: {
+            /** Configuration */
+            configuration: {
+                [key: string]: unknown;
+            };
+            /** Duration Seconds */
+            duration_seconds?: number | null;
+            /** Ended At */
+            ended_at?: string | null;
+            /** Error */
+            error?: string | null;
+            /** Error Line */
+            error_line?: number | null;
+            /** Output */
+            output?: string | null;
+            /** Position */
+            position: number;
+            /** Rows In */
+            rows_in?: number | null;
+            /** Rows Out */
+            rows_out?: number | null;
+            /** Script Sha256 */
+            script_sha256?: string | null;
+            /** Started At */
+            started_at?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "not_run" | "running" | "succeeded" | "failed";
+            /** Type */
+            type: string;
+            /** Values Changed */
+            values_changed?: number | null;
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -672,6 +881,28 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /**
+         * ValidationRecord
+         * @description One constraint checked against the result before it became CLEAN.
+         */
+        ValidationRecord: {
+            /** Columns */
+            columns: string[];
+            /** Constraint */
+            constraint: string;
+            /** Critical */
+            critical: boolean;
+            /** Failing Rows */
+            failing_rows: number | null;
+            /** Failing Values */
+            failing_values: number | null;
+            /** Message */
+            message: string;
+            /** Passed */
+            passed: boolean;
+            /** Position */
+            position: number;
         };
         /** ValueCount */
         ValueCount: {
@@ -936,6 +1167,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Health"];
+                };
+            };
+        };
+    };
+    pipeline_run_api_pipeline_runs__execution_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                execution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineRun"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_pipeline_run_api_pipelines__name__runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineRunAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -326,6 +326,10 @@ class Loader(Protocol):
         """Record a run as failed, writing its row if the run never got one. Commits at once."""
         ...
 
+    def stages(self) -> AbstractContextManager[PipelineStages]:
+        """The stage tables and the V2 records; everything done through them commits together."""
+        ...
+
 
 # V2: what pipelines are, what each run of one did, and what was measured at each stage.
 # The tables are created by migration 0006 and described in docs/stages-and-pipelines.md.
@@ -568,3 +572,78 @@ def check_chain(source: str, dataset: str, run: RunRef, nodes: Sequence[LineageN
         ):
             raise ValueError("steps appear in the lineage in pipeline order")
         previous = node
+
+
+class PipelineStages(Protocol):
+    """What a pipeline run reads and writes, inside one transaction (`Loader.stages`).
+
+    `PostgresStages` is the real one; the docstrings there say what each call does.
+    """
+
+    def save_pipeline(
+        self,
+        source: str,
+        dataset: str,
+        name: str,
+        definition: dict[str, Any],
+        steps: Sequence[StepDefinition],
+        created_at: datetime,
+    ) -> PipelineVersion: ...
+
+    def read_pipeline_version(self, pipeline_id: int, version: int) -> PipelineVersion | None: ...
+
+    def running_executions(self, source: str, dataset: str) -> list[UUID]:
+        """The executions over the dataset still marked running, oldest first."""
+        ...
+
+    def newest_run(self, stage: Stage, source: str, dataset: str) -> RunRef | None: ...
+
+    def read_raw(
+        self, source: str, dataset: str, ingest_runs: Sequence[UUID] | None = None
+    ) -> pl.DataFrame:
+        """RAW's rows, platform columns included: of the named ingest runs, or every row."""
+        ...
+
+    def write_staging(self, source: str, dataset: str, frame: pl.DataFrame) -> None:
+        """Make STAGING exactly this frame, replacing any STAGING table there was."""
+        ...
+
+    def start_execution(self, start: ExecutionStart) -> None: ...
+
+    def record_step(self, execution_id: UUID, step: StepRun) -> None: ...
+
+    def finish_execution(
+        self,
+        execution_id: UUID,
+        *,
+        ended_at: datetime,
+        rows_in: int | None,
+        rows_out: int | None,
+        failure: RunFailure | None = None,
+        failed_step: int | None = None,
+    ) -> None: ...
+
+    def read_execution(self, execution_id: UUID) -> Execution | None: ...
+
+    def record_profile(self, profile: Profile) -> int: ...
+
+    def read_profiles(
+        self, source: str, dataset: str, stage: Stage | None = None, run: RunRef | None = None
+    ) -> list[StoredProfile]: ...
+
+    def record_constraint_results(self, results: Sequence[ConstraintResult]) -> None: ...
+
+    def read_constraint_results(
+        self, source: str, dataset: str, stage: Stage | None = None, run: RunRef | None = None
+    ) -> list[ConstraintResult]: ...
+
+    def record_lineage(
+        self,
+        source: str,
+        dataset: str,
+        run: RunRef,
+        nodes: Sequence[LineageNode],
+        recorded_at: datetime,
+    ) -> None: ...
+
+    def read_lineage(self, run: RunRef) -> tuple[LineageNode, ...]: ...

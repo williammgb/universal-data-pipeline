@@ -95,6 +95,8 @@ services:
       UDP_API_KEYS: ${UDP_API_KEYS:-}
     volumes:
       - ../sources:/app/sources:ro
+      # Next to sources/, where `udp pipeline run` and the API's pipeline runs look for them.
+      - ../pipelines:/app/pipelines:ro
     # Nothing that reads or writes the platform tables starts before they exist.
     depends_on:
       postgres:

@@ -11,17 +11,92 @@ flowchart LR
     G["STAGING<br/>staging.shop__orders"]
     C["CLEAN<br/>clean.shop__orders"]
     S -- "ingest run" --> R
-    R -- "copied when a pipeline run starts" --> G
-    G -- "each step changes it in turn" --> G
-    G -- "becomes CLEAN when the run succeeds" --> C
+    R -- "read when a pipeline run starts" --> F["the run's frame<br/>each step changes it in turn"]
+    F -- "written when every step and critical constraint passed" --> G
+    G -- "becomes CLEAN in the same transaction" --> C
 ```
+
+## A pipeline
+
+A pipeline is one file, `pipelines/<name>.yaml`, in the folder `sources/` is in. It names the
+dataset it prepares, which profiles to take, the constraints the result must meet and its steps,
+in order:
+
+```yaml
+source: demo_csv            # a folder under sources/
+dataset: customers          # a dataset in that source's source.yaml
+profile: ends               # none | ends | every_step; ends when left out
+constraints:                # left out: the dataset's own, from its source.yaml
+  - constraint: not_null
+    column: customer_id
+    critical: true
+steps:                      # none at all is allowed: RAW's rows become CLEAN as they are
+  - type: normalize_values
+    columns: [city]
+    trim: true
+  - type: python
+    script: scripts/custom/customer_transform.py
+```
+
+The step types and their settings are the transformations' own (`src/udp/transformations/`);
+a `python` step is described in `custom-python-steps.md`, and constraints in `constraints.md`.
+
+```
+uv run --locked udp pipeline run demo_csv_customers      run it; exit 0 when it succeeded
+uv run --locked udp pipeline status <run id> [--json]    read a run's record back
+```
+
+Over the API, `POST /api/pipelines/{name}/runs` starts a run and answers at once (202) with its
+`execution_id`, already recorded as running; `GET /api/pipeline-runs/{execution_id}` reads its
+record back, while it runs and after.
+
+**Versions.** Every run stores the definition it is about to run, with everything resolved: the
+constraints it checks and each step with every setting, defaults included. When that differs
+from the newest stored version it becomes the next version; when it does not, the run uses the
+newest. Editing the file, or the source's constraints a pipeline without its own uses, makes a
+new version at the next run, and an old run still says which version it ran.
+
+### What a run does
+
+1. **Start.** It takes the dataset's lock — the one an ingest run takes — and records itself as
+   running. A second run of the dataset is refused, naming the run in progress (`udp pipeline
+   run` exits 1, the API answers 409); a run started while the dataset is being ingested is
+   refused too. A run still marked running when the lock is free was cut off, its process gone,
+   and is recorded as failed (`Interrupted`) by the next run.
+2. **Input.** The dataset's rows as they stand, read from RAW, which is only ever read: for a
+   `full` load the newest ingest run's rows, for `append` every row, for `merge` the newest row
+   of each primary key. The steps see the dataset's own columns, not `_run_id`, `_loaded_at` or
+   `_record_hash`, and the rows in the order of their `_record_hash` — so the same RAW always
+   gives the same input, and two runs of one version over it the same CLEAN table.
+3. **Steps.** Each runs over the whole frame the step before it left, checked first against
+   that frame's columns. Each is recorded as running and then with its status, duration, rows
+   in and out, values changed and error, and added to the run's lineage.
+4. **Validation.** The constraints are checked against the result, and every outcome is stored.
+   One that is `critical` and fails fails the run.
+5. **Publish.** In one transaction the result is written to STAGING, STAGING becomes CLEAN, and
+   the run is recorded as succeeded with the CLEAN lineage node and its final profile.
+
+**A failure** — a step, a critical constraint, a database error — ends the run failed. Its record
+names the step that failed (`failed_step`), the step's settings and the reason; a run that failed
+at validation names `validation` in its error instead. STAGING is dropped and CLEAN stays
+exactly as the last successful run left it: a failed run never publishes a half-prepared table.
+
+**Profiles.** `profile: ends`, the default, profiles the input and the CLEAN table. `every_step`
+also profiles the data after each step — a pass over every value per step, which on a large
+dataset with a long pipeline adds up, so it is not the default. `none` takes no profile.
+
+**The record** of a run, as `udp pipeline status --json` prints it and the API returns it: the
+pipeline, its id and the version that ran, the dataset, the trigger, the status, start and end,
+rows in and out, the failed step and the error; then every step of that version with its
+settings and what it did (`not_run` for those after a failure), the totals of each profile taken,
+each constraint's outcome, and the lineage with each step's settings.
 
 ## The three stages
 
 | Stage | What it holds | How long it is kept |
 |---|---|---|
 | **RAW** | Exactly what was ingested, every ingest run's rows, each row tagged with the run that brought it (`_run_id`). | Only ever added to. Kept until the dataset is deleted or loaded again with `--full-refresh`. |
-| **STAGING** | The working copy one pipeline run transforms, step by step. | Dropped when that run ends, whether it succeeded or failed. |
+| **STAGING** | The result of one pipeline run's steps, on its way to CLEAN. | Exists only inside the run's last transaction: it becomes CLEAN, or is dropped when the run fails. |
 | **CLEAN** | The result of the last pipeline run that succeeded: the copy anything downstream reads. | Replaced by each successful run. A failed run leaves it as it was. |
 
 **RAW cannot be changed.** Every RAW table is created with a database trigger that refuses any
@@ -138,12 +213,15 @@ opened, and stores nothing.
 
 ## For the code that writes these
 
-`PostgresLoader.stages()` opens one transaction and returns the calls that write and read all of
-the above (`src/udp/storage/postgres.py`). Two of them carry the retention rules, so no caller
-has to remember them: `start_staging` makes STAGING a fresh copy of RAW, and `finish_execution`
-records the end of a run and, in the same transaction, turns STAGING into CLEAN when the run
-succeeded or drops it when it failed. STAGING is one table per dataset, so only one pipeline run
-of a dataset may be going at a time.
+The engine is `src/udp/pipeline/execution.py`; the pipeline file is read by
+`src/udp/config/pipeline.py`. `PostgresLoader.stages()` opens one transaction and returns the
+calls that write and read all of the above (`src/udp/storage/postgres.py`); the engine asks only
+for what the `PipelineStages` protocol in `src/udp/storage/loader.py` lists, which the tests'
+in-memory store implements too. Two of the calls carry the retention rules, so no caller has to
+remember them: `read_raw` only ever reads RAW, and `finish_execution` records the end of a run
+and, in the same transaction, turns STAGING into CLEAN when the run succeeded or drops it when it
+failed. STAGING is one table per dataset, so only one pipeline run of a dataset may be going at a
+time.
 
 Profiling is `src/udp/profiling/`: `profile_frame` profiles any table given as a Polars frame,
 `profile_stage` reads a stage table (or its sample) into one, and `PostgresStages.profile` does

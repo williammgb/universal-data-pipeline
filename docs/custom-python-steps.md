@@ -15,9 +15,9 @@ steps:
   - type: validate
 ```
 
-`script` is a path relative to the project folder — the folder `sources/` is in. (The pipeline
-definition around the steps, and starting a pipeline run, come with the execution engine; the
-step itself, its record and its failures are what this page describes.)
+`script` is a path relative to the project folder — the folder `sources/` is in. The pipeline
+file around the steps, and running it, are in `stages-and-pipelines.md`; the step itself, its
+record and its failures are what this page describes.
 
 > **A script is trusted code.** It runs with the pipeline's own permissions, environment
 > variables, files and network, exactly like the per-source `transform.py`. Nothing sandboxes

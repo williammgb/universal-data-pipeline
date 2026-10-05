@@ -87,6 +87,11 @@ uv run --locked udp run demo_csv            load one source now (or several, by 
 uv run --locked udp profile shop orders --stage raw
                                             profile a dataset's RAW, STAGING or CLEAN table,
                                             print it and store it (docs/stages-and-pipelines.md)
+uv run --locked udp pipeline run demo_csv_customers
+                                            run pipelines/demo_csv_customers.yaml: RAW through
+                                            its steps to CLEAN (docs/stages-and-pipelines.md)
+uv run --locked udp pipeline status <run id>
+                                            print a pipeline run's record
 uv run --locked udp schedule                run every scheduled dataset until stopped
 uv run --locked udp api                     serve the dashboard and the API on 127.0.0.1:8000
 uv run --locked udp doctor                  check the database connection

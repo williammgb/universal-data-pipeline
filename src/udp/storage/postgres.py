@@ -18,7 +18,7 @@ from udp.errors import LoadError, SchemaDriftError
 from udp.names import Stage, stage_table
 from udp.profiling.frame import ProfileSettings
 from udp.profiling.models import ProfileComparison, StageProfile, compare_profiles
-from udp.profiling.stage import profile_stage
+from udp.profiling.stage import READ_BATCH, profile_stage, read_as, stage_columns
 from udp.profiling.table import PROFILE_ROW_LIMIT
 from udp.quality.constraints import check_stage
 from udp.storage import overrides as override_store
@@ -496,6 +496,79 @@ class PostgresStages:
         chosen = copy + sql.SQL(" WHERE _run_id = ANY(%s)")
         return self._conn.execute(chosen, [list(ingest_runs)]).rowcount
 
+    def read_raw(
+        self, source: str, dataset: str, ingest_runs: Sequence[UUID] | None = None
+    ) -> pl.DataFrame:
+        """RAW's rows as a frame, platform columns included: of the named ingest runs, or every
+        row. RAW is only read. Each column becomes the type `read_as` gives it — a jsonb or uuid
+        column its text. Raises LoadError when there is no RAW table."""
+        schema, table = stage_table(Stage.RAW, source, dataset)
+        types = stage_columns(self._conn, schema, table)
+        if not types:
+            raise LoadError(f"{source}.{dataset} has no RAW table: run `udp run {source}` first")
+        reads = [read_as(name, kind) for name, kind in types]
+        frame_schema = pl.Schema(
+            {name: dtype for (name, _), (_, dtype) in zip(types, reads, strict=True)}
+        )
+        query = sql.SQL("SELECT {} FROM {}").format(
+            sql.SQL(", ").join(expression for expression, _ in reads), sql.Identifier(schema, table)
+        )
+        arguments: list[Any] = []
+        if ingest_runs is not None:
+            query += sql.SQL(" WHERE _run_id = ANY(%s)")
+            arguments.append(list(ingest_runs))
+        batches = [pl.DataFrame(schema=frame_schema)]
+        with self._conn.cursor(name="udp_raw_read") as cursor:
+            cursor.itersize = READ_BATCH
+            cursor.execute(query, arguments)
+            while rows := cursor.fetchmany(READ_BATCH):
+                batches.append(pl.DataFrame(rows, schema=frame_schema, orient="row"))
+        frame = pl.concat(batches, how="vertical")
+        wide = [
+            pl.col(name).cast(pl.Float64, strict=False)
+            for name, kind in types
+            if kind.startswith("numeric") and isinstance(frame_schema[name], pl.String)
+        ]
+        return frame.with_columns(wide)
+
+    def write_staging(self, source: str, dataset: str, frame: pl.DataFrame) -> None:
+        """Make STAGING exactly this frame, its columns typed as the loader types them,
+        replacing any STAGING table there was."""
+        if not frame.columns:
+            raise LoadError(f"nothing to write to STAGING of {source}.{dataset}: no columns")
+        schema, table = stage_table(Stage.STAGING, source, dataset)
+        target = sql.Identifier(schema, table)
+        self._conn.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(target))
+        names, _ = self._tables._stage(table, [frame], schema=schema)
+        self._conn.execute(
+            sql.SQL("INSERT INTO {} ({}) SELECT {} FROM {}").format(
+                target, _identifiers(names), _identifiers(names), _STAGE
+            )
+        )
+
+    def running_executions(self, source: str, dataset: str) -> list[UUID]:
+        """The executions over the dataset still marked running, oldest first."""
+        rows = self._conn.execute(
+            "SELECT runs.execution_id FROM platform.pipeline_executions AS runs "
+            "JOIN platform.pipelines AS pipelines USING (pipeline_id) "
+            "WHERE pipelines.source = %s AND pipelines.dataset = %s AND runs.status = 'running' "
+            "ORDER BY runs.started_at, runs.execution_id",
+            [source, dataset],
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def read_pipeline_version(self, pipeline_id: int, version: int) -> PipelineVersion | None:
+        """One version of a pipeline, by the pipeline's id."""
+        row = self._conn.execute(
+            "SELECT source, dataset, name FROM platform.pipelines WHERE pipeline_id = %s",
+            [pipeline_id],
+        ).fetchone()
+        if row is None:
+            return None
+        source, dataset, name = row
+        found = self.read_pipeline(source, dataset, name, version)
+        return found if found is not None and found.version == version else None
+
     def save_pipeline(
         self,
         source: str,
@@ -756,15 +829,25 @@ class PostgresStages:
         return int(row[0])
 
     def read_profiles(
-        self, source: str, dataset: str, stage: Stage | None = None
+        self, source: str, dataset: str, stage: Stage | None = None, run: RunRef | None = None
     ) -> list[StoredProfile]:
-        """The dataset's profiles in the order they were taken, of one stage or of every stage."""
+        """The dataset's profiles in the order they were taken, of one stage or of every stage,
+        and of one run or of every run."""
+        ingest_run_id, execution_id = (None, None) if run is None else _run_values(run)
         rows = self._conn.execute(
             "SELECT profile_id, stage, after_step, ingest_run_id, execution_id, table_rows, "
             "result, profiled_at FROM platform.profiles "
             "WHERE source = %s AND dataset = %s AND (%s::text IS NULL OR stage = %s) "
+            "AND (%s::uuid IS NULL OR ingest_run_id = %s) "
+            "AND (%s::uuid IS NULL OR execution_id = %s) "
             "ORDER BY profile_id",
-            [source, dataset, *[_stage_value(stage)] * 2],
+            [
+                source,
+                dataset,
+                *[_stage_value(stage)] * 2,
+                *[ingest_run_id] * 2,
+                *[execution_id] * 2,
+            ],
         ).fetchall()
         return [
             StoredProfile(
