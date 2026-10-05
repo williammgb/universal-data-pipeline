@@ -61,5 +61,11 @@ class CsvConnector:
                     yield chunk
             if not yielded:
                 yield frame.head(0).collect()
+        except pl.exceptions.NoDataError:
+            # An empty file: no rows, and no header to learn columns from. The declared ones,
+            # empty, as an empty JSON file gives; with none declared the load says so.
+            yield pl.DataFrame(
+                [pl.Series(name, [], dtype=pl.Null) for name in request.dataset.columns]
+            )
         except pl.exceptions.PolarsError as error:
             raise ExtractError(f"could not read CSV file {path.as_posix()}: {error}") from error

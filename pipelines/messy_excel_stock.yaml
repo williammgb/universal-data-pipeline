@@ -1,0 +1,60 @@
+# messy_excel's stock, from RAW to clean.messy_excel__stock: categories spelt one way, rows
+# whose count or date cannot be read dropped, types set, the outlier cost capped and the gaps
+# filled. A row entered twice and a negative count are reported, not hidden.
+#   uv run --locked udp run messy_excel
+#   uv run --locked udp pipeline run messy_excel_stock
+source: messy_excel
+dataset: stock
+profile: ends
+constraints:
+  - constraint: not_null
+    column: sku
+    critical: true
+  - constraint: allowed_values
+    column: category
+    values: [lighting, furniture, stationery, accessories]
+    critical: true
+  - constraint: unique
+    columns: [sku]
+  - constraint: min
+    column: units
+    value: 0
+steps:
+  - type: normalize_values
+    columns: [category]
+    case: lower
+    mapping:
+      furnture: furniture
+      stationary: stationery
+  - type: validate
+    constraints:
+      - constraint: datatype
+        column: units
+        type: integer
+      # One text cell turns the whole column to text, and each real date to the text of a
+      # date and time, "2024-04-01 00:00:00": read it as a timestamp, then keep the date.
+      - constraint: datatype
+        column: counted_on
+        type: timestamp
+    on_invalid: drop
+  - type: convert_type
+    column: units
+    to: integer
+  - type: convert_type
+    column: counted_on
+    to: timestamp
+  - type: convert_type
+    column: counted_on
+    to: date
+  - type: outliers
+    column: unit_cost
+    action: cap
+    lower_percentile: 0
+    upper_percentile: 90
+  - type: fill_missing
+    columns: [unit_cost]
+    method: median
+  - type: fill_missing
+    columns: [product]
+    method: value
+    value: unnamed

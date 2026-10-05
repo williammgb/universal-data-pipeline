@@ -208,7 +208,8 @@ full_gate() {
   return "$code"
 }
 
-SMOKE_SOURCES="demo_csv demo_excel demo_db demo_api"
+# The messy ones too: their data is wrong on purpose, and a load must still succeed.
+SMOKE_SOURCES="demo_csv demo_excel demo_db demo_api messy_csv messy_excel messy_db messy_api messy_json"
 
 # migrate is built with app every time: compose gives it an image of its own, which down -v
 # keeps, so a migrate image left from an older smoke would apply older migrations.

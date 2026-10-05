@@ -1,0 +1,20 @@
+# Orders exported by hand, with the problems real exports have built in on purpose: spaces
+# around values, a quantity written as a word, a date that does not exist, countries and
+# statuses spelt and cased several ways, a missing customer, price and quantity, an order in it
+# twice, a price in the hundreds of thousands and a negative quantity. Returns are an export
+# that came out empty: a file of 0 bytes.
+connection:
+  type: csv
+datasets:
+  - name: orders
+    path: data/orders.csv
+    load_mode: full
+    columns:
+      order_id: integer
+  - name: returns
+    path: data/returns.csv
+    load_mode: full
+    columns:
+      order_id: integer
+      returned_on: date
+      reason: text

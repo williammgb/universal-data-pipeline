@@ -1,0 +1,11 @@
+# Customers from a JSON export whose records do not all have the same keys: one has no email,
+# one has a nested loyalty object, one names who referred it, one has no age or spend at all.
+# Built in on purpose, with the other problems a pipeline has to deal with: an age written in
+# words, an impossible date, a plan spelt five ways, a repeated customer, a spend in the
+# millions and a negative age.
+connection:
+  type: json
+datasets:
+  - name: customers
+    path: data/customers.json
+    load_mode: full

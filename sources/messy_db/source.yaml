@@ -1,0 +1,9 @@
+# The messy_orders table in the source database, which an older system filled: what is wrong
+# with it, on purpose, is described above its CREATE TABLE in deploy/source-postgres/init.sql.
+connection:
+  type: database
+  url: ${DEMO_DB_URL}
+datasets:
+  - name: orders
+    table: messy_orders
+    load_mode: full

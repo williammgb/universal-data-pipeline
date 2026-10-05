@@ -2,6 +2,7 @@
 values."""
 
 from collections.abc import Iterator
+from decimal import Decimal
 from typing import Any
 
 import polars as pl
@@ -197,6 +198,24 @@ def test_capping_moves_outliers_to_the_percentile_bounds() -> None:
     assert frame["v"].to_list() == [2, 2, 3, 4, 5, 6, 7, 8, 9, 9, None]
     assert frame["v"].dtype == pl.Int64
     assert result.message == "2 outliers outside 2.0 to 9.0"
+
+
+def test_capping_a_decimal_column_keeps_its_type_and_exact_values() -> None:
+    # Bounds whose floats are not exact decimals: 9.95 is 9.949999999999999289... as a float.
+    amounts = ["9.95", "12.50", "39.90", None, "4500000.00"]
+    frame = pl.DataFrame(
+        {"v": [None if a is None else Decimal(a) for a in amounts]},
+        schema={"v": pl.Decimal(10, 2)},
+    )
+    bounds = {"lower_percentile": 0, "upper_percentile": 75}
+    capped, result = _run({"type": "outliers", "column": "v", "action": "cap", **bounds}, frame)
+    assert result.status == "succeeded", result.error
+    assert capped["v"].dtype == pl.Decimal(10, 2)
+    assert capped["v"].to_list() == [Decimal(a) for a in ("9.95", "12.50", "39.90")] + [
+        None,
+        Decimal("39.90"),
+    ]
+    assert result.message == "1 outliers outside 9.95 to 39.9"
 
 
 def test_removing_outliers_drops_their_rows_and_keeps_nulls() -> None:
