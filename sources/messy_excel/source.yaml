@@ -1,0 +1,11 @@
+# A stock count typed into a spreadsheet by hand, with the problems that brings, built in on
+# purpose: units written as a word, a date typed as text that is not a date, categories spelt
+# and cased several ways, a missing name, cost and count, a row entered twice, a cost in the
+# tens of thousands and a negative count.
+connection:
+  type: excel
+datasets:
+  - name: stock
+    path: data/stock.xlsx
+    sheet: stock
+    load_mode: full

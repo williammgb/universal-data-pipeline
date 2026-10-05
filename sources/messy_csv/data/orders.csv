@@ -1,0 +1,21 @@
+order_id,customer,country,quantity,unit_price,ordered_on,status
+1001,Anna de Vries,Netherlands,2,19.95,2024-03-01,shipped
+1002,Bram Jansen,netherlands,1,5.50,2024-03-02,Shipped
+1003,  Chris Peters ,NETHERLANDS ,3,12.00,2024-03-02,SHIPPED
+1004,Dana Smit,Nederland,three,7.25,2024-03-03,pending
+1005,,Germany,1,,2024-03-04,pending
+1006,Erik Bos,germany,4,8.80,2024-02-30,shipped
+1007,Fleur Mulder,Deutschland,2,15.00,2024-03-05,cancelled
+1008,Gijs Visser,Belgium,1,999999.00,2024-03-05,shipped
+1009,Hanna Meijer,belgium,-2,9.99,2024-03-06,Cancelled
+1010,Ivo de Boer,Netherlands,5,4.50,2024-03-07, shipped
+1010,Ivo de Boer,Netherlands,5,4.50,2024-03-07, shipped
+1011,Jet Bakker,Belgium,,6.75,2024-03-08,pending
+1012,Kees Dekker,Germany,2,11.10,2024-03-08,shipped
+1013,Lotte Smits,the Netherlands,1,22.40,2024-03-09,pending
+1014,Mark Hendriks,Belgium,3,3.95,2024-03-10,shipped
+1015,Noor Vermeulen,GERMANY,2,14.50,2024-03-11,shipped
+1016,Olaf Kok,Netherlands,6,2.25,2024-03-12,cancelled
+1017,Pien Wouters,Belgium,1,18.00,2024-03-12,shipped
+1018,Quinten Brouwer,Netherlands,2,9.10,2024-03-13,pending
+1019,Roos van Dijk,Germany,1,13.75,2024-03-14,shipped

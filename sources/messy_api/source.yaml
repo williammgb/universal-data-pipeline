@@ -1,0 +1,13 @@
+# Sensor readings from the mock API's /messy route, whose records are of mixed quality on
+# purpose: what is wrong with them is described above MESSY in tests/mock_api.py.
+connection:
+  type: rest_api
+  base_url: ${DEMO_API_URL}
+  auth:
+    type: bearer
+    token: ${DEMO_API_TOKEN}
+datasets:
+  - name: readings
+    endpoint: /bearer/messy
+    records_path: data
+    load_mode: full

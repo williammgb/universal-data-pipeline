@@ -5,13 +5,16 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from fakes import MemoryLoader
 from hypothesis import given
 from hypothesis import strategies as st
 from polars.testing import assert_frame_equal
 
+from udp.config.source import load_source
 from udp.connectors.base import ExtractRequest
 from udp.connectors.csv import INFER_SCHEMA_ROWS, CsvConnection, CsvConnector, CsvDataset
 from udp.errors import ExtractError
+from udp.pipeline.runner import run_source
 
 cell = st.one_of(
     st.just(""),
@@ -113,6 +116,28 @@ def test_a_late_non_number_fails_undeclared_but_reads_as_text_when_declared(
     (chunk,) = CsvConnector().extract(request)
     assert chunk.schema == pl.Schema({"Customer ID": pl.String, "amount": pl.Int64})
     assert chunk["Customer ID"][-1] == "N/A"
+
+
+def test_an_empty_file_loads_no_rows_when_its_columns_are_declared_and_says_why_when_not(
+    tmp_path: Path,
+) -> None:
+    folder = tmp_path / "sources" / "shop"
+    folder.mkdir(parents=True)
+    (folder / "orders.csv").write_bytes(b"")
+    dataset = "connection:\n  type: csv\ndatasets:\n  - name: orders\n    path: orders.csv\n"
+    loader = MemoryLoader()
+
+    for columns, status in (("    columns:\n      id: integer\n", "succeeded"), ("", "failed")):
+        (folder / "source.yaml").write_text(dataset + columns, encoding="utf-8")
+        config = load_source(folder.parent, "shop", {})
+        (outcome,) = run_source("shop", config, folder.parent, loader, full_refresh=True)
+        assert outcome.status == status
+        if status == "succeeded":
+            assert outcome.rows_loaded == 0
+            assert loader.tables["shop__orders"].schema["id"] == pl.Int64
+        else:
+            error = loader.runs[outcome.run_id]["error_message"]
+            assert error is not None and "the source has no columns" in error
 
 
 def test_header_only_file_yields_one_empty_chunk_with_the_schema(tmp_path: Path) -> None:

@@ -62,7 +62,11 @@ class Outliers(Transformation):
             outside = pl.repeat(False, frame.height, eager=True)
             bounds = "the column has no values"
         else:
-            outside = ((series < lower) | (series > upper)).fill_null(False)
+            # Polars turns a float bound into the exact decimal it stands for, 9.95 into
+            # 9.9499999999999992894572642398998, which overflows a decimal(10,2) column: compare
+            # a decimal column's values as the floats the bounds came from instead.
+            values = series.cast(pl.Float64) if isinstance(series.dtype, pl.Decimal) else series
+            outside = ((values < lower) | (values > upper)).fill_null(False)
             bounds = f"outside {lower} to {upper}"
         found = int(outside.sum())
         message = f"{found} outliers {bounds}"
