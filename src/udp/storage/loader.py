@@ -604,6 +604,10 @@ class PipelineStages(Protocol):
         created_at: datetime,
     ) -> PipelineVersion: ...
 
+    def read_pipeline(
+        self, source: str, dataset: str, name: str, version: int | None = None
+    ) -> PipelineVersion | None: ...
+
     def read_pipeline_version(self, pipeline_id: int, version: int) -> PipelineVersion | None: ...
 
     def running_executions(self, source: str, dataset: str) -> list[UUID]:

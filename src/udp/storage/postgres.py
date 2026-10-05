@@ -609,17 +609,14 @@ class PostgresStages:
     ) -> PipelineVersion:
         """Store a pipeline definition. When it equals the newest version, that version is
         returned unchanged; otherwise it becomes the next version, and older ones stay as they are.
+
+        The pipeline's row is locked before its newest version is read, so two saves at the same
+        moment (a double-click, two tabs) wait for each other and number their versions in turn
+        rather than both claiming the same one.
         """
         stage_table(Stage.CLEAN, source, dataset)
         if not name:
             raise ValueError("a pipeline needs a name")
-        newest = self.read_pipeline(source, dataset, name)
-        if (
-            newest is not None
-            and newest.definition == json.loads(json.dumps(definition))
-            and newest.steps == tuple(_round_trip(step) for step in steps)
-        ):
-            return newest
         self._conn.execute(
             "INSERT INTO platform.pipelines (source, dataset, name, created_at) "
             "VALUES (%s, %s, %s, %s) ON CONFLICT (source, dataset, name) DO NOTHING",
@@ -627,11 +624,18 @@ class PostgresStages:
         )
         row = self._conn.execute(
             "SELECT pipeline_id FROM platform.pipelines "
-            "WHERE source = %s AND dataset = %s AND name = %s",
+            "WHERE source = %s AND dataset = %s AND name = %s FOR UPDATE",
             [source, dataset, name],
         ).fetchone()
         assert row is not None
         pipeline_id = int(row[0])
+        newest = self.read_pipeline(source, dataset, name)
+        if (
+            newest is not None
+            and newest.definition == json.loads(json.dumps(definition))
+            and newest.steps == tuple(_round_trip(step) for step in steps)
+        ):
+            return newest
         version = 1 if newest is None else newest.version + 1
         self._conn.execute(
             "INSERT INTO platform.pipeline_versions (pipeline_id, version, definition, created_at) "

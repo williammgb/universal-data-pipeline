@@ -4,6 +4,7 @@ The pipeline these tests run is a stand-in that lives only here: it copies RAW i
 changes STAGING with plain SQL, and finishes. Running real pipelines is the execution engine's.
 """
 
+import threading
 import uuid
 from collections.abc import Iterator
 from contextlib import AbstractContextManager
@@ -341,6 +342,45 @@ def test_editing_a_pipeline_adds_a_version_and_keeps_the_old_one(shop: Shop) -> 
     assert old is not None and old.steps == STEPS
     assert edited.steps[-1] == StepDefinition("dedupe", {"columns": ["id"]})
     assert missing is None
+
+
+@pytest.mark.parametrize("saved_before", [False, True], ids=["new pipeline", "saved pipeline"])
+def test_saves_at_the_same_moment_each_get_their_own_version(
+    shop: Shop, saved_before: bool
+) -> None:
+    """A double-click or two tabs: every save is stored, in turn, and none fails on the clash."""
+    url = Settings().database_url  # type: ignore[call-arg]
+    if saved_before:
+        with shop.stages() as stages:
+            stages.save_pipeline(shop.source, shop.dataset, "race", {"tab": 0}, STEPS, NOW)
+    tabs = 4
+    together = threading.Barrier(tabs, timeout=30)
+    versions: list[int] = []
+    failures: list[BaseException] = []
+
+    def save(tab: int) -> None:
+        try:
+            with PostgresLoader(url) as loader, loader.stages() as stages:
+                together.wait()
+                saved = stages.save_pipeline(
+                    shop.source, shop.dataset, "race", {"tab": tab + 1}, STEPS, NOW
+                )
+            versions.append(saved.version)
+        except BaseException as error:  # reported by the assertion below
+            failures.append(error)
+
+    threads = [threading.Thread(target=save, args=(tab,)) for tab in range(tabs)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+
+    assert failures == []
+    first = 2 if saved_before else 1
+    assert sorted(versions) == list(range(first, first + tabs))
+    with shop.stages() as stages:
+        newest = stages.read_pipeline(shop.source, shop.dataset, "race")
+    assert newest is not None and newest.version == first + tabs - 1
 
 
 def test_profiles_are_kept_per_stage_per_run(shop: Shop) -> None:

@@ -6,6 +6,7 @@ import ApiKey from "./pages/ApiKey";
 import Dataset from "./pages/Dataset";
 import Datasets from "./pages/Datasets";
 import Guide from "./pages/Guide";
+import Pipeline from "./pages/Pipeline";
 import Run from "./pages/Run";
 import Runs from "./pages/Runs";
 import Settings from "./pages/Settings";
@@ -64,6 +65,9 @@ export default function App() {
           <NavLink to="/runs" className={({ isActive }) => (isActive ? "current" : "")}>
             Runs
           </NavLink>
+          <NavLink to="/pipeline" className={({ isActive }) => (isActive ? "current" : "")}>
+            Pipeline
+          </NavLink>
           <NavLink to="/settings" className={({ isActive }) => (isActive ? "current" : "")}>
             Settings
           </NavLink>
@@ -86,6 +90,7 @@ export default function App() {
               <Route path="/datasets/:source/:dataset" element={<Dataset />} />
               <Route path="/runs" element={<Runs />} />
               <Route path="/runs/:runId" element={<Run />} />
+              <Route path="/pipeline" element={<Pipeline />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="*" element={<NotFound />} />
             </>
