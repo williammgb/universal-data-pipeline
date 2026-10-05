@@ -19,6 +19,7 @@ from udp.storage.loader import (
     DatasetState,
     Execution,
     ExecutionStart,
+    ExecutionSummary,
     LineageNode,
     LoadResult,
     PipelineVersion,
@@ -393,6 +394,22 @@ class MemoryStages:
             == (source, dataset)
         ]
         return [execution_id for _, execution_id in sorted(running)]
+
+    def executions(self, source: str, dataset: str, limit: int) -> list[ExecutionSummary]:
+        found = [
+            ExecutionSummary(
+                execution_id,
+                self._owner(execution_id).name,
+                execution["version"],
+                execution["status"],
+                execution["started_at"],
+            )
+            for execution_id, execution in self._loader.executions.items()
+            if (self._owner(execution_id).source, self._owner(execution_id).dataset)
+            == (source, dataset)
+        ]
+        found.sort(key=lambda run: (run.started_at, run.execution_id), reverse=True)
+        return found[:limit]
 
     def newest_run(self, stage: Stage, source: str, dataset: str) -> RunRef | None:
         if Stage(stage) is Stage.RAW:

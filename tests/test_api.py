@@ -28,7 +28,7 @@ from udp.api.catalog import PostgresCatalog, json_value
 from udp.config.pipeline import PipelineFile, draft_problems, load_pipeline, resolve_pipeline
 from udp.config.source import load_source
 from udp.errors import ConfigError
-from udp.pipeline.execution import start_pipeline
+from udp.pipeline.execution import run_pipeline, start_pipeline
 from udp.pipeline.runner import run_source
 from udp.settings import Settings
 from udp.storage.loader import ConfigCopy, DatasetState, RunFailure, RunStart
@@ -121,6 +121,7 @@ def test_the_openapi_document_lists_every_route_and_the_docs_page_loads() -> Non
         "/api/datasets",
         "/api/datasets/{source}/{dataset}",
         "/api/datasets/{source}/{dataset}/config",
+        "/api/datasets/{source}/{dataset}/lineage",
         "/api/datasets/{source}/{dataset}/pipelines/{name}",
         "/api/datasets/{source}/{dataset}/pipelines/{name}/runs",
         "/api/datasets/{source}/{dataset}/profile",
@@ -627,6 +628,126 @@ def test_a_pipeline_name_that_is_not_a_name_is_refused() -> None:
 
     assert response.status_code == 422
     assert response.json()["detail"][0]["loc"] == ["name"]
+
+
+# --- lineage -------------------------------------------------------------------------------------
+
+LINEAGE = "/api/datasets/demo_csv/customers/lineage"
+
+
+def _prepared(loader: MemoryLoader, steps: list[dict[str, Any]] | None = None) -> str:
+    """Run the demo pipeline over the loaded demo, or one named `broken` with these steps."""
+    if steps is None:
+        pipeline = load_pipeline(SOURCES, "demo_csv_customers", {})
+    else:
+        written = PipelineFile.model_validate(
+            {"source": "demo_csv", "dataset": "customers", "steps": steps}
+        )
+        pipeline = resolve_pipeline("broken", written, load_source(SOURCES, "demo_csv", {}), "b")
+    return str(run_pipeline(loader, pipeline).execution_id)
+
+
+def test_the_lineage_of_a_prepared_dataset_is_its_run_from_the_source_file_to_clean() -> None:
+    loader = _loaded_demo()
+    ran = _prepared(loader)
+    client, _, _ = _builder_client(loader)
+
+    body = client.get(LINEAGE).json()
+
+    assert (body["run"]["execution_id"], body["run"]["status"]) == (ran, "succeeded")
+    assert body["run"]["pipeline"] == "demo_csv_customers"
+    assert [item["execution_id"] for item in body["runs"]] == [ran]
+    chain = body["chain"]
+    assert [(node["kind"], node["name"]) for node in chain[1:]] == [
+        ("raw", "raw.demo_csv__customers"),
+        ("step", "normalize_values"),
+        ("step", "fill_missing"),
+        ("clean", "clean.demo_csv__customers"),
+    ]
+    assert chain[0]["kind"] == "source"
+    assert "customers.csv" in chain[0]["name"]
+    fill = chain[3]["step"]
+    assert (fill["position"], fill["status"], fill["rows_in"], fill["values_changed"]) == (
+        2,
+        "succeeded",
+        20,
+        1,
+    )
+    assert fill["configuration"]["columns"] == ["lifetime_value"]
+    assert fill["configuration"]["method"] == "median"
+    assert [node["profile"]["stage"] for node in chain if node["profile"]] == ["raw", "clean"]
+
+
+def test_a_past_run_shows_its_own_chain_and_a_failed_step_its_error(tmp_path: Path) -> None:
+    loader = _loaded_demo()
+    succeeded = _prepared(loader)
+    script = tmp_path / "broken.py"
+    script.write_text(
+        "def transform(df):\n    raise ValueError('cannot read row 3')\n", encoding="utf-8"
+    )
+    steps: list[dict[str, Any]] = [
+        {"type": "normalize_values", "columns": ["city"], "trim": True},
+        {"type": "python", "script": script.as_posix()},
+        {"type": "fill_missing", "columns": ["lifetime_value"], "method": "median"},
+    ]
+    failed = _prepared(loader, steps)
+    client, _, _ = _builder_client(loader)
+
+    latest = client.get(LINEAGE).json()
+    past = client.get(LINEAGE, params={"run": failed}).json()
+
+    # By default, the run that made the CLEAN table there is now; every run is offered.
+    assert latest["run"]["execution_id"] == succeeded
+    assert [item["execution_id"] for item in latest["runs"]] == [failed, succeeded]
+    assert [item["status"] for item in latest["runs"]] == ["failed", "succeeded"]
+    assert (past["run"]["execution_id"], past["run"]["pipeline"]) == (failed, "broken")
+    assert "cannot read row 3" in past["run"]["error"]
+    assert [
+        (node["kind"], node["step"]["status"] if node["step"] else None) for node in past["chain"]
+    ] == [
+        ("source", None),
+        ("raw", None),
+        ("step", "succeeded"),
+        ("step", "failed"),
+        ("step", "not_run"),
+    ]
+    assert "cannot read row 3" in past["chain"][3]["step"]["error"]
+    assert past["chain"][3]["step"]["configuration"]["script"] == script.as_posix()
+
+
+def test_a_dataset_no_pipeline_has_run_over_shows_its_load_from_source_to_table() -> None:
+    client, _, _ = _builder_client(_loaded_demo())
+
+    body = client.get(LINEAGE).json()
+
+    assert (body["run"], body["runs"]) == (None, [])
+    assert [(node["kind"], node["name"]) for node in body["chain"][1:]] == [
+        ("raw", "raw.demo_csv__customers"),
+        ("table", "datasets.demo_csv__customers"),
+    ]
+    assert body["chain"][0]["kind"] == "source"
+
+
+def test_a_dataset_never_loaded_has_no_lineage_yet() -> None:
+    client, _, _ = _builder_client()
+
+    body = client.get(LINEAGE).json()
+
+    assert (body["run"], body["runs"], body["chain"]) == (None, [], [])
+
+
+def test_a_run_that_is_not_the_datasets_or_a_dataset_that_is_not_there_is_not_found() -> None:
+    loader = _loaded_demo()
+    ran = _prepared(loader)
+    client, _, _ = _builder_client(loader)
+    elsewhere = client.get("/api/datasets/demo_csv/nope/lineage", params={"run": ran}).status_code
+    unknown = client.get(LINEAGE, params={"run": "01a0a3de-9cb0-73ec-be37-1caa01588b64"})
+
+    assert elsewhere == 404
+    assert unknown.status_code == 404
+    assert unknown.json()["detail"] == (
+        "pipeline run 01a0a3de-9cb0-73ec-be37-1caa01588b64 of 'demo_csv.customers' not found"
+    )
 
 
 # --- serving the built dashboard -----------------------------------------------------------------
@@ -1204,6 +1325,10 @@ def test_a_pipeline_run_requested_over_http_runs_against_postgres_and_reads_back
         ("clean", False),
     ]
     assert [check["passed"] for check in run["validation"]] == [True]
+    lineage = client.get(f"/api/datasets/{source}/items/lineage").json()
+    assert [item["execution_id"] for item in lineage["runs"]] == [execution_id]
+    assert lineage["runs"][0]["pipeline"] == f"{source}_items"
+    assert [node["kind"] for node in lineage["chain"]] == ["source", "raw", "step", "clean"]
     with psycopg.connect(_url()) as conn:
         clean = sql.Identifier("clean", f"{source}__items")
         rows = conn.execute(sql.SQL("SELECT id, name FROM {} ORDER BY id").format(clean))

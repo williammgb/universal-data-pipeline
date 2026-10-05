@@ -26,8 +26,11 @@ from udp.api.models import (
     DatasetConfig,
     DatasetDetail,
     DatasetItem,
+    DatasetLineage,
     DatasetProfile,
     Health,
+    LineageNode,
+    LineageRun,
     PipelineDraft,
     PipelineRun,
     PipelineRunAccepted,
@@ -56,13 +59,19 @@ from udp.config.pipeline import (
 from udp.config.source import SOURCE_FILE, SourceConfig, load_source
 from udp.connectors.base import DatasetBase
 from udp.errors import ConfigError
-from udp.names import RESERVED_COLUMNS, name_problem
+from udp.names import RESERVED_COLUMNS, name_problem, table_name
 from udp.orchestration.scheduler import RUNS_AT_ONCE
-from udp.pipeline.execution import PipelineBusy, carry_out, read_run, start_pipeline
+from udp.pipeline.execution import (
+    PipelineBusy,
+    ProfileRecord,
+    carry_out,
+    read_run,
+    start_pipeline,
+)
 from udp.pipeline.execution import Started as StartedPipeline
 from udp.pipeline.incremental import rebuild_reasons
 from udp.pipeline.runner import run_source
-from udp.storage.loader import Loader, PipelineVersion
+from udp.storage.loader import Loader, PipelineVersion, RunRef
 
 log = structlog.get_logger(step="api")
 
@@ -89,6 +98,44 @@ def script_problem(script: Any) -> str | None:
     if not path.is_file():
         return f"{script} is not a file"
     return None
+
+
+# The pipeline runs the lineage tab offers to pick; an older one still opens by its id.
+LINEAGE_RUNS = 50
+
+
+def chain_of(run: PipelineRun) -> list[LineageNode]:
+    """The run's chain, each node with the profile taken there: where the data came from, then
+    every step of the version — one that failed or never ran too, which the stored lineage, made
+    as the data passes, does not hold — then CLEAN, when the run got there."""
+
+    def taken(stage: str, after_step: int | None = None) -> ProfileRecord | None:
+        return next(
+            (
+                profile
+                for profile in run.profiles
+                if profile.stage == stage and profile.after_step == after_step
+            ),
+            None,
+        )
+
+    chain = [
+        LineageNode(
+            kind=node.kind, name=node.name, profile=taken("raw") if node.kind == "raw" else None
+        )
+        for node in run.lineage
+        if node.kind in ("source", "raw")
+    ]
+    chain += [
+        LineageNode(kind="step", name=step.type, step=step, profile=taken("staging", step.position))
+        for step in run.steps
+    ]
+    chain += [
+        LineageNode(kind="clean", name=node.name, profile=taken("clean"))
+        for node in run.lineage
+        if node.kind == "clean"
+    ]
+    return chain
 
 
 Limit = Annotated[int, Query(ge=1, le=500)]
@@ -278,6 +325,57 @@ def create_app(
     @app.get("/api/datasets/{source}/{dataset}/profile")
     def profile(source: str, dataset: str) -> DatasetProfile:
         return found(catalog.profile(source, dataset), f"dataset '{source}.{dataset}'")
+
+    @app.get("/api/datasets/{source}/{dataset}/lineage")
+    def lineage(source: str, dataset: str, run: UUID | None = None) -> DatasetLineage:
+        """Where the dataset's data came from and what each step did to it: the chain of one
+        pipeline run — `run`, or by default the one that made the current CLEAN table — or, when
+        no pipeline has run over the dataset, of its newest load."""
+        source_with_edits(source, dataset)
+        with open_loader() as loader, loader.stages() as stages:
+            runs = stages.executions(source, dataset, LINEAGE_RUNS)
+            picked = run or next(
+                (item.execution_id for item in runs if item.status == "succeeded"),
+                runs[0].execution_id if runs else None,
+            )
+            record = None if picked is None else read_run(stages, picked)
+            if run is not None and (
+                record is None or (record.source, record.dataset) != (source, dataset)
+            ):
+                raise HTTPException(404, f"pipeline run {run} of '{source}.{dataset}' not found")
+            loaded = stages.last_ingest(source, dataset) if record is None else None
+            plain = () if loaded is None else stages.read_lineage(RunRef(ingest_run_id=loaded))
+        choices = [
+            LineageRun(
+                execution_id=item.execution_id,
+                pipeline=item.pipeline,
+                version=item.version,
+                status=item.status,
+                started_at=item.started_at,
+            )
+            for item in runs
+        ]
+        if record is None:
+            # No pipeline has run: the load took the source to RAW and to the dataset's table.
+            chain = [LineageNode(kind=node.kind, name=node.name) for node in plain]
+            if chain:
+                table = f"datasets.{table_name(source, dataset)}"
+                chain.append(LineageNode(kind="table", name=table))
+            return DatasetLineage(source=source, dataset=dataset, run=None, runs=[], chain=chain)
+        return DatasetLineage(
+            source=source,
+            dataset=dataset,
+            run=LineageRun(
+                execution_id=record.execution_id,
+                pipeline=record.pipeline,
+                version=record.version,
+                status=record.status,
+                started_at=record.started_at,
+                error=record.error,
+            ),
+            runs=choices,
+            chain=chain_of(record),
+        )
 
     @app.get("/api/datasets/{source}/{dataset}/quality")
     def quality(source: str, dataset: str) -> QualityReport:

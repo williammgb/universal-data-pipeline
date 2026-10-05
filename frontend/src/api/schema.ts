@@ -56,6 +56,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/datasets/{source}/{dataset}/lineage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lineage
+         * @description Where the dataset's data came from and what each step did to it: the chain of one
+         *     pipeline run — `run`, or by default the one that made the current CLEAN table — or, when
+         *     no pipeline has run over the dataset, of its newest load.
+         */
+        get: operations["lineage_api_datasets__source___dataset__lineage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/datasets/{source}/{dataset}/pipelines/{name}": {
         parameters: {
             query?: never;
@@ -483,6 +505,23 @@ export interface components {
             /** Table Rows */
             table_rows: number | null;
         };
+        /**
+         * DatasetLineage
+         * @description Where the dataset's data came from and what was done to it: the chain of one pipeline
+         *     run — `run`, by default the one that made the current CLEAN table — or, when no pipeline has
+         *     run over the dataset, its newest load's. `runs` are the runs to pick from, newest first.
+         */
+        DatasetLineage: {
+            /** Chain */
+            chain: components["schemas"]["LineageNode"][];
+            /** Dataset */
+            dataset: string;
+            run: components["schemas"]["LineageRun"] | null;
+            /** Runs */
+            runs: components["schemas"]["LineageRun"][];
+            /** Source */
+            source: string;
+        };
         /** DatasetProfile */
         DatasetProfile: {
             /** Columns */
@@ -508,6 +547,23 @@ export interface components {
             status: "ok" | "unavailable";
         };
         /**
+         * LineageNode
+         * @description One place the data passed through, in order. A step carries what it did in the run, or
+         *     `not_run`; `profile` is the profile the run took there, when it took one. `table` is the
+         *     dataset's own table, the end of the chain of a dataset no pipeline has run over.
+         */
+        LineageNode: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "source" | "raw" | "step" | "clean" | "table";
+            /** Name */
+            name: string;
+            profile?: components["schemas"]["ProfileRecord"] | null;
+            step?: components["schemas"]["StepRecord"] | null;
+        };
+        /**
          * LineageRecord
          * @description One place the data passed through, in order; a step with the settings it ran with. The
          *     run that took the data there is the ingest run for the source and RAW, the pipeline run
@@ -531,6 +587,34 @@ export interface components {
             name: string;
             /** Step Position */
             step_position?: number | null;
+        };
+        /**
+         * LineageRun
+         * @description One pipeline run of a dataset, as the lineage tab offers it to pick; `error` is filled in
+         *     only for the run shown, when it failed.
+         */
+        LineageRun: {
+            /** Error */
+            error?: string | null;
+            /**
+             * Execution Id
+             * Format: uuid
+             */
+            execution_id: string;
+            /** Pipeline */
+            pipeline: string;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "succeeded" | "failed";
+            /** Version */
+            version: number;
         };
         /**
          * PipelineDraft
@@ -1152,6 +1236,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DatasetConfig"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    lineage_api_datasets__source___dataset__lineage_get: {
+        parameters: {
+            query?: {
+                run?: string | null;
+            };
+            header?: never;
+            path: {
+                source: string;
+                dataset: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatasetLineage"];
                 };
             };
             /** @description Validation Error */

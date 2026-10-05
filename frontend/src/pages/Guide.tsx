@@ -53,6 +53,14 @@ const WHAT_A_TAB_SHOWS: Record<(typeof TABS)[number], ReactNode> = {
       setting you have edited and offers a way back to the file&rsquo;s own value.
     </>
   ),
+  lineage: (
+    <>
+      Where the data came from and what was done to it, in order: the source file or table, RAW,
+      each step of the pipeline run, and the CLEAN table with the run that made it. Click a step to
+      see its transformation, column, method, rows and values changed; pick an older run to see its
+      chain. Come here to trace a value in CLEAN back to the source it was read from.
+    </>
+  ),
 };
 
 const SECTIONS: Section[] = [

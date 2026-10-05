@@ -460,6 +460,17 @@ class Execution:
 
 
 @dataclass(frozen=True)
+class ExecutionSummary:
+    """One execution as a list of a dataset's runs names it."""
+
+    execution_id: UUID
+    pipeline: str
+    version: int
+    status: Literal["running", "succeeded", "failed"]
+    started_at: datetime
+
+
+@dataclass(frozen=True)
 class Profile:
     """A profile of one dataset at one stage, taken in one run; `result` is the profile itself."""
 
@@ -612,6 +623,10 @@ class PipelineStages(Protocol):
 
     def running_executions(self, source: str, dataset: str) -> list[UUID]:
         """The executions over the dataset still marked running, oldest first."""
+        ...
+
+    def executions(self, source: str, dataset: str, limit: int) -> list[ExecutionSummary]:
+        """The dataset's executions of any pipeline and status, newest first, at most `limit`."""
         ...
 
     def newest_run(self, stage: Stage, source: str, dataset: str) -> RunRef | None: ...
