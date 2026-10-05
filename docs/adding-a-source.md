@@ -89,6 +89,11 @@ Every dataset also takes:
 rows that changed and adds new ones. A file that has not changed since the last run (same path,
 same contents) is skipped whatever the mode, and its table checks still run.
 
+An empty CSV or JSON file has no rows. A dataset that declares its `columns:` loads none — a
+`full` load then empties its table — and one that does not stops with "the source has no
+columns", because there is nothing to learn them from. A CSV file with only its header line
+loads no rows either, with the header's columns.
+
 ## Declaring column types
 
 Without `columns:`, the types are worked out from the data on the first run and recorded as

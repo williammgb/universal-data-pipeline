@@ -97,6 +97,40 @@ uv run --locked udp api                     serve the dashboard and the API on 1
 uv run --locked udp doctor                  check the database connection
 ```
 
+## From raw data to a clean table
+
+Loading a source only copies it in. Preparing it for use is a second, separate step — a
+**pipeline** — so the data as it arrived is always kept, and a mistake in the preparation never
+destroys it. The whole way, using the messy CSV demo as the example:
+
+1. **Load.** `udp run messy_csv` reads the file into the dataset's **RAW** table. RAW is only
+   ever added to: every load's rows stay there, marked with the load that brought them.
+2. **Profile.** `udp profile messy_csv orders --stage raw` counts, per column, the missing
+   values, the values that cannot be read as their type, the outliers and the duplicates. The
+   dataset's **Profile** tab in the dashboard shows the same.
+3. **Constrain.** Write down what the clean data must satisfy — a column never empty, values
+   from a fixed list, no number below zero, no key twice. Each rule can be **critical**: when a
+   critical rule is broken, the result is not published. `docs/constraints.md` lists them.
+4. **Build a pipeline.** A pipeline names the dataset, its steps in order — spellings made one,
+   unreadable rows dropped, types set, outliers capped, gaps filled — and its constraints. It is
+   a file, `pipelines/messy_csv_orders.yaml`, or it is built step by step on the dashboard's
+   **Pipeline** page. Every change saved is a new version, and each run records which one ran.
+5. **Run it.** `udp pipeline run messy_csv_orders`, or **Run** on the Pipeline page. The run
+   reads RAW, applies each step, checks the constraints and, only if no critical one failed,
+   replaces the dataset's **CLEAN** table in one go. It records every step's rows in and out
+   and values changed, and every constraint's outcome. A run that fails names the step that
+   failed and why, and leaves RAW and the previous CLEAN table exactly as they were.
+6. **Read its lineage.** The dataset's **Lineage** tab — or the `lineage` part of
+   `udp pipeline status <run id> --json` — shows the chain the data took: the file it was read from, the RAW table, each step with its
+   settings and counts, and the CLEAN table.
+
+Five demo sources show this on data that is wrong in the ways real data is: `messy_csv`,
+`messy_excel`, `messy_db`, `messy_api` and `messy_json`, each with a pipeline of the same name
+in `pipelines/`. Their files describe the problems built into them; two of each pipeline's
+constraints — a key repeated, a number below zero — fail on purpose, so the run reports them
+rather than hiding them. `docs/stages-and-pipelines.md` has the details, and
+`docs/performance.md` how long a pipeline takes on a million rows.
+
 ## A source in one folder
 
 ```

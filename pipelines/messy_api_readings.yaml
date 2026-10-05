@@ -1,0 +1,51 @@
+# messy_api's readings, from RAW to clean.messy_api__readings: teams spelt one way, rows whose
+# score or date cannot be read dropped, types set, the broken sensor's temperature capped and
+# the gaps filled. A repeated reading and a negative score are reported, not hidden.
+#   uv run --locked udp run messy_api
+#   uv run --locked udp pipeline run messy_api_readings
+source: messy_api
+dataset: readings
+profile: ends
+constraints:
+  - constraint: not_null
+    column: id
+    critical: true
+  - constraint: allowed_values
+    column: team
+    values: [red, blue, green]
+    critical: true
+  - constraint: unique
+    columns: [id]
+  - constraint: min
+    column: score
+    value: 0
+steps:
+  - type: normalize_values
+    columns: [team]
+    case: lower
+    mapping:
+      blu: blue
+  - type: validate
+    constraints:
+      - constraint: datatype
+        column: score
+        type: integer
+      - constraint: datatype
+        column: measured_on
+        type: date
+    on_invalid: drop
+  - type: convert_type
+    column: score
+    to: integer
+  - type: convert_type
+    column: measured_on
+    to: date
+  - type: outliers
+    column: temp_c
+    action: cap
+    lower_percentile: 0
+    # 80, not 90: the broken reading is repeated, so it is two of the eleven temperatures.
+    upper_percentile: 80
+  - type: fill_missing
+    columns: [temp_c]
+    method: median

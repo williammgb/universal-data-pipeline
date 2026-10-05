@@ -1,0 +1,62 @@
+# messy_csv's orders, from RAW to clean.messy_csv__orders: spellings made one, rows whose
+# quantity or date cannot be read dropped, types set, the outlier price capped and the gaps
+# filled. Two constraints are left to fail on purpose: a duplicated order and a negative
+# quantity are reported, not hidden.
+#   uv run --locked udp run messy_csv
+#   uv run --locked udp pipeline run messy_csv_orders
+source: messy_csv
+dataset: orders
+profile: ends
+constraints:
+  - constraint: not_null
+    column: order_id
+    critical: true
+  - constraint: allowed_values
+    column: status
+    values: [shipped, pending, cancelled]
+    critical: true
+  - constraint: allowed_values
+    column: country
+    values: [netherlands, germany, belgium]
+    critical: true
+  - constraint: unique
+    columns: [order_id]
+  - constraint: min
+    column: quantity
+    value: 0
+steps:
+  # A load already trims the spaces around text, so the steps start with the spellings.
+  - type: normalize_values
+    columns: [country, status]
+    case: lower
+    mapping:
+      nederland: netherlands
+      the netherlands: netherlands
+      deutschland: germany
+  - type: validate
+    constraints:
+      - constraint: datatype
+        column: quantity
+        type: integer
+      - constraint: datatype
+        column: ordered_on
+        type: date
+    on_invalid: drop
+  - type: convert_type
+    column: quantity
+    to: integer
+  - type: convert_type
+    column: ordered_on
+    to: date
+  - type: outliers
+    column: unit_price
+    action: cap
+    lower_percentile: 0
+    upper_percentile: 95
+  - type: fill_missing
+    columns: [unit_price]
+    method: median
+  - type: fill_missing
+    columns: [customer]
+    method: value
+    value: unknown

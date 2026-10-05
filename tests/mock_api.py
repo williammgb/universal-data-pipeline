@@ -33,6 +33,27 @@ def records_at(rows: int, revision: int) -> list[dict[str, Any]]:
     return data
 
 
+# Records of mixed quality for sources/messy_api, built in on purpose: a score sent as a word,
+# a date that does not exist, a team spelt and cased several ways, missing and absent fields, a
+# reading repeated, a temperature from a broken sensor and a negative score.
+MESSY: list[dict[str, Any]] = [
+    {"id": 1, "team": "Red", "score": 7, "temp_c": 21.5, "measured_on": "2024-05-01"},
+    {"id": 2, "team": "red", "score": 5, "temp_c": 22.0, "measured_on": "2024-05-01"},
+    {"id": 3, "team": "RED ", "score": "seven", "temp_c": 20.5, "measured_on": "2024-05-02"},
+    {"id": 4, "team": "Blue", "score": 6, "temp_c": None, "measured_on": "2024-05-02"},
+    {"id": 5, "team": "blu", "score": 8, "temp_c": 19.0, "measured_on": "2024-05-32"},
+    {"id": 6, "team": "Blue", "score": 4, "temp_c": 18.5, "measured_on": "2024-05-03"},
+    {"id": 7, "team": "Green", "score": 9, "temp_c": 9999.0, "measured_on": "2024-05-03"},
+    {"id": 7, "team": "Green", "score": 9, "temp_c": 9999.0, "measured_on": "2024-05-03"},
+    {"id": 8, "team": "green", "score": -2, "temp_c": 21.0, "measured_on": "2024-05-04"},
+    {"id": 9, "team": "GREEN", "temp_c": 23.5, "measured_on": "2024-05-04"},
+    {"id": 10, "team": "Red", "score": 6, "temp_c": 20.0, "measured_on": "2024-05-05"},
+    {"id": 11, "team": "Blue", "score": 7, "temp_c": 22.5, "measured_on": "2024-05-05"},
+    {"id": 12, "team": "Green", "score": 5, "temp_c": 19.5, "measured_on": "2024-05-06"},
+    {"id": 13, "team": "Red", "score": 8, "temp_c": 21.0, "measured_on": "2024-05-06"},
+]
+
+
 def create_app(rows: int = 2000, token: str = "test-token") -> FastAPI:
     revisions: dict[int, list[dict[str, Any]]] = {}
 
@@ -64,6 +85,10 @@ def create_app(rows: int = 2000, token: str = "test-token") -> FastAPI:
         @router.get("/all")
         def all_records(revision: int = 0) -> dict[str, Any]:
             return {"data": dataset(revision)}
+
+        @router.get("/messy")
+        def messy() -> dict[str, Any]:
+            return {"data": MESSY}
 
         @router.get("/pages")
         def pages(page: int = 1, per_page: int = 100, revision: int = 0) -> dict[str, Any]:
