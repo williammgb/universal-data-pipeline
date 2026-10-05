@@ -56,6 +56,52 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/datasets/{source}/{dataset}/pipelines/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Saved Pipeline
+         * @description The pipeline's newest saved version; a name never saved is a new pipeline.
+         */
+        get: operations["saved_pipeline_api_datasets__source___dataset__pipelines__name__get"];
+        /**
+         * Save Pipeline
+         * @description Store the draft as the pipeline's next version; one equal to the newest is not stored
+         *     again. Nothing runs. Every problem is a 422 listing where it is, `["steps", 2, "method"]`,
+         *     and what is wrong, so nothing is saved that a run would then refuse to load.
+         */
+        put: operations["save_pipeline_api_datasets__source___dataset__pipelines__name__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/datasets/{source}/{dataset}/pipelines/{name}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start Saved Pipeline Run
+         * @description Start a run of the pipeline's newest saved version, followed as a file's run is.
+         */
+        post: operations["start_saved_pipeline_run_api_datasets__source___dataset__pipelines__name__runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/datasets/{source}/{dataset}/profile": {
         parameters: {
             query?: never;
@@ -487,6 +533,34 @@ export interface components {
             step_position?: number | null;
         };
         /**
+         * PipelineDraft
+         * @description A pipeline as the builder holds it: what `pipelines/<name>.yaml` would say, without the
+         *     source and dataset, which the address names. Each constraint and step is checked one by one
+         *     when it is saved, so a refusal can say which one and which field.
+         */
+        PipelineDraft: {
+            /**
+             * Constraints
+             * @default []
+             */
+            constraints: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Profile
+             * @default ends
+             * @enum {string}
+             */
+            profile: "none" | "ends" | "every_step";
+            /**
+             * Steps
+             * @default []
+             */
+            steps: {
+                [key: string]: unknown;
+            }[];
+        };
+        /**
          * PipelineRun
          * @description One run of one pipeline version: what ran, over what, how it ended, and what it measured.
          *
@@ -766,6 +840,39 @@ export interface components {
             offset: number;
             /** Runs */
             runs: components["schemas"]["RunItem"][];
+        };
+        /**
+         * SavedPipeline
+         * @description A pipeline's newest saved version, or — `version` null — a new one: no steps, and the
+         *     dataset's own constraints. Every step carries every setting it runs with, defaults included.
+         *     `columns` is the dataset's columns as stored, so the builder offers the names that exist.
+         */
+        SavedPipeline: {
+            /** Columns */
+            columns: components["schemas"]["Column"][];
+            /** Constraints */
+            constraints: {
+                [key: string]: unknown;
+            }[];
+            /** Dataset */
+            dataset: string;
+            /** Name */
+            name: string;
+            /**
+             * Profile
+             * @enum {string}
+             */
+            profile: "none" | "ends" | "every_step";
+            /** Saved At */
+            saved_at: string | null;
+            /** Source */
+            source: string;
+            /** Steps */
+            steps: {
+                [key: string]: unknown;
+            }[];
+            /** Version */
+            version: number | null;
         };
         /** SavedState */
         SavedState: {
@@ -1048,6 +1155,109 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DatasetConfig"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    saved_pipeline_api_datasets__source___dataset__pipelines__name__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source: string;
+                dataset: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedPipeline"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_pipeline_api_datasets__source___dataset__pipelines__name__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source: string;
+                dataset: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PipelineDraft"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedPipeline"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_saved_pipeline_run_api_datasets__source___dataset__pipelines__name__runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                source: string;
+                dataset: string;
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PipelineRunAccepted"];
                 };
             };
             /** @description Validation Error */
