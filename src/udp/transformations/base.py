@@ -176,21 +176,31 @@ def run_steps(
     """
     results: list[StepResult] = []
     for position, step in enumerate(steps, 1):
-        try:
-            step.check(frame.schema)
-        except StepConfigError as error:
-            result = StepResult(
-                position=position,
-                type=step.type,
-                status="failed",
-                rows_in=frame.height,
-                rows_out=frame.height,
-                values_changed=0,
-                error=f"{error.field}: {error.message}",
-            )
-        else:
-            frame, result = run_step(frame, step, position, context)
+        frame, result = check_and_run(frame, step, position, context)
         results.append(result)
         if result.status == "failed" and on_failure == "stop":
             break
     return frame, results
+
+
+def check_and_run(
+    frame: pl.DataFrame,
+    step: Transformation,
+    position: int,
+    context: StepContext | None = None,
+) -> tuple[pl.DataFrame, StepResult]:
+    """Check the step against the frame it meets, then run it. Never raises: settings that do
+    not fit the frame fail the step, naming the setting, and leave the frame as it was."""
+    try:
+        step.check(frame.schema)
+    except StepConfigError as error:
+        return frame, StepResult(
+            position=position,
+            type=step.type,
+            status="failed",
+            rows_in=frame.height,
+            rows_out=frame.height,
+            values_changed=0,
+            error=f"{error.field}: {error.message}",
+        )
+    return run_step(frame, step, position, context)

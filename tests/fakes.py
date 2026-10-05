@@ -15,11 +15,22 @@ from udp.storage.loader import (
     Column,
     ColumnChanges,
     ConfigCopy,
+    ConstraintResult,
     DatasetState,
+    Execution,
+    ExecutionStart,
+    LineageNode,
     LoadResult,
+    PipelineVersion,
+    Profile,
     RunFailure,
     RunFindings,
+    RunRef,
     RunStart,
+    StepDefinition,
+    StepRun,
+    StoredProfile,
+    check_chain,
     column_changes,
     interrupted_message,
     table_columns,
@@ -103,6 +114,7 @@ class MemoryTransaction:
         self.run_updates: dict[UUID, dict[str, Any]] = {}
         self.quarantine: list[dict[str, Any]] = []
         self.quality_results: list[dict[str, Any]] = []
+        self.lineage: dict[RunRef, list[LineageNode]] = {}
 
     def table(self, name: str) -> pl.DataFrame | None:
         found = self.tables.get(name, self._loader.tables.get(name))
@@ -297,11 +309,273 @@ class MemoryTransaction:
             rows_loaded=rows_loaded,
         )
 
+    def record_lineage(
+        self,
+        source: str,
+        dataset: str,
+        run: RunRef,
+        nodes: Sequence[LineageNode],
+        recorded_at: datetime,
+    ) -> None:
+        recorded = [*self._loader.lineage.get(run, ()), *self.lineage.get(run, ())]
+        check_chain(source, dataset, run, [*recorded, *nodes])
+        self.lineage.setdefault(run, []).extend(nodes)
+
+
+def _stage_name(stage: Stage, source: str, dataset: str) -> str:
+    return ".".join(stage_table(stage, source, dataset))
+
+
+class MemoryStages:
+    """In-memory stand-in for PostgresStages, held to the same contract for what a pipeline run
+    reads and writes. Everything is written at once: there is no transaction to roll back."""
+
+    def __init__(self, loader: MemoryLoader) -> None:
+        self._loader = loader
+
+    def save_pipeline(
+        self,
+        source: str,
+        dataset: str,
+        name: str,
+        definition: dict[str, Any],
+        steps: Sequence[StepDefinition],
+        created_at: datetime,
+    ) -> PipelineVersion:
+        stage_table(Stage.CLEAN, source, dataset)
+        newest = self.read_pipeline(source, dataset, name)
+        stored_steps = tuple(
+            StepDefinition(step.step_type, json.loads(json.dumps(step.configuration)))
+            for step in steps
+        )
+        stored = json.loads(json.dumps(definition))
+        if newest is not None and (newest.definition, newest.steps) == (stored, stored_steps):
+            return newest
+        pipelines = self._loader.pipelines
+        pipeline_id = pipelines.setdefault((source, dataset, name), len(pipelines) + 1)
+        version = PipelineVersion(
+            pipeline_id=pipeline_id,
+            source=source,
+            dataset=dataset,
+            name=name,
+            version=1 if newest is None else newest.version + 1,
+            definition=stored,
+            steps=stored_steps,
+            created_at=created_at,
+        )
+        self._loader.pipeline_versions[(pipeline_id, version.version)] = version
+        return version
+
+    def read_pipeline(
+        self, source: str, dataset: str, name: str, version: int | None = None
+    ) -> PipelineVersion | None:
+        pipeline_id = self._loader.pipelines.get((source, dataset, name))
+        found = [
+            stored
+            for (owner, number), stored in self._loader.pipeline_versions.items()
+            if owner == pipeline_id and (version is None or number == version)
+        ]
+        return max(found, key=lambda stored: stored.version, default=None)
+
+    def read_pipeline_version(self, pipeline_id: int, version: int) -> PipelineVersion | None:
+        return self._loader.pipeline_versions.get((pipeline_id, version))
+
+    def _owner(self, execution_id: UUID) -> PipelineVersion:
+        execution = self._loader.executions[execution_id]
+        return self._loader.pipeline_versions[(execution["pipeline_id"], execution["version"])]
+
+    def running_executions(self, source: str, dataset: str) -> list[UUID]:
+        running = [
+            (execution["started_at"], execution_id)
+            for execution_id, execution in self._loader.executions.items()
+            if execution["status"] == "running"
+            and (self._owner(execution_id).source, self._owner(execution_id).dataset)
+            == (source, dataset)
+        ]
+        return [execution_id for _, execution_id in sorted(running)]
+
+    def newest_run(self, stage: Stage, source: str, dataset: str) -> RunRef | None:
+        if Stage(stage) is Stage.RAW:
+            raw = self._loader.raw.get(raw_table(source, dataset))
+            if raw is None:
+                return None
+            present = set(raw.get_column("_run_id").to_list())
+            runs = [
+                run
+                for run in self._loader.runs.values()
+                if (run["source"], run["dataset"], run["status"]) == (source, dataset, "succeeded")
+                and str(run["run_id"]) in present
+            ]
+            newest = max(runs, key=lambda run: run["started_at"], default=None)
+            return None if newest is None else RunRef(ingest_run_id=newest["run_id"])
+        wanted = "running" if Stage(stage) is Stage.STAGING else "succeeded"
+        executions = [
+            (execution["started_at"], execution_id)
+            for execution_id, execution in self._loader.executions.items()
+            if execution["status"] == wanted
+            and (self._owner(execution_id).source, self._owner(execution_id).dataset)
+            == (source, dataset)
+        ]
+        return RunRef(execution_id=max(executions)[1]) if executions else None
+
+    def read_raw(
+        self, source: str, dataset: str, ingest_runs: Sequence[UUID] | None = None
+    ) -> pl.DataFrame:
+        raw = self._loader.raw.get(raw_table(source, dataset))
+        if raw is None:
+            raise LoadError(f"{source}.{dataset} has no RAW table: run `udp run {source}` first")
+        if ingest_runs is None:
+            return raw.clone()
+        return raw.filter(pl.col("_run_id").is_in([str(run) for run in ingest_runs]))
+
+    def write_staging(self, source: str, dataset: str, frame: pl.DataFrame) -> None:
+        if not frame.columns:
+            raise LoadError(f"nothing to write to STAGING of {source}.{dataset}: no columns")
+        self._loader.staging[_stage_name(Stage.STAGING, source, dataset)] = frame.clone()
+
+    def start_execution(self, start: ExecutionStart) -> None:
+        if (start.pipeline_id, start.version) not in self._loader.pipeline_versions:
+            raise LoadError(f"pipeline {start.pipeline_id} has no version {start.version}")
+        self._loader.executions[start.execution_id] = {
+            "pipeline_id": start.pipeline_id,
+            "version": start.version,
+            "trigger": start.trigger,
+            "status": "running",
+            "started_at": start.started_at,
+            "ended_at": None,
+            "rows_in": None,
+            "rows_out": None,
+            "failed_step": None,
+            "error_class": None,
+            "error_message": None,
+            "input_run_id": None,
+        }
+        self._loader.step_runs[start.execution_id] = {}
+
+    def last_ingest(self, source: str, dataset: str) -> UUID | None:
+        state = self._loader.states.get((source, dataset))
+        return None if state is None else state.run_id
+
+    def record_input(self, execution_id: UUID, ingest_run_id: UUID) -> None:
+        execution = self._loader.executions.get(execution_id)
+        if execution is None or execution["status"] != "running":
+            raise LoadError(f"execution {execution_id} is not running")
+        execution["input_run_id"] = ingest_run_id
+
+    def record_step(self, execution_id: UUID, step: StepRun) -> None:
+        if not 1 <= step.position <= len(self._owner(execution_id).steps):
+            raise LoadError(f"execution {execution_id} ran no pipeline with a step {step.position}")
+        steps = self._loader.step_runs[execution_id]
+        known = steps.get(step.position)
+        if known is not None and known.status != "running":
+            raise LoadError(f"step {step.position} of execution {execution_id} has already ended")
+        steps[step.position] = step
+
+    def finish_execution(
+        self,
+        execution_id: UUID,
+        *,
+        ended_at: datetime,
+        rows_in: int | None,
+        rows_out: int | None,
+        failure: RunFailure | None = None,
+        failed_step: int | None = None,
+    ) -> None:
+        if failed_step is not None and failure is None:
+            raise ValueError("only a failed execution names the step that failed")
+        execution = self._loader.executions.get(execution_id)
+        if execution is None or execution["status"] != "running":
+            raise LoadError(f"execution {execution_id} is not running")
+        owner = self._owner(execution_id)
+        staging = _stage_name(Stage.STAGING, owner.source, owner.dataset)
+        if failure is None and staging not in self._loader.staging:
+            raise LoadError(f"execution {execution_id} has no STAGING table to publish as CLEAN")
+        execution.update(
+            status="succeeded" if failure is None else "failed",
+            ended_at=ended_at,
+            rows_in=rows_in,
+            rows_out=rows_out,
+            failed_step=failed_step,
+            error_class=None if failure is None else failure.error_class,
+            error_message=None if failure is None else failure.message,
+        )
+        frame = self._loader.staging.pop(staging, None)
+        if failure is None and frame is not None:
+            self._loader.clean[_stage_name(Stage.CLEAN, owner.source, owner.dataset)] = frame
+
+    def read_execution(self, execution_id: UUID) -> Execution | None:
+        execution = self._loader.executions.get(execution_id)
+        if execution is None:
+            return None
+        owner = self._owner(execution_id)
+        steps = self._loader.step_runs[execution_id]
+        return Execution(
+            execution_id=execution_id,
+            source=owner.source,
+            dataset=owner.dataset,
+            steps=tuple(steps[position] for position in sorted(steps)),
+            **execution,
+        )
+
+    def record_profile(self, profile: Profile) -> int:
+        self._loader.stored_profiles.append(profile)
+        return len(self._loader.stored_profiles)
+
+    def read_profiles(
+        self, source: str, dataset: str, stage: Stage | None = None, run: RunRef | None = None
+    ) -> list[StoredProfile]:
+        return [
+            StoredProfile(profile_id, profile)
+            for profile_id, profile in enumerate(self._loader.stored_profiles, 1)
+            if (profile.source, profile.dataset) == (source, dataset)
+            and (stage is None or profile.stage is Stage(stage))
+            and (run is None or profile.run == run)
+        ]
+
+    def record_constraint_results(self, results: Sequence[ConstraintResult]) -> None:
+        self._loader.constraint_results.extend(results)
+
+    def read_constraint_results(
+        self, source: str, dataset: str, stage: Stage | None = None, run: RunRef | None = None
+    ) -> list[ConstraintResult]:
+        return [
+            result
+            for result in self._loader.constraint_results
+            if (result.source, result.dataset) == (source, dataset)
+            and (stage is None or result.stage is Stage(stage))
+            and (run is None or result.run == run)
+        ]
+
+    def record_lineage(
+        self,
+        source: str,
+        dataset: str,
+        run: RunRef,
+        nodes: Sequence[LineageNode],
+        recorded_at: datetime,
+    ) -> None:
+        recorded = self._loader.lineage.setdefault(run, [])
+        check_chain(source, dataset, run, [*recorded, *nodes])
+        recorded.extend(nodes)
+
+    def read_lineage(self, run: RunRef) -> tuple[LineageNode, ...]:
+        return tuple(self._loader.lineage.get(run, ()))
+
 
 class MemoryLoader:
     """In-memory stand-in for PostgresLoader, held to the same contract."""
 
     def __init__(self) -> None:
+        # V2: the stage tables a pipeline run writes, and its records.
+        self.staging: dict[str, pl.DataFrame] = {}
+        self.clean: dict[str, pl.DataFrame] = {}
+        self.pipelines: dict[tuple[str, str, str], int] = {}
+        self.pipeline_versions: dict[tuple[int, int], PipelineVersion] = {}
+        self.executions: dict[UUID, dict[str, Any]] = {}
+        self.step_runs: dict[UUID, dict[int, StepRun]] = {}
+        self.stored_profiles: list[Profile] = []
+        self.constraint_results: list[ConstraintResult] = []
+        self.lineage: dict[RunRef, list[LineageNode]] = {}
         self.tables: dict[str, pl.DataFrame] = {}
         self.raw: dict[str, pl.DataFrame] = {}
         self.states: dict[tuple[str, str], DatasetState] = {}
@@ -390,6 +664,10 @@ class MemoryLoader:
         }
 
     @contextmanager
+    def stages(self) -> Iterator[MemoryStages]:
+        yield MemoryStages(self)
+
+    @contextmanager
     def transaction(self) -> Iterator[MemoryTransaction]:
         transaction = MemoryTransaction(self)
         yield transaction
@@ -410,6 +688,8 @@ class MemoryLoader:
             self.runs[run_id].update(fields)
         self.quarantine.extend(transaction.quarantine)
         self.quality_results.extend(transaction.quality_results)
+        for run, nodes in transaction.lineage.items():
+            self.lineage.setdefault(run, []).extend(nodes)
 
     def fail_run(
         self,

@@ -3,7 +3,7 @@
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import AbstractContextManager, asynccontextmanager
+from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
@@ -28,6 +28,8 @@ from udp.api.models import (
     DatasetItem,
     DatasetProfile,
     Health,
+    PipelineRun,
+    PipelineRunAccepted,
     QualityReport,
     RowsPage,
     RunAccepted,
@@ -40,11 +42,14 @@ from udp.api.models import (
     SourceItem,
 )
 from udp.config.overrides import differences, editable_fields
+from udp.config.pipeline import load_pipeline, pipeline_exists, read_pipeline_file
 from udp.config.source import SOURCE_FILE, load_source
 from udp.connectors.base import DatasetBase
 from udp.errors import ConfigError
 from udp.names import RESERVED_COLUMNS, name_problem
 from udp.orchestration.scheduler import RUNS_AT_ONCE
+from udp.pipeline.execution import PipelineBusy, carry_out, read_run, start_pipeline
+from udp.pipeline.execution import Started as StartedPipeline
 from udp.pipeline.incremental import rebuild_reasons
 from udp.pipeline.runner import run_source
 from udp.storage.loader import Loader
@@ -446,6 +451,69 @@ def create_app(
             datasets=datasets,
             requested_at=requested_at,
         )
+
+    def give_back_a_place() -> None:
+        with app.state.queue:
+            app.state.queued -= 1
+
+    def carry_out_in_background(
+        resources: ExitStack, loader: Loader, started: StartedPipeline
+    ) -> None:
+        """The pipeline run's steps, off the request, on the connection that holds its lock."""
+        try:
+            with resources:
+                carry_out(loader, started)
+        except Exception as error:
+            log.error(
+                "pipeline run started over the API could not finish",
+                execution_id=str(started.execution_id),
+                error=repr(error),
+            )
+        finally:
+            give_back_a_place()
+
+    @app.post("/api/pipelines/{name}/runs", status_code=202)
+    def start_pipeline_run(name: str) -> PipelineRunAccepted:
+        """Start a run of pipelines/<name>.yaml. It is recorded as running before this answers,
+        so its id can be followed at once; a dataset another run holds is refused (409)."""
+        if not pipeline_exists(sources_dir, name):
+            raise HTTPException(404, f"pipeline '{name}' not found")
+        try:
+            written = read_pipeline_file(sources_dir, name)
+        except ConfigError as error:
+            raise HTTPException(422, str(error)) from error
+        if not take_a_place():
+            raise HTTPException(429, f"{RUNS_QUEUED} runs are already waiting; try again later")
+        resources = ExitStack()
+        try:
+            loader = resources.enter_context(open_loader())
+            pipeline = load_pipeline(sources_dir, name, env, loader.read_overrides(written.source))
+            started = start_pipeline(loader, pipeline)
+            app.state.runs.submit(carry_out_in_background, resources, loader, started)
+        except BaseException as error:
+            resources.close()
+            give_back_a_place()
+            if isinstance(error, ConfigError):
+                raise HTTPException(422, str(error)) from error
+            if isinstance(error, PipelineBusy):
+                raise HTTPException(409, str(error)) from error
+            raise
+        log.info("pipeline run requested", pipeline=name, execution_id=str(started.execution_id))
+        return PipelineRunAccepted(
+            execution_id=started.execution_id,
+            pipeline=name,
+            version=started.version.version,
+            source=pipeline.source,
+            dataset=pipeline.dataset.name,
+            requested_at=started.started_at,
+        )
+
+    @app.get("/api/pipeline-runs/{execution_id}")
+    def pipeline_run(execution_id: UUID) -> PipelineRun:
+        """A pipeline run's record: its steps, constraints, profiles and lineage so far."""
+        with open_loader() as loader, loader.stages() as stages:
+            record = read_run(stages, execution_id)
+        return found(record, f"pipeline run {execution_id}")
 
     _serve_dashboard(app, dashboard_dir)
     return app
