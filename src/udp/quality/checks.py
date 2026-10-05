@@ -66,10 +66,15 @@ def _declare_hint(dtype: pl.DataType) -> str:
     return ""
 
 
-def check_columns(schema: pl.Schema, checks: Sequence[Check]) -> None:
-    """Every check names columns that exist, of a type the check can compare."""
+def check_columns(
+    schema: pl.Schema, checks: Sequence[Check], labels: Sequence[str] | None = None
+) -> None:
+    """Every check names columns that exist, of a type the check can compare.
+
+    A problem names the check by its label, `check <position> (<type>)` unless `labels` says.
+    """
     for position, check in enumerate(checks):
-        where = f"check {position} ({check.check})"
+        where = f"check {position} ({check.check})" if labels is None else labels[position]
         for name in check.columns_checked:
             if name not in schema:
                 raise ValidationError(f"{where}: column '{name}' is not in the data")
@@ -113,7 +118,7 @@ def check_columns(schema: pl.Schema, checks: Sequence[Check]) -> None:
                 )
 
 
-def _failing(check: RowCheck, dtype: pl.DataType) -> pl.Expr:
+def row_fails(check: RowCheck, dtype: pl.DataType) -> pl.Expr:
     """True for rows that fail the check; null values pass every row check but not_null."""
     value = pl.col(check.column)
     if isinstance(check, NotNull):
@@ -156,7 +161,7 @@ def check_rows(
             yield chunk
             continue
         flags = chunk.select(
-            _failing(check, chunk.schema[check.column]).fill_null(False).alias(str(index))
+            row_fails(check, chunk.schema[check.column]).fill_null(False).alias(str(index))
             for index, (_, check) in enumerate(row_checks)
         )
         for index in range(len(row_checks)):

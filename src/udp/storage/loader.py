@@ -194,6 +194,15 @@ class LoadTransaction(Protocol):
         """Remove datasets.<table> if it exists."""
         ...
 
+    def drop_raw(self, source: str, dataset: str) -> None:
+        """Remove the dataset's RAW table if it exists, so the next load starts it over."""
+        ...
+
+    def append_raw(self, source: str, dataset: str) -> int:
+        """Add the rows the last load in this transaction read, platform columns included, to the
+        dataset's RAW table, creating it on first use. Returns the rows added."""
+        ...
+
     def replace_table(self, table: str, chunks: Iterable[pl.DataFrame]) -> LoadResult:
         """Replace every row of datasets.<table> with the chunks."""
         ...
@@ -385,7 +394,9 @@ StepStatus = Literal["running", "succeeded", "failed"]
 
 @dataclass(frozen=True)
 class StepRun:
-    """What one step did in one execution; `position` is the step's place in the pipeline."""
+    """What one step did in one execution; `position` is the step's place in the pipeline. A
+    python step also records the hash of the script it ran, what the script printed, and the
+    script line it failed on."""
 
     position: int
     status: StepStatus
@@ -396,6 +407,9 @@ class StepRun:
     values_changed: int | None = None
     error_class: str | None = None
     error_message: str | None = None
+    script_sha256: str | None = None
+    output: str | None = None
+    error_line: int | None = None
 
     def __post_init__(self) -> None:
         if self.position < 1:

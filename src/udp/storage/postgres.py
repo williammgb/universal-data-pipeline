@@ -13,12 +13,14 @@ from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from udp.config.columns import is_json, json_text
-from udp.errors import LoadError
+from udp.connectors.base import DatasetBase
+from udp.errors import LoadError, SchemaDriftError
 from udp.names import Stage, stage_table
 from udp.profiling.frame import ProfileSettings
 from udp.profiling.models import ProfileComparison, StageProfile, compare_profiles
 from udp.profiling.stage import profile_stage
 from udp.profiling.table import PROFILE_ROW_LIMIT
+from udp.quality.constraints import check_stage
 from udp.storage import overrides as override_store
 from udp.storage.loader import (
     INTERRUPTED,
@@ -51,8 +53,21 @@ from udp.storage.loader import (
 
 log = structlog.get_logger(step="run")
 
-_STAGE = sql.Identifier("udp_stage")
-_STAGE_ROW = sql.Identifier("_stage_row")
+_STAGE_TABLE = "udp_stage"
+_STAGE = sql.Identifier(_STAGE_TABLE)
+_STAGE_ROW_COLUMN = "_stage_row"
+_STAGE_ROW = sql.Identifier(_STAGE_ROW_COLUMN)
+_RAW_GUARD = sql.Identifier("raw_append_only")
+
+
+def _guard_raw(conn: psycopg.Connection, target: sql.Identifier) -> None:
+    """Make a new RAW table refuse every UPDATE, DELETE and TRUNCATE from now on."""
+    conn.execute(
+        sql.SQL(
+            "CREATE TRIGGER {} BEFORE UPDATE OR DELETE OR TRUNCATE ON {} "
+            "FOR EACH STATEMENT EXECUTE FUNCTION platform.refuse_raw_change()"
+        ).format(_RAW_GUARD, target)
+    )
 
 
 def _identifiers(names: Sequence[str]) -> sql.Composed:
@@ -192,6 +207,57 @@ class PostgresTransaction:
         self._conn.execute(
             sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier("datasets", table))
         )
+
+    def drop_raw(self, source: str, dataset: str) -> None:
+        # The guard refuses UPDATE, DELETE and TRUNCATE; dropping the table is how a full
+        # refresh, and nothing else, starts RAW over.
+        self._conn.execute(
+            sql.SQL("DROP TABLE IF EXISTS {}").format(_stage_identifier(Stage.RAW, source, dataset))
+        )
+
+    def append_raw(self, source: str, dataset: str) -> int:
+        # The stage table still holds the load's rows, typed as the dataset table types them, so
+        # RAW gets exactly what the load read without reading the source twice.
+        schema, table = stage_table(Stage.RAW, source, dataset)
+        target = sql.Identifier(schema, table)
+        loaded = [
+            (name, kind)
+            for name, kind in self._columns(_STAGE_TABLE, "pg_temp")
+            if name != _STAGE_ROW_COLUMN
+        ]
+        if not loaded:
+            raise LoadError(f"nothing was loaded for {source}.{dataset} to add to RAW")
+        stored = dict(self._columns(table, schema))
+        if stored:
+            for name, kind in loaded:
+                if name not in stored:
+                    self._conn.execute(
+                        sql.SQL("ALTER TABLE {} ADD COLUMN {} {}").format(
+                            target, sql.Identifier(name), sql.SQL(kind)
+                        )
+                    )
+                elif kind != stored[name]:
+                    raise SchemaDriftError(
+                        f"column '{name}' of {schema}.{table} is {stored[name]} but this run "
+                        f"loaded it as {kind}; RAW keeps what was ingested, so run with "
+                        "--full-refresh to start it over"
+                    )
+        else:
+            definition = [
+                sql.SQL("{} {}").format(sql.Identifier(name), sql.SQL(kind))
+                for name, kind in loaded
+            ]
+            self._conn.execute(
+                sql.SQL("CREATE TABLE {} ({})").format(target, sql.SQL(", ").join(definition))
+            )
+            _guard_raw(self._conn, target)
+        names = [name for name, _ in loaded]
+        inserted = self._conn.execute(
+            sql.SQL("INSERT INTO {} ({}) SELECT {} FROM {}").format(
+                target, _identifiers(names), _identifiers(names), _STAGE
+            )
+        )
+        return inserted.rowcount
 
     def read_state(self, source: str, dataset: str) -> DatasetState | None:
         row = self._conn.execute(
@@ -360,9 +426,6 @@ class PostgresTransaction:
             raise LoadError(f"run {run_id} is not a running run")
 
 
-_RAW_GUARD = sql.Identifier("raw_append_only")
-
-
 def _stage_identifier(stage: Stage, source: str, dataset: str) -> sql.Identifier:
     return sql.Identifier(*stage_table(stage, source, dataset))
 
@@ -408,12 +471,7 @@ class PostgresStages:
             raise LoadError(f"rows for {schema}.{table} must say which run ingested them (_run_id)")
         target = sql.Identifier(schema, table)
         if created:
-            self._conn.execute(
-                sql.SQL(
-                    "CREATE TRIGGER {} BEFORE UPDATE OR DELETE OR TRUNCATE ON {} "
-                    "FOR EACH STATEMENT EXECUTE FUNCTION platform.refuse_raw_change()"
-                ).format(_RAW_GUARD, target)
-            )
+            _guard_raw(self._conn, target)
         inserted = self._conn.execute(
             sql.SQL("INSERT INTO {} ({}) SELECT {} FROM {}").format(
                 target, _identifiers(names), _identifiers(names), _STAGE
@@ -544,13 +602,15 @@ class PostgresStages:
             raise LoadError(f"execution {execution_id} ran no pipeline with a step {step.position}")
         written = self._conn.execute(
             "INSERT INTO platform.step_executions (execution_id, position, status, started_at, "
-            "ended_at, rows_in, rows_out, values_changed, error_class, error_message) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ended_at, rows_in, rows_out, values_changed, error_class, error_message, "
+            "script_sha256, output, error_line) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
             "ON CONFLICT (execution_id, position) DO UPDATE SET status = EXCLUDED.status, "
             "started_at = EXCLUDED.started_at, ended_at = EXCLUDED.ended_at, "
             "rows_in = EXCLUDED.rows_in, rows_out = EXCLUDED.rows_out, "
             "values_changed = EXCLUDED.values_changed, error_class = EXCLUDED.error_class, "
-            "error_message = EXCLUDED.error_message "
+            "error_message = EXCLUDED.error_message, script_sha256 = EXCLUDED.script_sha256, "
+            "output = EXCLUDED.output, error_line = EXCLUDED.error_line "
             "WHERE step_executions.status = 'running'",
             [
                 execution_id,
@@ -563,6 +623,9 @@ class PostgresStages:
                 step.values_changed,
                 step.error_class,
                 step.error_message,
+                step.script_sha256,
+                step.output,
+                step.error_line,
             ],
         )
         if written.rowcount != 1:
@@ -635,7 +698,8 @@ class PostgresStages:
             return None
         steps = self._conn.execute(
             "SELECT position, status, started_at, ended_at, rows_in, rows_out, values_changed, "
-            "error_class, error_message FROM platform.step_executions "
+            "error_class, error_message, script_sha256, output, error_line "
+            "FROM platform.step_executions "
             "WHERE execution_id = %s ORDER BY position",
             [execution_id],
         ).fetchall()
@@ -778,6 +842,25 @@ class PostgresStages:
         )
         return StoredProfile(self.record_profile(profile), profile)
 
+    def check_constraints(
+        self,
+        stage: Stage,
+        source: str,
+        dataset: DatasetBase,
+        run: RunRef,
+        *,
+        checked_at: datetime,
+        after_step: int | None = None,
+    ) -> list[ConstraintResult]:
+        """Check the dataset's constraints against its table at this stage and store each result,
+        tagged with the run. The table is only read. Raises LoadError when it does not exist."""
+        results = [
+            outcome.result(source, dataset.name, Stage(stage), run, checked_at, after_step)
+            for outcome in check_stage(self._conn, stage, source, dataset)
+        ]
+        self.record_constraint_results(results)
+        return results
+
     def compare_profiles(self, before: int, after: int) -> ProfileComparison:
         """Rows, missing values, invalid values, outliers and duplicates of two stored profiles,
         before and after. Raises LookupError when either profile is not stored."""
@@ -854,16 +937,26 @@ class PostgresStages:
                     )
 
     def read_constraint_results(
-        self, source: str, dataset: str, stage: Stage | None = None
+        self, source: str, dataset: str, stage: Stage | None = None, run: RunRef | None = None
     ) -> list[ConstraintResult]:
-        """The dataset's constraint results in the order they were recorded."""
+        """The dataset's constraint results in the order they were recorded, of one stage or of
+        every stage, and of one run or of every run."""
+        ingest_run_id, execution_id = (None, None) if run is None else _run_values(run)
         rows = self._conn.execute(
             "SELECT result_id, stage, after_step, ingest_run_id, execution_id, position, "
             "constraint_type, columns, critical, passed, failing_rows, failing_values, message, "
             "settings, checked_at FROM platform.constraint_results "
             "WHERE source = %s AND dataset = %s AND (%s::text IS NULL OR stage = %s) "
+            "AND (%s::uuid IS NULL OR ingest_run_id = %s) "
+            "AND (%s::uuid IS NULL OR execution_id = %s) "
             "ORDER BY result_id",
-            [source, dataset, *[_stage_value(stage)] * 2],
+            [
+                source,
+                dataset,
+                *[_stage_value(stage)] * 2,
+                *[ingest_run_id] * 2,
+                *[execution_id] * 2,
+            ],
         ).fetchall()
         violations: dict[int, list[Violation]] = {}
         for result_id, column, row_key, value in self._conn.execute(

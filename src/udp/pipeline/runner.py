@@ -175,7 +175,10 @@ def _load_dataset(
             check_dataset(transaction, table, dataset, findings, started_at)
         return 0
     if state is None:
+        # A first load or a full refresh: RAW starts over with the table, so a column that
+        # changed type can be loaded again.
         transaction.drop_table(table)
+        transaction.drop_raw(source, dataset.name)
     else:
         check_same_load_settings(state, dataset)
 
@@ -218,6 +221,8 @@ def _load_dataset(
         )
 
     result = load(transaction, table, dataset, chunks, run_id, started_at)
+    raw_rows = transaction.append_raw(source, dataset.name)
+    log.info("added to RAW", step="load", rows=raw_rows)
     limit = dataset.quarantine_threshold_percent
     if threshold_exceeded(findings.quarantined_rows, counter.rows, limit):
         # transform.py can add rows, so rows can be quarantined when none were extracted.

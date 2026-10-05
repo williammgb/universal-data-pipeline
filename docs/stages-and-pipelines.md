@@ -20,7 +20,7 @@ flowchart LR
 
 | Stage | What it holds | How long it is kept |
 |---|---|---|
-| **RAW** | Exactly what was ingested, every ingest run's rows, each row tagged with the run that brought it (`_run_id`). | Only ever added to. Kept until the dataset is deleted. |
+| **RAW** | Exactly what was ingested, every ingest run's rows, each row tagged with the run that brought it (`_run_id`). | Only ever added to. Kept until the dataset is deleted or loaded again with `--full-refresh`. |
 | **STAGING** | The working copy one pipeline run transforms, step by step. | Dropped when that run ends, whether it succeeded or failed. |
 | **CLEAN** | The result of the last pipeline run that succeeded: the copy anything downstream reads. | Replaced by each successful run. A failed run leaves it as it was. |
 
@@ -29,6 +29,11 @@ flowchart LR
 prompt gets an error saying the table is append-only. New rows and new columns can still be
 added by later ingest runs; a column cannot change its type, because that would change what was
 ingested.
+
+**`udp run` fills RAW.** Each run adds the rows it read to RAW in the same transaction as the
+dataset's own table, with the same columns and types, so a failed run adds nothing. A first load,
+and `udp run <source> --full-refresh`, deletes RAW and starts it over with that run's rows — the
+one way out when a source column changes type.
 
 Because RAW keeps every ingest, a dataset loaded in full every day keeps every day's copy. That
 is the price of being able to rerun a pipeline over exactly what came in. STAGING and CLEAN hold
@@ -145,3 +150,7 @@ Profiling is `src/udp/profiling/`: `profile_frame` profiles any table given as a
 both and stores the result with its dataset, stage, run and — between two steps — the step it
 followed. A pipeline step builds its `ProfileSettings` with `ProfileSettings.for_dataset`, giving
 any column its own `OutlierRule`.
+
+Constraints are checked the same way: `PostgresStages.check_constraints` checks a dataset's
+`constraints:` against one stage table and stores a result per constraint with its run; what they
+are and what they record is in `constraints.md`.
