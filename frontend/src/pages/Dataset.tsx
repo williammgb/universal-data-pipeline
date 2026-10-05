@@ -13,12 +13,21 @@ import {
 import { cell, connectorName, count, describeSchedule, moment } from "../format";
 import { runsQuery } from "../runFilters";
 import Config from "./Config";
+import Lineage from "./Lineage";
 import { Blank, Fact, Problem, Status, Waiting } from "./parts";
 import Profile from "./Profile";
 
-// Exported so the guide names the same six tabs this page renders: renaming one here renames it
+// Exported so the guide names the same tabs this page renders: renaming one here renames it
 // there too, rather than leaving the guide describing a tab that no longer exists.
-export const TABS = ["schema", "profile", "preview", "quality", "runs", "config"] as const;
+export const TABS = [
+  "schema",
+  "profile",
+  "preview",
+  "quality",
+  "runs",
+  "config",
+  "lineage",
+] as const;
 type Tab = (typeof TABS)[number];
 export const TAB_NAMES: Record<Tab, string> = {
   schema: "Schema & metadata",
@@ -27,6 +36,7 @@ export const TAB_NAMES: Record<Tab, string> = {
   quality: "Quality",
   runs: "Runs",
   config: "Configuration",
+  lineage: "Lineage",
 };
 
 export default function Dataset() {
@@ -89,6 +99,7 @@ export default function Dataset() {
           {tab === "quality" ? <Quality source={source} dataset={dataset} /> : null}
           {tab === "runs" ? <DatasetRuns source={source} dataset={dataset} /> : null}
           {tab === "config" ? <Config source={source} dataset={dataset} /> : null}
+          {tab === "lineage" ? <Lineage source={source} dataset={dataset} /> : null}
         </>
       ) : null}
     </main>

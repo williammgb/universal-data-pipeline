@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -7,11 +7,16 @@ import type {
   DatasetConfig,
   DatasetDetail,
   DatasetItem,
+  DatasetLineage,
   DatasetProfile,
+  LineageNode,
+  LineageRun,
+  ProfileRecord,
   QualityReport,
   RowsPage,
   RunsPage,
   SourceItem,
+  StepRecord,
 } from "../api/client";
 import { rememberKey } from "../api/key";
 import App from "../App";
@@ -286,7 +291,9 @@ function serve(answers: Record<string, Answer>) {
     const key = `${init?.method ?? "GET"} ${url.pathname}`;
     asked.push(`${key}${url.search}`);
     if (typeof init?.body === "string") sent.push(init.body);
-    const answer = answers[key] ?? { body: { detail: `no fixture for ${key}` }, status: 404 };
+    // An answer for the address with its query wins over one for the address alone.
+    const answer = answers[`${key}${url.search}`] ??
+      answers[key] ?? { body: { detail: `no fixture for ${key}` }, status: 404 };
     return new Response(JSON.stringify(answer.body), {
       status: answer.status ?? 200,
       headers: { "Content-Type": "application/json" },
@@ -738,5 +745,271 @@ describe("the dashboard", () => {
     expect(contents.length).toBe(headings.length);
     expect(contents.length).toBeGreaterThan(5);
     for (const target of contents) expect(headings).toContain(target);
+  });
+});
+
+const LINEAGE_ADDRESS = "GET /api/datasets/demo_csv/customers/lineage";
+
+const MADE_CLEAN: LineageRun = {
+  execution_id: "01a1b2c3-0000-7000-8000-000000000001",
+  pipeline: "customers_tidy",
+  version: 4,
+  status: "succeeded",
+  started_at: "2026-10-04T14:02:00Z",
+};
+
+const BROKE: LineageRun = {
+  execution_id: "01a1d4e5-0000-7000-8000-000000000002",
+  pipeline: "customers_tidy",
+  version: 3,
+  status: "failed",
+  started_at: "2026-10-03T09:15:00Z",
+};
+
+function profiled(
+  stage: ProfileRecord["stage"],
+  after_step: number | null,
+  table_rows: number,
+): ProfileRecord {
+  return {
+    profile_id: table_rows + (after_step ?? 0),
+    stage,
+    after_step,
+    table_rows,
+    missing_values: 2,
+    invalid_values: 0,
+    outliers: 1,
+    duplicates: 0,
+    profiled_at: "2026-10-04T14:02:01Z",
+  };
+}
+
+const SOURCE_NODE: LineageNode = { kind: "source", name: "csv: data/customers.csv" };
+const RAW_NODE: LineageNode = {
+  kind: "raw",
+  name: "raw.demo_csv__customers",
+  profile: profiled("raw", null, 20),
+};
+const TRIMMED: StepRecord = {
+  position: 1,
+  type: "normalize_values",
+  configuration: { columns: ["city"], trim: true },
+  status: "succeeded",
+  started_at: "2026-10-04T14:02:01Z",
+  ended_at: "2026-10-04T14:02:02Z",
+  rows_in: 20,
+  rows_out: 20,
+  values_changed: 3,
+};
+
+const PREPARED: DatasetLineage = {
+  source: "demo_csv",
+  dataset: "customers",
+  run: MADE_CLEAN,
+  runs: [MADE_CLEAN, BROKE],
+  chain: [
+    SOURCE_NODE,
+    RAW_NODE,
+    { kind: "step", name: "normalize_values", step: TRIMMED },
+    {
+      kind: "step",
+      name: "fill_missing",
+      step: {
+        position: 2,
+        type: "fill_missing",
+        configuration: { columns: ["lifetime_value"], method: "median" },
+        status: "succeeded",
+        started_at: "2026-10-04T14:02:02Z",
+        ended_at: "2026-10-04T14:02:03Z",
+        rows_in: 20,
+        rows_out: 20,
+        values_changed: 1,
+      },
+      profile: profiled("staging", 2, 20),
+    },
+    { kind: "clean", name: "clean.demo_csv__customers", profile: profiled("clean", null, 20) },
+  ],
+};
+
+const FAILED_LINEAGE: DatasetLineage = {
+  ...PREPARED,
+  run: { ...BROKE, error: "step 2 (python) with {script: fix.py}: ValueError: cannot read row 3" },
+  chain: [
+    SOURCE_NODE,
+    RAW_NODE,
+    { kind: "step", name: "normalize_values", step: TRIMMED },
+    {
+      kind: "step",
+      name: "python",
+      step: {
+        position: 2,
+        type: "python",
+        configuration: { script: "scripts/fix.py" },
+        status: "failed",
+        started_at: "2026-10-03T09:15:01Z",
+        ended_at: "2026-10-03T09:15:02Z",
+        rows_in: 20,
+        error: "ValueError: cannot read row 3",
+        error_line: 2,
+      },
+    },
+    {
+      kind: "step",
+      name: "fill_missing",
+      step: {
+        position: 3,
+        type: "fill_missing",
+        configuration: { columns: ["lifetime_value"], method: "median" },
+        status: "not_run",
+      },
+    },
+  ],
+};
+
+const PLAIN_LINEAGE: DatasetLineage = {
+  source: "demo_csv",
+  dataset: "customers",
+  run: null,
+  runs: [],
+  chain: [SOURCE_NODE, RAW_NODE, { kind: "table", name: "datasets.demo_csv__customers" }],
+};
+
+function showLineage(answers: Record<string, Answer>) {
+  const asked = serve({ "GET /api/datasets/demo_csv/customers": { body: DETAIL }, ...answers });
+  show("/datasets/demo_csv/customers?tab=lineage");
+  return asked;
+}
+
+/** The blocks of the chain, top to bottom, as the text each one shows. */
+async function chainShown(): Promise<string[]> {
+  const chain = await screen.findByRole("list", { name: "Lineage" });
+  return within(chain)
+    .getAllByRole("listitem")
+    .map((item) => item.textContent ?? "");
+}
+
+function factIn(panel: HTMLElement, label: string): string {
+  return within(panel).getByText(label).closest(".fact")?.querySelector("dd")?.textContent ?? "";
+}
+
+describe("the lineage tab", () => {
+  it("draws a run's chain in order, from the source file to CLEAN", async () => {
+    showLineage({ [LINEAGE_ADDRESS]: { body: PREPARED } });
+
+    const blocks = await chainShown();
+
+    expect(blocks).toHaveLength(5);
+    const names = [
+      "csv: data/customers.csv",
+      "raw.demo_csv__customers",
+      "normalize_values",
+      "fill_missing",
+      "clean.demo_csv__customers",
+    ];
+    names.forEach((name, index) => expect(blocks[index]).toContain(name));
+    expect(blocks[0]).toContain("Source");
+    expect(blocks[2]).toContain("20 rows · 3 changed");
+    expect(screen.getByRole("link", { name: "Lineage" }).className).toContain("current");
+  });
+
+  it("shows a step's transformation, column, method, input rows, values changed and status", async () => {
+    showLineage({ [LINEAGE_ADDRESS]: { body: PREPARED } });
+    await chainShown();
+
+    fireEvent.click(screen.getByRole("button", { name: /Step 2/ }));
+
+    const panel = screen.getByRole("complementary", { name: "Step 2" });
+    expect(factIn(panel, "Transformation")).toBe("fill_missing");
+    expect(factIn(panel, "Column")).toBe("lifetime_value");
+    expect(factIn(panel, "Method")).toBe("median");
+    expect(factIn(panel, "Input rows")).toBe("20");
+    expect(factIn(panel, "Values changed")).toBe("1");
+    expect(factIn(panel, "Status")).toBe("succeeded");
+    expect(within(panel).getByText("Profile after step 2")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Step 2/ }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: /Step 1/ }).getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("marks a failed step apart from the ones that ran, and shows its error", async () => {
+    showLineage({ [LINEAGE_ADDRESS]: { body: FAILED_LINEAGE } });
+    await chainShown();
+
+    const failed = screen.getByRole("button", { name: /Step 2/ });
+    expect(failed.className).toContain("failed");
+    expect(screen.getByRole("button", { name: /Step 1/ }).className).not.toContain("failed");
+    expect(screen.getByRole("button", { name: /Step 3/ }).className).toContain("not_run");
+    expect(within(failed).getByText("ValueError: cannot read row 3")).toBeTruthy();
+    // The failed step is the one shown first, with its error and the line it failed on.
+    const panel = screen.getByRole("complementary", { name: "Step 2" });
+    expect(factIn(panel, "Status")).toBe("failed");
+    expect(factIn(panel, "Failing line")).toBe("2");
+    expect(within(panel).getByText("ValueError: cannot read row 3")).toBeTruthy();
+    expect(screen.queryByText(/clean\.demo_csv__customers/)).toBeNull();
+    // A step's failure is shown on the step, not again above the chain.
+    expect(screen.queryByText(/step 2 \(python\) with/)).toBeNull();
+  });
+
+  it("shows a run that failed outside every step once, above its chain", async () => {
+    const stopped: DatasetLineage = {
+      ...PREPARED,
+      run: { ...BROKE, error: "critical constraint not_null on customer_id failed for 2 rows" },
+      chain: PREPARED.chain.slice(0, 4),
+    };
+    showLineage({ [LINEAGE_ADDRESS]: { body: stopped } });
+    await chainShown();
+
+    expect(screen.getByText(/critical constraint not_null/).className).toBe("lineage-error");
+    expect(screen.queryByText(/clean\.demo_csv__customers/)).toBeNull();
+  });
+
+  it("shows a dataset no pipeline has run over as its plain lineage", async () => {
+    showLineage({ [LINEAGE_ADDRESS]: { body: PLAIN_LINEAGE } });
+
+    const blocks = await chainShown();
+
+    expect(blocks).toHaveLength(3);
+    expect(blocks[0]).toContain("csv: data/customers.csv");
+    expect(blocks[1]).toContain("raw.demo_csv__customers");
+    expect(blocks[2]).toContain("datasets.demo_csv__customers");
+    expect(screen.queryByLabelText("Run")).toBeNull();
+    expect(screen.queryByRole("complementary")).toBeNull();
+  });
+
+  it("shows nothing but a short note for a dataset with no lineage yet", async () => {
+    showLineage({ [LINEAGE_ADDRESS]: { body: { ...PLAIN_LINEAGE, chain: [] } } });
+
+    expect(await screen.findByText("No lineage yet.")).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Lineage" })).toBeNull();
+  });
+
+  it("shows the chosen run's chain when another run is picked", async () => {
+    const asked = showLineage({
+      [LINEAGE_ADDRESS]: { body: PREPARED },
+      [`${LINEAGE_ADDRESS}?run=${BROKE.execution_id}`]: { body: FAILED_LINEAGE },
+    });
+    expect((await chainShown())[4]).toContain("clean.demo_csv__customers");
+
+    fireEvent.change(screen.getByLabelText("Run"), { target: { value: BROKE.execution_id } });
+
+    await waitFor(() => expect(screen.queryByText(/clean\.demo_csv__customers/)).toBeNull());
+    const blocks = await chainShown();
+    expect(blocks[3]).toContain("python");
+    expect(blocks[4]).toContain("not run");
+    expect(asked).toContain(`${LINEAGE_ADDRESS}?run=${BROKE.execution_id}`);
+    expect((screen.getByLabelText("Run") as HTMLSelectElement).value).toBe(BROKE.execution_id);
+  });
+
+  it("names the run that made CLEAN and links to that run's page", async () => {
+    showLineage({ [LINEAGE_ADDRESS]: { body: PREPARED } });
+
+    const chain = await screen.findByRole("list", { name: "Lineage" });
+    const clean = chain.lastElementChild as HTMLElement;
+
+    expect(clean.textContent).toContain("clean.demo_csv__customers");
+    expect(clean.textContent).toContain("customers_tidy v4");
+    const link = within(clean).getByRole("link", { name: "01a1b2c3" });
+    expect(link.getAttribute("href")).toBe(
+      `/pipeline?source=demo_csv&dataset=customers&name=customers_tidy&run=${MADE_CLEAN.execution_id}`,
+    );
   });
 });

@@ -25,6 +25,9 @@ export type PipelineRun = components["schemas"]["PipelineRun"];
 export type PipelineRunAccepted = components["schemas"]["PipelineRunAccepted"];
 export type StepRecord = components["schemas"]["StepRecord"];
 export type ProfileRecord = components["schemas"]["ProfileRecord"];
+export type DatasetLineage = components["schemas"]["DatasetLineage"];
+export type LineageNode = components["schemas"]["LineageNode"];
+export type LineageRun = components["schemas"]["LineageRun"];
 
 /** What the API said went wrong, so a page can show it instead of a blank screen. `detail` is
  * what it sent, for a page that places each problem where it belongs rather than in one line. */
@@ -148,6 +151,15 @@ export function useProfile(source: string, dataset: string) {
     queryKey: ["profile", source, dataset],
     queryFn: () => getJson<DatasetProfile>(`/datasets/${source}/${dataset}/profile`),
     staleTime: Infinity,
+  });
+}
+
+/** One run's chain, or — `run` empty — the run that made the current CLEAN table. */
+export function useLineage(source: string, dataset: string, run: string) {
+  const params = new URLSearchParams(run ? { run } : {});
+  return useQuery({
+    queryKey: ["lineage", source, dataset, run],
+    queryFn: () => getJson<DatasetLineage>(`/datasets/${source}/${dataset}/lineage`, params),
   });
 }
 

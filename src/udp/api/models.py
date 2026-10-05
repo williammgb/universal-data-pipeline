@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from udp.config.pipeline import ProfileChoice
 
 # So is a pipeline run's record, with the engine that writes it.
-from udp.pipeline.execution import PipelineRun
+from udp.pipeline.execution import PipelineRun, ProfileRecord, StepRecord
 
 # The profile's models live with the profiling engine; the API returns them as they are.
 from udp.profiling.models import (
@@ -26,6 +26,8 @@ __all__ = [
     "JsonValue",
     "PipelineRun",
     "ProfileKind",
+    "ProfileRecord",
+    "StepRecord",
     "ValueCount",
 ]
 
@@ -257,3 +259,38 @@ class SavedPipeline(BaseModel):
     constraints: list[dict[str, Any]]
     steps: list[dict[str, Any]]
     columns: list[Column]
+
+
+class LineageRun(BaseModel):
+    """One pipeline run of a dataset, as the lineage tab offers it to pick; `error` is filled in
+    only for the run shown, when it failed."""
+
+    execution_id: UUID
+    pipeline: str
+    version: int
+    status: Literal["running", "succeeded", "failed"]
+    started_at: datetime
+    error: str | None = None
+
+
+class LineageNode(BaseModel):
+    """One place the data passed through, in order. A step carries what it did in the run, or
+    `not_run`; `profile` is the profile the run took there, when it took one. `table` is the
+    dataset's own table, the end of the chain of a dataset no pipeline has run over."""
+
+    kind: Literal["source", "raw", "step", "clean", "table"]
+    name: str
+    step: StepRecord | None = None
+    profile: ProfileRecord | None = None
+
+
+class DatasetLineage(BaseModel):
+    """Where the dataset's data came from and what was done to it: the chain of one pipeline
+    run — `run`, by default the one that made the current CLEAN table — or, when no pipeline has
+    run over the dataset, its newest load's. `runs` are the runs to pick from, newest first."""
+
+    source: str
+    dataset: str
+    run: LineageRun | None
+    runs: list[LineageRun]
+    chain: list[LineageNode]
