@@ -46,6 +46,12 @@ export default function Dataset() {
         <div className="sub">datasets.{detail.data?.table_name ?? `${source}__${dataset}`}</div>
         <div className="right">
           {detail.data?.last_run ? <Status status={detail.data.last_run.status} /> : null}
+          <Link
+            className="button"
+            to={`/pipeline?${new URLSearchParams({ source, dataset }).toString()}`}
+          >
+            Build pipeline
+          </Link>
           <button
             type="button"
             className="primary"

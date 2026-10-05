@@ -7,7 +7,7 @@ from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 import psycopg
@@ -28,6 +28,7 @@ from udp.api.models import (
     DatasetItem,
     DatasetProfile,
     Health,
+    PipelineDraft,
     PipelineRun,
     PipelineRunAccepted,
     QualityReport,
@@ -38,12 +39,21 @@ from udp.api.models import (
     RunsPage,
     RunStatus,
     RunTrigger,
+    SavedPipeline,
     SourceDetail,
     SourceItem,
 )
 from udp.config.overrides import differences, editable_fields
-from udp.config.pipeline import load_pipeline, pipeline_exists, read_pipeline_file
-from udp.config.source import SOURCE_FILE, load_source
+from udp.config.pipeline import (
+    PipelineDefinition,
+    PipelineFile,
+    draft_problems,
+    load_pipeline,
+    pipeline_exists,
+    read_pipeline_file,
+    resolve_pipeline,
+)
+from udp.config.source import SOURCE_FILE, SourceConfig, load_source
 from udp.connectors.base import DatasetBase
 from udp.errors import ConfigError
 from udp.names import RESERVED_COLUMNS, name_problem
@@ -52,11 +62,34 @@ from udp.pipeline.execution import PipelineBusy, carry_out, read_run, start_pipe
 from udp.pipeline.execution import Started as StartedPipeline
 from udp.pipeline.incremental import rebuild_reasons
 from udp.pipeline.runner import run_source
-from udp.storage.loader import Loader
+from udp.storage.loader import Loader, PipelineVersion
 
 log = structlog.get_logger(step="api")
 
 RUNS_QUEUED = 16
+
+# A python step runs its script as the platform itself: from the API, where anyone with a key can
+# save a pipeline, it may only name a script the operator put in this folder.
+SCRIPTS_FROM_API = Path("scripts", "custom")
+
+
+def script_problem(script: Any) -> str | None:
+    """Why a python step saved from the API may not run this script, or None when it may."""
+    if not isinstance(script, str) or not script:
+        return None  # The step's own settings check says what is missing.
+    path = Path(script)
+    inside = (
+        not path.is_absolute()
+        and ".." not in path.parts
+        and path.resolve().is_relative_to(SCRIPTS_FROM_API.resolve())
+    )
+    if not inside:
+        folder = SCRIPTS_FROM_API.as_posix()
+        return f"a script saved from the dashboard must be a file under {folder}/"
+    if not path.is_file():
+        return f"{script} is not a file"
+    return None
+
 
 Limit = Annotated[int, Query(ge=1, le=500)]
 Offset = Annotated[int, Query(ge=0)]
@@ -482,12 +515,24 @@ def create_app(
             written = read_pipeline_file(sources_dir, name)
         except ConfigError as error:
             raise HTTPException(422, str(error)) from error
+        return run_in_the_background(
+            name,
+            lambda loader: load_pipeline(
+                sources_dir, name, env, loader.read_overrides(written.source)
+            ),
+        )
+
+    def run_in_the_background(
+        name: str, definition: Callable[[Loader], PipelineDefinition]
+    ) -> PipelineRunAccepted:
+        """Record a run of the pipeline `definition` reads as running, and carry it out off the
+        request on the connection that holds its lock."""
         if not take_a_place():
             raise HTTPException(429, f"{RUNS_QUEUED} runs are already waiting; try again later")
         resources = ExitStack()
         try:
             loader = resources.enter_context(open_loader())
-            pipeline = load_pipeline(sources_dir, name, env, loader.read_overrides(written.source))
+            pipeline = definition(loader)
             started = start_pipeline(loader, pipeline)
             app.state.runs.submit(carry_out_in_background, resources, loader, started)
         except BaseException as error:
@@ -514,6 +559,124 @@ def create_app(
         with open_loader() as loader, loader.stages() as stages:
             record = read_run(stages, execution_id)
         return found(record, f"pipeline run {execution_id}")
+
+    # --- pipelines built in the dashboard ---------------------------------------------------------
+
+    def source_with_edits(source: str, dataset: str) -> tuple[SourceConfig[Any, Any], DatasetBase]:
+        """The source as a run reads it — its file with the stored edits — and the dataset in it."""
+        a_source(source)
+        try:
+            config = load_source(sources_dir, source, env, catalog.overrides(source))
+        except ConfigError as error:
+            raise HTTPException(422, str(error)) from error
+        chosen = next((item for item in config.datasets if item.name == dataset), None)
+        if chosen is None:
+            raise HTTPException(404, f"dataset '{dataset}' is not in source '{source}'")
+        return config, chosen
+
+    def a_pipeline_name(name: str) -> None:
+        problem = name_problem(name)
+        if problem is not None:
+            raise HTTPException(422, [{"loc": ["name"], "msg": f"'{name}' {problem}"}])
+
+    def saved_view(
+        source: str, dataset: DatasetBase, name: str, version: PipelineVersion | None
+    ) -> SavedPipeline:
+        _, columns = catalog.loaded_state(source, dataset.name)
+        stored = None if version is None else version.definition
+        return SavedPipeline(
+            name=name,
+            source=source,
+            dataset=dataset.name,
+            version=None if version is None else version.version,
+            saved_at=None if version is None else version.created_at,
+            profile=(stored or {}).get("profile", "ends"),
+            constraints=(
+                stored["constraints"]
+                if stored is not None
+                else [constraint.model_dump(mode="json") for constraint in dataset.constraints]
+            ),
+            steps=[] if stored is None else stored["steps"],
+            columns=[
+                Column(name=column, type=kind)
+                for column, kind in columns
+                if column not in RESERVED_COLUMNS
+            ],
+        )
+
+    @app.get("/api/datasets/{source}/{dataset}/pipelines/{name}")
+    def saved_pipeline(source: str, dataset: str, name: str) -> SavedPipeline:
+        """The pipeline's newest saved version; a name never saved is a new pipeline."""
+        _, chosen = source_with_edits(source, dataset)
+        a_pipeline_name(name)
+        with open_loader() as loader, loader.stages() as stages:
+            version = stages.read_pipeline(source, dataset, name)
+        return saved_view(source, chosen, name, version)
+
+    @app.put("/api/datasets/{source}/{dataset}/pipelines/{name}")
+    def save_pipeline(source: str, dataset: str, name: str, draft: PipelineDraft) -> SavedPipeline:
+        """Store the draft as the pipeline's next version; one equal to the newest is not stored
+        again. Nothing runs. Every problem is a 422 listing where it is, `["steps", 2, "method"]`,
+        and what is wrong, so nothing is saved that a run would then refuse to load."""
+        config, chosen = source_with_edits(source, dataset)
+        a_pipeline_name(name)
+        if pipeline_exists(sources_dir, name):
+            raise HTTPException(
+                409,
+                f"pipelines/{name}.yaml declares a pipeline called '{name}'; it is changed in "
+                "that file, or saved here under another name",
+            )
+        problems = draft_problems(draft.constraints or [], draft.steps) + [
+            (("steps", position, "script"), problem)
+            for position, step in enumerate(draft.steps, 1)
+            if step.get("type") == "python"
+            and (problem := script_problem(step.get("script"))) is not None
+        ]
+        if problems:
+            raise HTTPException(
+                422, [{"loc": list(where), "msg": message} for where, message in problems]
+            )
+        written = PipelineFile(
+            source=source,
+            dataset=dataset,
+            profile=draft.profile,
+            constraints=cast(Any, draft.constraints),
+            steps=draft.steps,
+        )
+        try:
+            pipeline = resolve_pipeline(name, written, config, f"pipeline '{name}'")
+        except ConfigError as error:
+            raise HTTPException(422, str(error)) from error
+        with open_loader() as loader, loader.stages() as stages:
+            version = stages.save_pipeline(
+                source,
+                dataset,
+                name,
+                pipeline.stored(),
+                pipeline.step_definitions,
+                datetime.now(UTC),
+            )
+        log.info("pipeline saved", pipeline=name, version=version.version, source=source)
+        return saved_view(source, chosen, name, version)
+
+    @app.post("/api/datasets/{source}/{dataset}/pipelines/{name}/runs", status_code=202)
+    def start_saved_pipeline_run(source: str, dataset: str, name: str) -> PipelineRunAccepted:
+        """Start a run of the pipeline's newest saved version, followed as a file's run is."""
+        source_with_edits(source, dataset)
+        a_pipeline_name(name)
+
+        def newest(loader: Loader) -> PipelineDefinition:
+            with loader.stages() as stages:
+                version = stages.read_pipeline(source, dataset, name)
+            if version is None:
+                raise HTTPException(404, f"pipeline '{name}' of {source}.{dataset} is not saved")
+            config = load_source(sources_dir, source, env, loader.read_overrides(source))
+            written = PipelineFile.model_validate(
+                {**version.definition, "source": source, "dataset": dataset}
+            )
+            return resolve_pipeline(name, written, config, f"pipeline '{name}'")
+
+        return run_in_the_background(name, newest)
 
     _serve_dashboard(app, dashboard_dir)
     return app

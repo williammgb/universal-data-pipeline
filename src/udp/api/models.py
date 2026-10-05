@@ -1,10 +1,12 @@
 """What the API accepts and returns; these models are also what its OpenAPI document shows."""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from udp.config.pipeline import ProfileChoice
 
 # So is a pipeline run's record, with the engine that writes it.
 from udp.pipeline.execution import PipelineRun
@@ -221,3 +223,37 @@ class PipelineRunAccepted(BaseModel):
     source: str
     dataset: str
     requested_at: datetime
+
+
+# More than any pipeline a person builds by hand; a cap, so one request cannot ask for millions.
+MAX_STEPS = 100
+MAX_CONSTRAINTS = 200
+
+
+class PipelineDraft(BaseModel):
+    """A pipeline as the builder holds it: what `pipelines/<name>.yaml` would say, without the
+    source and dataset, which the address names. Each constraint and step is checked one by one
+    when it is saved, so a refusal can say which one and which field."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile: ProfileChoice = "ends"
+    # Left out, or null: the dataset's own constraints, as a pipeline file without any has.
+    constraints: Annotated[list[dict[str, Any]], Field(max_length=MAX_CONSTRAINTS)] | None = None
+    steps: list[dict[str, Any]] = Field(default=[], max_length=MAX_STEPS)
+
+
+class SavedPipeline(BaseModel):
+    """A pipeline's newest saved version, or — `version` null — a new one: no steps, and the
+    dataset's own constraints. Every step carries every setting it runs with, defaults included.
+    `columns` is the dataset's columns as stored, so the builder offers the names that exist."""
+
+    name: str
+    source: str
+    dataset: str
+    version: int | None
+    saved_at: datetime | None
+    profile: ProfileChoice
+    constraints: list[dict[str, Any]]
+    steps: list[dict[str, Any]]
+    columns: list[Column]

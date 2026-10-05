@@ -19,12 +19,20 @@ export type RunDetail = components["schemas"]["RunDetail"];
 export type RunAccepted = components["schemas"]["RunAccepted"];
 export type RunStatus = RunItem["status"];
 export type RunTrigger = RunItem["trigger"];
+export type SavedPipeline = components["schemas"]["SavedPipeline"];
+export type PipelineDraft = components["schemas"]["PipelineDraft"];
+export type PipelineRun = components["schemas"]["PipelineRun"];
+export type PipelineRunAccepted = components["schemas"]["PipelineRunAccepted"];
+export type StepRecord = components["schemas"]["StepRecord"];
+export type ProfileRecord = components["schemas"]["ProfileRecord"];
 
-/** What the API said went wrong, so a page can show it instead of a blank screen. */
+/** What the API said went wrong, so a page can show it instead of a blank screen. `detail` is
+ * what it sent, for a page that places each problem where it belongs rather than in one line. */
 export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly detail: unknown = null,
   ) {
     super(message);
     this.name = "ApiError";
@@ -61,15 +69,17 @@ function headers(extra: Record<string, string> = {}): Record<string, string> {
 async function failure(response: Response): Promise<ApiError> {
   if (response.status === 401) keyWasRefused();
   let detail = `${response.status} ${response.statusText}`;
+  let sent: unknown = null;
   try {
     const body: unknown = await response.json();
     if (body && typeof body === "object" && "detail" in body) {
-      detail = readable((body as { detail: unknown }).detail);
+      sent = (body as { detail: unknown }).detail;
+      detail = readable(sent);
     }
   } catch {
     // A response that is not JSON leaves the status line as the message.
   }
-  return new ApiError(response.status, detail);
+  return new ApiError(response.status, detail, sent);
 }
 
 export async function getJson<T>(path: string, params?: URLSearchParams): Promise<T> {
@@ -200,5 +210,49 @@ export function useStartRun(source: string, dataset: string, fullRefresh = false
       // The datasets list shows each dataset's last run, so it is stale from now too.
       void queries.invalidateQueries({ queryKey: ["datasets"] });
     },
+  });
+}
+
+function pipelinePath(source: string, dataset: string, name: string): string {
+  return `/datasets/${source}/${dataset}/pipelines/${encodeURIComponent(name)}`;
+}
+
+/** A pipeline's newest saved version, or a new one when the name was never saved. */
+export function usePipeline(source: string, dataset: string, name: string) {
+  return useQuery({
+    queryKey: ["pipeline", source, dataset, name],
+    queryFn: () => getJson<SavedPipeline>(pipelinePath(source, dataset, name)),
+    enabled: Boolean(source && dataset && name),
+  });
+}
+
+/** Saving stores a version and runs nothing. */
+export function useSavePipeline(source: string, dataset: string, name: string) {
+  const queries = useQueryClient();
+  return useMutation({
+    mutationFn: (draft: PipelineDraft) =>
+      putJson<SavedPipeline>(pipelinePath(source, dataset, name), draft),
+    onSuccess: (saved) => queries.setQueryData(["pipeline", source, dataset, name], saved),
+  });
+}
+
+/** Runs the newest saved version: the one call on the builder that starts anything. */
+export function useStartPipelineRun(source: string, dataset: string, name: string) {
+  return useMutation({
+    mutationFn: () =>
+      postJson<PipelineRunAccepted>(`${pipelinePath(source, dataset, name)}/runs`, {}),
+  });
+}
+
+const PIPELINE_RUN_REFRESH_MS = 1000;
+
+/** Followed every second while it runs, and left alone once it has ended. */
+export function usePipelineRun(executionId: string) {
+  return useQuery({
+    queryKey: ["pipeline-run", executionId],
+    queryFn: () => getJson<PipelineRun>(`/pipeline-runs/${executionId}`),
+    enabled: Boolean(executionId),
+    refetchInterval: (query) =>
+      query.state.data?.status === "running" ? PIPELINE_RUN_REFRESH_MS : false,
   });
 }

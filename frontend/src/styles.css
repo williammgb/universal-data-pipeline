@@ -1007,6 +1007,187 @@ textarea:focus-visible {
   color: var(--ink-soft);
 }
 
+/* A link that does what a button does, drawn as one. */
+a.button {
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 7px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+/* The pipeline builder: one column of blocks, SOURCE at the top and CLEAN at the bottom. */
+.flow {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  max-width: 760px;
+}
+
+.flow > li:not(:last-child)::after {
+  content: "";
+  display: block;
+  width: 2px;
+  height: 16px;
+  margin-inline: auto;
+  background: var(--line);
+}
+
+.block {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.block.end {
+  background: var(--panel-sunk);
+  border-left-color: var(--ink-faint);
+}
+
+.block.failed {
+  border-left-color: var(--bad);
+}
+
+.block header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.block h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.block .end h3,
+.block.end h3 {
+  font-family: var(--mono);
+}
+
+.block-kind {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-weight: 600;
+}
+
+.block-tools {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+
+.block-tools button {
+  padding: 2px 9px;
+}
+
+.block-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px 14px;
+}
+
+.block-fields .config-label input:not([type="checkbox"]),
+.block-fields .config-label select {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+
+.config-label.stacked {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.block-fields .config-row:has(.column-picks) {
+  grid-column: 1 / -1;
+}
+
+.column-picks {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.flow + .panel {
+  max-width: 760px;
+}
+
+.column-picks legend {
+  padding: 0;
+  margin-bottom: 4px;
+}
+
+.pick {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.block-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+  margin: 0;
+}
+
+.block-facts .fact {
+  padding: 0;
+  border: 0;
+}
+
+.block-settings {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+}
+
+.block .refusal {
+  margin: 0;
+}
+
+.adder {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.flow > li > .adder {
+  justify-content: center;
+}
+
+.profile-box > summary {
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 10px;
+}
+
+th.num {
+  text-align: right;
+}
+
 @media (max-width: 520px) {
   .values {
     grid-template-columns: 1fr;
@@ -1014,5 +1195,9 @@ textarea:focus-visible {
 
   .strip .fact {
     border-right: 0;
+  }
+
+  .block-fields {
+    grid-template-columns: 1fr;
   }
 }

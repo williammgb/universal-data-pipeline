@@ -24,7 +24,7 @@ and every step with every setting, defaults included — so a run always says wh
 """
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -40,12 +40,18 @@ from udp.errors import ConfigError
 from udp.names import name_problem
 from udp.storage.loader import StepDefinition
 from udp.transformations import Transformation
-from udp.transformations.registry import parse_step
+from udp.transformations.registry import TRANSFORMATIONS, parse_step
 
 PIPELINES_DIR = "pipelines"
 PIPELINE_SUFFIX = ".yaml"
 
 ProfileChoice = Literal["none", "ends", "every_step"]
+
+# Where a problem with a draft is, the way the builder places it on a block: ("steps", 2, "method")
+# or ("constraints", 1, "column"), counted from 1 as a pipeline's steps are.
+Where = tuple[str | int, ...]
+
+_CONSTRAINT: pydantic.TypeAdapter[Constraint] = pydantic.TypeAdapter(Constraint)
 
 
 class PipelineFile(BaseModel):
@@ -156,6 +162,44 @@ def resolve_pipeline(
         constraints=tuple(constraints),
         steps=steps,
     )
+
+
+def draft_problems(
+    constraints: Sequence[Any], steps: Sequence[Mapping[str, Any]]
+) -> list[tuple[Where, str]]:
+    """Every problem with a pipeline's constraints and steps as drafted, each with where it is.
+
+    These are the checks loading a pipeline makes — each constraint's shape, each step's type
+    and settings, as `parse_step` reads them — reported one by one rather than as one message,
+    so a draft with none of them loads. Whether a column is there is a question for the run.
+    A problem with a whole constraint or step is put on its `constraint` or `type` field.
+    """
+    problems: list[tuple[Where, str]] = []
+    for position, constraint in enumerate(constraints, 1):
+        try:
+            _CONSTRAINT.validate_python(constraint)
+        except pydantic.ValidationError as error:
+            kind = constraint.get("constraint") if isinstance(constraint, Mapping) else None
+            for problem in error.errors():
+                # A tagged union names the tag first, ("min", "value"); the field is what follows.
+                place = problem["loc"][1:] if problem["loc"][:1] == (kind,) else problem["loc"]
+                where = ("constraints", position, *(place or ("constraint",)))
+                problems.append((where, problem["msg"]))
+    for position, step in enumerate(steps, 1):
+        name = step.get("type")
+        if not isinstance(name, str) or name not in TRANSFORMATIONS:
+            known = ", ".join(sorted(TRANSFORMATIONS))
+            problems.append((("steps", position, "type"), f"unknown type {name!r}; known: {known}"))
+            continue
+        settings = {key: value for key, value in step.items() if key != "type"}
+        try:
+            TRANSFORMATIONS[name].model_validate(settings)
+        except pydantic.ValidationError as error:
+            problems.extend(
+                (("steps", position, *(problem["loc"] or ("type",))), problem["msg"])
+                for problem in error.errors()
+            )
+    return problems
 
 
 def load_pipeline(
