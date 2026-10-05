@@ -16,7 +16,8 @@ COMPOSE = "docker compose -f deploy/compose.yaml"
 def _udp(*arguments: str, dry: bool = True) -> subprocess.CompletedProcess[str]:
     shell = shutil.which("sh")
     assert shell is not None, "./udp needs a POSIX shell on the PATH"
-    env = {**os.environ, "UDP_DRY_RUN": "1" if dry else ""}
+    # Plain text: on GitHub's runner the help came out in colour, and no name matched.
+    env = {**os.environ, "UDP_DRY_RUN": "1" if dry else "", "NO_COLOR": "1", "TERM": "dumb"}
     return subprocess.run(
         [shell, "udp", *arguments], cwd=ROOT, env=env, capture_output=True, text=True, timeout=120
     )
@@ -27,8 +28,9 @@ def test_help_lists_the_new_command_names_and_not_the_old_ones() -> None:
 
     assert result.returncode == 0, result.stderr
     # A command's row starts with the box's border, one space and its name.
-    listed = set(re.findall(r"^\S (\w+)\s{2,}\S", result.stdout, re.MULTILINE))
-    assert {"load", "update", "schedule", "api", "doctor", "openapi"} <= listed
+    shown = re.sub(r"\x1b\[[0-9;]*m", "", result.stdout)
+    listed = set(re.findall(r"^\S (\w+)\s{2,}\S", shown, re.MULTILINE))
+    assert {"load", "update", "schedule", "api", "doctor", "openapi"} <= listed, shown
     assert not {"run", "migrate"} & listed
 
 
