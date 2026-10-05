@@ -55,7 +55,8 @@ usage: ./run <task> [args]
   fast    the fast gate — under ~60s, no external services, no real data volume
   db      only the database tests, against a throwaway migrated Postgres
   full    the full gate — real size, real dependencies, allowed to be slow
-  smoke   start the real entrypoint and prove it comes up
+  smoke   start the real entrypoint and prove it comes up; with SMOKE_RUN="<command>"
+          also run that command against it:  SMOKE_RUN="udp doctor" ./run smoke
   image   build the container image:  ./run image <tag>
   memory  load five million rows in a container and print its peak memory (not a gate)
   check   syntax or lint one file:  ./run check path/to/file
@@ -219,7 +220,7 @@ smoke_sources() {
   for source in $SMOKE_SOURCES; do
     uv run --locked udp run "$source" || return
   done
-  smoke_scheduler && smoke_api && smoke_pipeline && smoke_dashboard && smoke_metrics &&
+  smoke_run && smoke_scheduler && smoke_api && smoke_pipeline && smoke_dashboard && smoke_metrics &&
     smoke_console && smoke_backup && smoke_hold
 }
 
@@ -248,6 +249,16 @@ smoke_pipeline() {
   compose logs api
   echo "the pipeline run requested over the api did not succeed within 60s"
   return 1
+}
+
+# SMOKE_RUN="udp doctor" ./run smoke runs that one command against the
+# smoke stack once the demo sources have loaded, with the stack's database and API key in
+# its environment. It is the only way in: the stack's password is never written down, and
+# a ticket's runner was refused when it tried to read it out of other processes instead.
+smoke_run() {
+  [ -n "${SMOKE_RUN:-}" ] || return 0
+  echo "smoke run: $SMOKE_RUN"
+  sh -c "uv run --locked $SMOKE_RUN" || { echo "smoke run failed: $SMOKE_RUN"; return 1; }
 }
 
 # Everything under /api needs the stack's key; the dashboard's own pages and files do not.
