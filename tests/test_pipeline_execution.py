@@ -25,19 +25,22 @@ from typer.testing import CliRunner
 from udp.cli import app
 from udp.config.constraints import Constraint
 from udp.config.pipeline import PipelineDefinition, ProfileChoice
+from udp.config.source import load_source
 from udp.connectors.base import DatasetBase
 from udp.names import Stage, stage_table
 from udp.pipeline.execution import (
     PipelineBusy,
     PipelineRun,
     carry_out,
+    describe_run,
     read_run,
     run_pipeline,
     start_pipeline,
 )
 from udp.pipeline.load import with_platform_columns
+from udp.pipeline.runner import RunOutcome, run_source
 from udp.settings import Settings
-from udp.storage.loader import INTERRUPTED, Loader, RunStart
+from udp.storage.loader import INTERRUPTED, DatasetState, Loader, RunStart
 from udp.storage.postgres import PostgresLoader
 from udp.transformations.registry import parse_step
 
@@ -54,6 +57,7 @@ TIDY: list[dict[str, Any]] = [
     {"type": "drop_missing", "columns": ["email"]},
 ]
 ID_REQUIRED: dict[str, Any] = {"constraint": "not_null", "column": "id", "critical": True}
+RAW_CLEAN = (Stage.RAW, Stage.CLEAN)
 
 
 class Shop:
@@ -70,10 +74,25 @@ class Shop:
         return next(self.clock)
 
     def ingest(self, frame: pl.DataFrame = ORDERS) -> UUID:
-        """An ingest run that appends the frame to RAW, recorded as succeeded."""
+        """An ingest run that appends the frame to RAW and saves the dataset's state naming it,
+        recorded as succeeded — as `udp run` leaves a dataset, without its lineage."""
         run = RunStart(uuid.uuid7(), self.source, self.dataset, "manual", self.now())
         self.loader.start_run(run)
         rows = with_platform_columns(frame, run.run_id, run.started_at)
+        state = DatasetState(
+            source=self.source,
+            dataset=self.dataset,
+            load_mode="append",
+            primary_key=(),
+            watermark_column=None,
+            watermark_type=None,
+            watermark=None,
+            file_path=None,
+            file_sha256=None,
+            config_sha256="0" * 64,
+            run_id=run.run_id,
+            saved_at=run.started_at,
+        )
         if isinstance(self.loader, MemoryLoader):
             name = raw_table(self.source, self.dataset)
             existing = self.loader.raw.get(name)
@@ -81,10 +100,12 @@ class Shop:
                 rows if existing is None else pl.concat([existing, rows], how="diagonal_relaxed")
             )
             self.loader.runs[run.run_id].update(status="succeeded", ended_at=self.now())
+            self.loader.states[(self.source, self.dataset)] = state
             return run.run_id
         with self.loader.stages() as stages:
             stages.append_raw(self.source, self.dataset, [rows])  # type: ignore[attr-defined]
         with self.loader.transaction() as transaction:
+            transaction.save_state(state)
             transaction.succeed_run(
                 run.run_id,
                 ended_at=self.now(),
@@ -423,6 +444,86 @@ def test_a_merge_load_starts_from_the_newest_row_of_each_key(shop: Shop) -> None
     assert clean is not None
     assert run.rows_in == 4
     assert clean.filter(pl.col("id") == 2).rows() == [(2, "bo again", "b@x.nl")]
+
+
+def test_a_full_load_whose_newest_ingest_read_no_rows_publishes_no_rows(shop: Shop) -> None:
+    shop.ingest()
+    shop.run(shop.pipeline([], load_mode="full"))
+    emptied = shop.ingest(ORDERS.clear())
+
+    run = shop.run(shop.pipeline([], load_mode="full"))
+
+    assert (run.status, run.input_run_id, run.rows_in, run.rows_out) == (
+        "succeeded",
+        emptied,
+        0,
+        0,
+    )
+    clean = shop.table(Stage.CLEAN)
+    assert clean is not None and clean.height == 0
+
+
+def _csv_source(shop: Shop, sources: Path) -> Path:
+    folder = sources / shop.source
+    folder.mkdir(parents=True)
+    (folder / "source.yaml").write_text(
+        "connection:\n  type: csv\ndatasets:\n  - name: orders\n    path: orders.csv\n",
+        encoding="utf-8",
+    )
+    (folder / "orders.csv").write_text(
+        "id,name,email\n1, ada ,a@x.nl\n2,bo,b@x.nl\n", encoding="utf-8"
+    )
+    return folder
+
+
+def test_lineage_runs_from_where_the_source_was_read_through_the_run_that_read_it(
+    shop: Shop, tmp_path: Path
+) -> None:
+    sources = tmp_path / "sources"
+    folder = _csv_source(shop, sources)
+
+    def ingest() -> RunOutcome:
+        config = load_source(sources, shop.source, {})
+        (outcome,) = run_source(shop.source, config, sources, shop.loader)
+        assert outcome.status == "succeeded"
+        return outcome
+
+    read = ingest()
+    ingest()  # the file is unchanged, so this run reads nothing and the next pipeline run
+    # still starts from the one that read it
+    pipeline = shop.pipeline(TIDY[:1], load_mode="full")
+
+    run = shop.run(pipeline)
+
+    assert (run.status, run.input_run_id, run.rows_in) == ("succeeded", read.run_id, 2)
+    raw, clean = (".".join(stage_table(stage, shop.source, shop.dataset)) for stage in RAW_CLEAN)
+    assert [(n.kind, n.name, n.ingest_run_id, n.execution_id) for n in run.lineage] == [
+        ("source", "csv: orders.csv", read.run_id, None),
+        ("raw", raw, read.run_id, None),
+        ("step", "normalize_values", None, run.execution_id),
+        ("clean", clean, None, run.execution_id),
+    ]
+    assert f"Read RAW as ingest run {read.run_id} left it" in describe_run(run)
+
+    # transform.py now drops every row: the source was read and held nothing, and CLEAN follows.
+    (folder / "transform.py").write_text(
+        "import polars as pl\n\n\ndef transform(frame, context):\n"
+        "    return frame.filter(pl.col('id') < 0)\n",
+        encoding="utf-8",
+    )
+    emptied = ingest()
+    assert emptied.rows_loaded == 0
+
+    rerun = shop.run(pipeline)
+
+    assert (rerun.status, rerun.input_run_id, rerun.rows_in, rerun.rows_out) == (
+        "succeeded",
+        emptied.run_id,
+        0,
+        0,
+    )
+    published = shop.table(Stage.CLEAN)
+    assert published is not None and published.height == 0
 
 
 def test_a_dataset_with_nothing_in_raw_fails_the_run_saying_what_to_do(shop: Shop) -> None:

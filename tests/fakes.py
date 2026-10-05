@@ -114,6 +114,7 @@ class MemoryTransaction:
         self.run_updates: dict[UUID, dict[str, Any]] = {}
         self.quarantine: list[dict[str, Any]] = []
         self.quality_results: list[dict[str, Any]] = []
+        self.lineage: dict[RunRef, list[LineageNode]] = {}
 
     def table(self, name: str) -> pl.DataFrame | None:
         found = self.tables.get(name, self._loader.tables.get(name))
@@ -308,6 +309,18 @@ class MemoryTransaction:
             rows_loaded=rows_loaded,
         )
 
+    def record_lineage(
+        self,
+        source: str,
+        dataset: str,
+        run: RunRef,
+        nodes: Sequence[LineageNode],
+        recorded_at: datetime,
+    ) -> None:
+        recorded = [*self._loader.lineage.get(run, ()), *self.lineage.get(run, ())]
+        check_chain(source, dataset, run, [*recorded, *nodes])
+        self.lineage.setdefault(run, []).extend(nodes)
+
 
 def _stage_name(stage: Stage, source: str, dataset: str) -> str:
     return ".".join(stage_table(stage, source, dataset))
@@ -435,8 +448,19 @@ class MemoryStages:
             "failed_step": None,
             "error_class": None,
             "error_message": None,
+            "input_run_id": None,
         }
         self._loader.step_runs[start.execution_id] = {}
+
+    def last_ingest(self, source: str, dataset: str) -> UUID | None:
+        state = self._loader.states.get((source, dataset))
+        return None if state is None else state.run_id
+
+    def record_input(self, execution_id: UUID, ingest_run_id: UUID) -> None:
+        execution = self._loader.executions.get(execution_id)
+        if execution is None or execution["status"] != "running":
+            raise LoadError(f"execution {execution_id} is not running")
+        execution["input_run_id"] = ingest_run_id
 
     def record_step(self, execution_id: UUID, step: StepRun) -> None:
         if not 1 <= step.position <= len(self._owner(execution_id).steps):
@@ -664,6 +688,8 @@ class MemoryLoader:
             self.runs[run_id].update(fields)
         self.quarantine.extend(transaction.quarantine)
         self.quality_results.extend(transaction.quality_results)
+        for run, nodes in transaction.lineage.items():
+            self.lineage.setdefault(run, []).extend(nodes)
 
     def fail_run(
         self,

@@ -425,6 +425,16 @@ class PostgresTransaction:
         if updated.rowcount != 1:
             raise LoadError(f"run {run_id} is not a running run")
 
+    def record_lineage(
+        self,
+        source: str,
+        dataset: str,
+        run: RunRef,
+        nodes: Sequence[LineageNode],
+        recorded_at: datetime,
+    ) -> None:
+        PostgresStages(self._conn).record_lineage(source, dataset, run, nodes, recorded_at)
+
 
 def _stage_identifier(stage: Stage, source: str, dataset: str) -> sql.Identifier:
     return sql.Identifier(*stage_table(stage, source, dataset))
@@ -545,6 +555,25 @@ class PostgresStages:
                 target, _identifiers(names), _identifiers(names), _STAGE
             )
         )
+
+    def last_ingest(self, source: str, dataset: str) -> UUID | None:
+        """The ingest run that last read the dataset's source into RAW: the one its saved state
+        names. A run that skipped an unchanged file saves no state, so it is never this one."""
+        row = self._conn.execute(
+            "SELECT run_id FROM platform.source_state WHERE source = %s AND dataset = %s",
+            [source, dataset],
+        ).fetchone()
+        return None if row is None else row[0]
+
+    def record_input(self, execution_id: UUID, ingest_run_id: UUID) -> None:
+        """Record the ingest run whose RAW the execution read."""
+        updated = self._conn.execute(
+            "UPDATE platform.pipeline_executions SET input_run_id = %s "
+            "WHERE execution_id = %s AND status = 'running'",
+            [ingest_run_id, execution_id],
+        )
+        if updated.rowcount != 1:
+            raise LoadError(f"execution {execution_id} is not running")
 
     def running_executions(self, source: str, dataset: str) -> list[UUID]:
         """The executions over the dataset still marked running, oldest first."""
@@ -761,7 +790,8 @@ class PostgresStages:
         row = self._conn.execute(
             "SELECT runs.pipeline_id, runs.version, pipelines.source, pipelines.dataset, "
             "runs.trigger, runs.status, runs.started_at, runs.ended_at, runs.rows_in, "
-            "runs.rows_out, runs.failed_step, runs.error_class, runs.error_message "
+            "runs.rows_out, runs.failed_step, runs.error_class, runs.error_message, "
+            "runs.input_run_id "
             "FROM platform.pipeline_executions AS runs "
             "JOIN platform.pipelines AS pipelines USING (pipeline_id) "
             "WHERE runs.execution_id = %s",
@@ -790,6 +820,7 @@ class PostgresStages:
             failed_step,
             error_class,
             error_message,
+            input_run_id,
         ) = row
         return Execution(
             execution_id=execution_id,
@@ -807,6 +838,7 @@ class PostgresStages:
             error_class=error_class,
             error_message=error_message,
             steps=tuple(StepRun(*step) for step in steps),
+            input_run_id=input_run_id,
         )
 
     def record_profile(self, profile: Profile) -> int:

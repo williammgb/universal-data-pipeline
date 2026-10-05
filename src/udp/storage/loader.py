@@ -252,6 +252,18 @@ class LoadTransaction(Protocol):
         self, run_id: UUID, *, ended_at: datetime, rows_extracted: int, rows_loaded: int
     ) -> None: ...
 
+    def record_lineage(
+        self,
+        source: str,
+        dataset: str,
+        run: RunRef,
+        nodes: Sequence[LineageNode],
+        recorded_at: datetime,
+    ) -> None:
+        """Add nodes to the end of the run's lineage, with the transaction's other writes: an
+        ingest run's is where it read the source, then RAW."""
+        ...
+
 
 @dataclass(frozen=True)
 class ConfigCopy:
@@ -426,7 +438,8 @@ class StepRun:
 
 @dataclass(frozen=True)
 class Execution:
-    """One run of one pipeline version, as stored, with its steps in order."""
+    """One run of one pipeline version, as stored, with its steps in order. `input_run_id` is
+    the ingest run whose RAW it read, once it has read it."""
 
     execution_id: UUID
     pipeline_id: int
@@ -443,6 +456,7 @@ class Execution:
     error_class: str | None
     error_message: str | None
     steps: tuple[StepRun, ...]
+    input_run_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -597,6 +611,16 @@ class PipelineStages(Protocol):
         ...
 
     def newest_run(self, stage: Stage, source: str, dataset: str) -> RunRef | None: ...
+
+    def last_ingest(self, source: str, dataset: str) -> UUID | None:
+        """The ingest run that last read the dataset's source into RAW — the run its saved state
+        names — or None when none has. A run that skipped an unchanged file read nothing and is
+        not it; a run that read zero rows is."""
+        ...
+
+    def record_input(self, execution_id: UUID, ingest_run_id: UUID) -> None:
+        """Record the ingest run whose RAW the execution read."""
+        ...
 
     def read_raw(
         self, source: str, dataset: str, ingest_runs: Sequence[UUID] | None = None

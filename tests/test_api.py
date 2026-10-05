@@ -339,7 +339,8 @@ def test_a_pipeline_run_started_over_the_api_can_be_read_back_by_its_id() -> Non
     assert run["steps"][1]["values_changed"] == 1
     assert [profile["stage"] for profile in run["profiles"]] == ["raw", "clean"]
     assert all(check["passed"] for check in run["validation"])
-    assert [node["kind"] for node in run["lineage"]] == ["raw", "step", "step", "clean"]
+    assert [node["kind"] for node in run["lineage"]] == ["source", "raw", "step", "step", "clean"]
+    assert run["lineage"][0]["ingest_run_id"] == run["input_run_id"] is not None
     assert ".".join(["clean", "demo_csv__customers"]) in loader.clean
 
 
@@ -928,6 +929,62 @@ def test_a_run_requested_over_http_is_recorded_as_a_manual_run(tmp_path: Path) -
         "/api/runs", params={"source": source, "since": accepted["requested_at"]}
     ).json()["runs"]
     assert [(run["status"], run["trigger"]) for run in runs] == [("succeeded", "manual")]
+
+
+@pytest.mark.db
+def test_a_pipeline_run_requested_over_http_runs_against_postgres_and_reads_back(
+    tmp_path: Path,
+) -> None:
+    # The route opens a real loader in the request, takes the dataset's lock on its connection,
+    # and hands both to the background thread that carries the run out and frees the lock.
+    source = _prefix()
+    sources = tmp_path / "sources"
+    (sources / source).mkdir(parents=True)
+    (sources / source / "source.yaml").write_text(
+        "connection:\n  type: csv\ndatasets:\n  - name: items\n    path: items.csv\n",
+        encoding="utf-8",
+    )
+    (sources / source / "items.csv").write_text("id,name\n1, ada \n2,bo\n", encoding="utf-8")
+    (tmp_path / "pipelines").mkdir()
+    (tmp_path / "pipelines" / f"{source}_items.yaml").write_text(
+        f"source: {source}\ndataset: items\n"
+        "constraints:\n  - constraint: not_null\n    column: id\n    critical: true\n"
+        "steps:\n  - type: normalize_values\n    columns: [name]\n    trim: true\n",
+        encoding="utf-8",
+    )
+    with PostgresLoader(_url()) as loader:
+        (ingest,) = run_source(source, load_source(sources, source, {}), sources, loader)
+    assert ingest.status == "succeeded"
+    client, app = _db_client(sources)
+
+    accepted = client.post(f"/api/pipelines/{source}_items/runs")
+    app.state.runs.shutdown(wait=True)
+
+    assert accepted.status_code == 202, accepted.text
+    execution_id = accepted.json()["execution_id"]
+    run = client.get(f"/api/pipeline-runs/{execution_id}").json()
+    assert (run["status"], run["rows_in"], run["rows_out"], run["error"]) == (
+        "succeeded",
+        2,
+        2,
+        None,
+    )
+    assert run["input_run_id"] == str(ingest.run_id)
+    assert [(node["kind"], node["ingest_run_id"] is not None) for node in run["lineage"]] == [
+        ("source", True),
+        ("raw", True),
+        ("step", False),
+        ("clean", False),
+    ]
+    assert [check["passed"] for check in run["validation"]] == [True]
+    with psycopg.connect(_url()) as conn:
+        clean = sql.Identifier("clean", f"{source}__items")
+        rows = conn.execute(sql.SQL("SELECT id, name FROM {} ORDER BY id").format(clean))
+        assert rows.fetchall() == [(1, "ada"), (2, "bo")]
+    # The background thread freed the dataset's lock: another connection can take it.
+    with PostgresLoader(_url()) as other:
+        assert other.lock_dataset(source, "items")
+        other.unlock_dataset(source, "items")
 
 
 SEARCHED_DATASETS = ["orders", "order_lines", "ordersx", "a_b", "ab"]

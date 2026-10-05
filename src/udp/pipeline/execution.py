@@ -9,10 +9,12 @@ the two meet only at the storage layer. A run goes:
    two runs never share one STAGING table — a second run is refused with `PipelineBusy`, naming
    the run in progress. Store the definition (an edited one becomes the next version) and record
    the execution as running.
-2. **Input**: the dataset's rows as they stand, read from RAW, which is only ever read. A full
-   load's rows are those of the newest ingest run, an append's every row, a merge's the newest
-   row per primary key. The platform columns are left out, and the rows are put in the order of
-   their `_record_hash`, so the same RAW always gives the same frame.
+2. **Input**: the dataset's rows as they stand, read from RAW, which is only ever read. The run
+   starts from the ingest run that last read the source — one that skipped an unchanged file
+   read nothing — and records it. A full load's rows are exactly that run's, even none; an
+   append's are every row, a merge's the newest row per primary key. The platform columns are
+   left out, and the rows are put in the order of their `_record_hash`, so the same RAW always
+   gives the same frame.
 3. **Steps**, in order, each over the whole frame the step before it left: each is recorded as
    running, then with its outcome and its lineage node, then profiled when the pipeline says so.
 4. **Validation**: the pipeline's constraints against the result. Every outcome is stored; a
@@ -262,26 +264,37 @@ def _profile(
     )
 
 
-def read_input(stages: PipelineStages, pipeline: PipelineDefinition) -> pl.DataFrame:
-    """The dataset's rows as they stand, from RAW, without the platform columns, in a fixed order.
+def input_run(stages: PipelineStages, pipeline: PipelineDefinition) -> UUID:
+    """The ingest run whose RAW a run starts from: the one that last read the source.
 
-    Raises _Failed when no ingest run has put rows in RAW yet.
+    Raises _Failed when no ingest run has read it yet.
     """
     source, dataset = pipeline.source, pipeline.dataset.name
-    ingest_runs: list[UUID] | None = None
-    if pipeline.dataset.load_mode == "full":
-        newest = stages.newest_run(Stage.RAW, source, dataset)
-        if newest is None or newest.ingest_run_id is None:
-            raise _Failed(
-                RunFailure(
-                    "NoInput",
-                    f"{source}.{dataset} has no rows in RAW from a succeeded ingest run; "
-                    f"run `udp run {source}` first",
-                    "",
-                )
+    found = stages.last_ingest(source, dataset)
+    if found is None:
+        raise _Failed(
+            RunFailure(
+                "NoInput",
+                f"{source}.{dataset} has no rows in RAW from a succeeded ingest run; "
+                f"run `udp run {source}` first",
+                "",
             )
-        ingest_runs = [newest.ingest_run_id]
-    frame = stages.read_raw(source, dataset, ingest_runs)
+        )
+    return found
+
+
+def read_input(
+    stages: PipelineStages, pipeline: PipelineDefinition, ingest_run: UUID
+) -> pl.DataFrame:
+    """The dataset's rows as they stand after `ingest_run`, from RAW, without the platform
+    columns, in a fixed order.
+
+    A full load's rows are exactly that run's — none, when it read none, so CLEAN never keeps
+    rows the source no longer has. An append's are every row, a merge's the newest per key.
+    """
+    source, dataset = pipeline.source, pipeline.dataset.name
+    full = pipeline.dataset.load_mode == "full"
+    frame = stages.read_raw(source, dataset, [ingest_run] if full else None)
     key = list(pipeline.dataset.primary_key or ())
     if pipeline.dataset.load_mode == "merge" and key and set(key) <= set(frame.columns):
         newest_first = [name for name in ("_loaded_at", "_record_hash") if name in frame.columns]
@@ -305,8 +318,12 @@ def _work(loader: Loader, started: Started, progress: _Progress, clock: Clock) -
     run = RunRef(execution_id=started.execution_id)
     profiles = pipeline.profile
 
+    # Committed on its own, so a run that then fails to read its input still says which it was.
     with loader.stages() as stages:
-        frame = read_input(stages, pipeline)
+        ingest_run = input_run(stages, pipeline)
+        stages.record_input(started.execution_id, ingest_run)
+    with loader.stages() as stages:
+        frame = read_input(stages, pipeline, ingest_run)
         progress.rows_in = frame.height
         at = clock()
         stages.record_lineage(source, dataset, run, [stage_node(Stage.RAW, source, dataset)], at)
@@ -467,19 +484,24 @@ class ValidationRecord(BaseModel):
 
 
 class LineageRecord(BaseModel):
-    """One place the data passed through, in order; a step with the settings it ran with."""
+    """One place the data passed through, in order; a step with the settings it ran with. The
+    run that took the data there is the ingest run for the source and RAW, the pipeline run
+    for its steps and CLEAN: exactly one of the two ids."""
 
     kind: Literal["source", "raw", "step", "clean"]
     name: str
     step_position: int | None = None
     configuration: dict[str, Any] | None = None
+    ingest_run_id: UUID | None = None
+    execution_id: UUID | None = None
 
 
 class PipelineRun(BaseModel):
     """One run of one pipeline version: what ran, over what, how it ended, and what it measured.
 
     `failed_step` is the step it failed at; a run that failed elsewhere — its input, validation
-    or publishing — has none, and `error` says where.
+    or publishing — has none, and `error` says where. `input_run_id` is the ingest run whose RAW
+    it read; none when it failed before it found one.
     """
 
     execution_id: UUID
@@ -494,6 +516,7 @@ class PipelineRun(BaseModel):
     ended_at: datetime | None
     rows_in: int | None
     rows_out: int | None
+    input_run_id: UUID | None
     failed_step: int | None
     error_class: str | None
     error: str | None
@@ -571,7 +594,20 @@ def read_run(stages: PipelineStages, execution_id: UUID) -> PipelineRun | None:
         )
         for result in stages.read_constraint_results(execution.source, execution.dataset, run=run)
     ]
+    # The ingest run took the source to RAW, then this run took RAW on: one chain, each node
+    # with the run that took the data there. RAW is in both, and is the ingest run's.
+    read = (
+        ()
+        if execution.input_run_id is None
+        else stages.read_lineage(RunRef(ingest_run_id=execution.input_run_id))
+    )
+    prepared = stages.read_lineage(run)
+    if read and read[-1].kind == "raw" and prepared and prepared[0].kind == "raw":
+        prepared = prepared[1:]
     lineage = [
+        LineageRecord(kind=node.kind, name=node.name, ingest_run_id=execution.input_run_id)
+        for node in read
+    ] + [
         LineageRecord(
             kind=node.kind,
             name=node.name,
@@ -581,8 +617,9 @@ def read_run(stages: PipelineStages, execution_id: UUID) -> PipelineRun | None:
                 if node.step_position is None
                 else version.steps[node.step_position - 1].configuration
             ),
+            execution_id=execution_id,
         )
-        for node in stages.read_lineage(run)
+        for node in prepared
     ]
     return PipelineRun(
         execution_id=execution_id,
@@ -597,6 +634,7 @@ def read_run(stages: PipelineStages, execution_id: UUID) -> PipelineRun | None:
         ended_at=execution.ended_at,
         rows_in=execution.rows_in,
         rows_out=execution.rows_out,
+        input_run_id=execution.input_run_id,
         failed_step=execution.failed_step,
         error_class=execution.error_class,
         error=execution.error_message,
@@ -621,6 +659,8 @@ def describe_run(run: PipelineRun) -> str:
         + ("" if run.ended_at is None else f", ended {run.ended_at.isoformat()}")
         + f"; {_rows(run.rows_in)} rows in, {_rows(run.rows_out)} rows out",
     ]
+    if run.input_run_id is not None:
+        lines.append(f"Read RAW as ingest run {run.input_run_id} left it")
     if run.error is not None:
         lines.append(f"Error ({run.error_class}): {run.error}")
     lines.append("")

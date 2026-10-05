@@ -63,9 +63,12 @@ new version at the next run, and an old run still says which version it ran.
    run` exits 1, the API answers 409); a run started while the dataset is being ingested is
    refused too. A run still marked running when the lock is free was cut off, its process gone,
    and is recorded as failed (`Interrupted`) by the next run.
-2. **Input.** The dataset's rows as they stand, read from RAW, which is only ever read: for a
-   `full` load the newest ingest run's rows, for `append` every row, for `merge` the newest row
-   of each primary key. The steps see the dataset's own columns, not `_run_id`, `_loaded_at` or
+2. **Input.** The dataset's rows as they stand, read from RAW, which is only ever read. The run
+   starts from the ingest run that last read the source, and records it (`input_run_id`); a run
+   that skipped an unchanged file read nothing and is passed over. For a `full` load the rows
+   are exactly that run's — none, when it read none, so CLEAN never keeps rows the source no
+   longer has; for `append` every row; for `merge` the newest row of each primary key. The
+   steps see the dataset's own columns, not `_run_id`, `_loaded_at` or
    `_record_hash`, and the rows in the order of their `_record_hash` — so the same RAW always
    gives the same input, and two runs of one version over it the same CLEAN table.
 3. **Steps.** Each runs over the whole frame the step before it left, checked first against
@@ -87,9 +90,10 @@ dataset with a long pipeline adds up, so it is not the default. `none` takes no 
 
 **The record** of a run, as `udp pipeline status --json` prints it and the API returns it: the
 pipeline, its id and the version that ran, the dataset, the trigger, the status, start and end,
-rows in and out, the failed step and the error; then every step of that version with its
-settings and what it did (`not_run` for those after a failure), the totals of each profile taken,
-each constraint's outcome, and the lineage with each step's settings.
+rows in and out, the ingest run it read, the failed step and the error; then every step of that
+version with its settings and what it did (`not_run` for those after a failure), the totals of
+each profile taken, each constraint's outcome, and the lineage from the source to CLEAN — each
+node with the run that took the data there, and each step with its settings.
 
 ## The three stages
 
@@ -139,7 +143,7 @@ tables, because `platform.pipeline_runs` already holds the ingest runs and keeps
 | `pipelines` | pipeline, by source, dataset and name |
 | `pipeline_versions` | version of a pipeline's definition. Changing a pipeline adds a version; old versions are never rewritten, so an old run still says what it ran. |
 | `pipeline_steps` | step of a version, in order, with its configuration |
-| `pipeline_executions` | run of a pipeline version: when, how it was started, its status, rows in and out, and — when it failed — which step and why |
+| `pipeline_executions` | run of a pipeline version: when, how it was started, the ingest run whose RAW it read, its status, rows in and out, and — when it failed — which step and why |
 | `step_executions` | step a run carried out: its status, duration, rows in and out, values changed and error |
 | `profiles` | profile of a dataset at one stage in one run, optionally taken after a given step |
 | `constraint_results` | constraint checked on a dataset at one stage in one run: whether it held, how many rows and values broke it, and whether it is critical |
@@ -152,10 +156,13 @@ the database refuses anything else. Because a result is kept per dataset, per st
 the same dataset can be profiled before and after a pipeline, and in every later run, and none of
 those profiles replaces another.
 
-**Lineage is a chain per run.** An ingest run's chain is the source (where it was read from) and
-then its RAW table. A pipeline run's chain is the RAW table, each step in pipeline order, and the
-CLEAN table. Following the two back from a CLEAN table reaches the file or table the data came
-from. A run that fails part-way has a chain that stops at the step that failed.
+**Lineage is a chain per run.** An ingest run's chain is the source (where it was read from: the
+connector and the file, table or endpoint, as in `csv: customers.csv`) and then its RAW table,
+recorded by every run that read the source. A pipeline run's chain is the RAW table, each step
+in pipeline order, and the CLEAN table, and the run records which ingest run's RAW it read
+(`pipeline_executions.input_run_id`). Its record joins the two into one chain, source → RAW →
+steps → CLEAN, each node naming its run. A run that fails part-way has a chain that stops at the
+step that failed.
 
 ## Profiles
 

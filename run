@@ -219,8 +219,35 @@ smoke_sources() {
   for source in $SMOKE_SOURCES; do
     uv run --locked udp run "$source" || return
   done
-  smoke_scheduler && smoke_api && smoke_dashboard && smoke_metrics && smoke_console &&
-    smoke_backup && smoke_hold
+  smoke_scheduler && smoke_api && smoke_pipeline && smoke_dashboard && smoke_metrics &&
+    smoke_console && smoke_backup && smoke_hold
+}
+
+# The api container reads pipelines/ through its own mount: the demo pipeline, started over HTTP,
+# must prepare demo_csv's RAW into CLEAN, and its record must name the ingest run it read.
+smoke_pipeline() {
+  base="http://127.0.0.1:$stack_http_port/api"
+  accepted=$(api_curl -fsS -X POST "$base/pipelines/demo_csv_customers/runs") || {
+    compose logs api; return 1; }
+  echo "$accepted"
+  id=$(printf '%s' "$accepted" | sed -n 's/.*"execution_id":"\([^"]*\)".*/\1/p')
+  [ -n "$id" ] || { echo "the pipeline run was not given an id"; return 1; }
+  deadline=$(( $(date +%s) + 60 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    run=$(api_curl -fsS "$base/pipeline-runs/$id") || return
+    case "$run" in
+      *'"status":"succeeded"'*)
+        case "$run" in
+          *'"input_run_id":null'*) echo "the pipeline run names no ingest run"; return 1 ;;
+        esac
+        printf '%s\n' "$run" | cut -c1-400; return 0 ;;
+      *'"status":"failed"'*) printf '%s\n' "$run"; compose logs api; return 1 ;;
+    esac
+    sleep 1
+  done
+  compose logs api
+  echo "the pipeline run requested over the api did not succeed within 60s"
+  return 1
 }
 
 # Everything under /api needs the stack's key; the dashboard's own pages and files do not.

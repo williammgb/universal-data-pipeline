@@ -9,9 +9,9 @@ import structlog
 
 from udp.config.source import SourceConfig
 from udp.connectors import CONNECTORS
-from udp.connectors.base import Connector, ExtractRequest, SavedWatermark
+from udp.connectors.base import Connector, ExtractRequest, FileVersion, SavedWatermark
 from udp.errors import QualityError
-from udp.names import table_name
+from udp.names import Stage, table_name
 from udp.pipeline.column_types import apply_column_types
 from udp.pipeline.custom import TransformContext, apply_transform, find_transform, load_transform
 from udp.pipeline.extract import RowCounter, extract
@@ -30,11 +30,14 @@ from udp.quality.quarantine import threshold_exceeded
 from udp.storage.loader import (
     ConfigCopy,
     DatasetState,
+    LineageNode,
     Loader,
     LoadTransaction,
     RunFailure,
     RunFindings,
+    RunRef,
     RunStart,
+    stage_node,
 )
 
 log = structlog.get_logger(step="run")
@@ -150,6 +153,21 @@ def run_source(
     return outcomes
 
 
+def source_location(request: ExtractRequest[Any, Any], file: FileVersion | None) -> str:
+    """Where a run read the source from, as its lineage names it: the connector, then the file,
+    table or endpoint — never the connection's address or a credential."""
+    dataset = request.dataset
+    table = getattr(dataset, "table", None)
+    schema = getattr(dataset, "table_schema", None)
+    if file is not None:
+        where = file.path
+    elif table:
+        where = f"{schema}.{table}" if schema else table
+    else:
+        where = getattr(dataset, "endpoint", None) or dataset.name
+    return f"{request.connection.type}: {where}"
+
+
 def _load_dataset(
     transaction: LoadTransaction,
     connector: Connector[Any, Any],
@@ -222,6 +240,13 @@ def _load_dataset(
 
     result = load(transaction, table, dataset, chunks, run_id, started_at)
     raw_rows = transaction.append_raw(source, dataset.name)
+    # A run that read the source records where from and that it went to RAW — even a run that
+    # read no rows, which a pipeline over a full load then starts from.
+    went = [
+        LineageNode("source", source_location(request, file)),
+        stage_node(Stage.RAW, source, dataset.name),
+    ]
+    transaction.record_lineage(source, dataset.name, RunRef(ingest_run_id=run_id), went, started_at)
     log.info("added to RAW", step="load", rows=raw_rows)
     limit = dataset.quarantine_threshold_percent
     if threshold_exceeded(findings.quarantined_rows, counter.rows, limit):

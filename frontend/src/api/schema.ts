@@ -463,13 +463,19 @@ export interface components {
         };
         /**
          * LineageRecord
-         * @description One place the data passed through, in order; a step with the settings it ran with.
+         * @description One place the data passed through, in order; a step with the settings it ran with. The
+         *     run that took the data there is the ingest run for the source and RAW, the pipeline run
+         *     for its steps and CLEAN: exactly one of the two ids.
          */
         LineageRecord: {
             /** Configuration */
             configuration?: {
                 [key: string]: unknown;
             } | null;
+            /** Execution Id */
+            execution_id?: string | null;
+            /** Ingest Run Id */
+            ingest_run_id?: string | null;
             /**
              * Kind
              * @enum {string}
@@ -485,7 +491,8 @@ export interface components {
          * @description One run of one pipeline version: what ran, over what, how it ended, and what it measured.
          *
          *     `failed_step` is the step it failed at; a run that failed elsewhere — its input, validation
-         *     or publishing — has none, and `error` says where.
+         *     or publishing — has none, and `error` says where. `input_run_id` is the ingest run whose RAW
+         *     it read; none when it failed before it found one.
          */
         PipelineRun: {
             /** Dataset */
@@ -503,6 +510,8 @@ export interface components {
             execution_id: string;
             /** Failed Step */
             failed_step: number | null;
+            /** Input Run Id */
+            input_run_id: string | null;
             /** Lineage */
             lineage: components["schemas"]["LineageRecord"][];
             /** Pipeline */
