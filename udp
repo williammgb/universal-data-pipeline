@@ -1,0 +1,65 @@
+#!/bin/sh
+# The platform's one command, without the `uv run --locked` prefix:
+#
+#   ./udp up [--demo]              start the platform in containers (with the demo sources)
+#   ./udp down                     stop every container, keeping the data
+#   ./udp load <source>... --docker
+#                                  load sources inside the running containers
+#   ./udp <anything else>          the same as `uv run --locked udp <anything else>`
+#
+# With UDP_DRY_RUN=1 a container command prints the compose call instead of making it.
+set -eu
+cd "$(dirname "$0")"
+. deploy/engine.sh
+
+# Compose sees only what is passed to it: through WSL, this shell's variables do not cross.
+compose() {
+  if [ "${UDP_DRY_RUN:-}" = 1 ]; then
+    echo "docker compose -f deploy/compose.yaml $*"
+    return
+  fi
+  $engine env POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}" UDP_API_KEYS="${UDP_API_KEYS:-}" \
+    UDP_PG_PORT="${UDP_PG_PORT:-}" UDP_SOURCE_PG_PORT="${UDP_SOURCE_PG_PORT:-}" \
+    UDP_MOCK_API_PORT="${UDP_MOCK_API_PORT:-}" UDP_API_PORT="${UDP_API_PORT:-}" \
+    UDP_PROM_PORT="${UDP_PROM_PORT:-}" DEMO_SCHEDULE="${DEMO_SCHEDULE:-}" \
+    COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-udp}" docker compose -f deploy/compose.yaml "$@"
+}
+
+case "${1:-}" in
+  up)
+    shift
+    profiles=
+    for arg in "$@"; do
+      case "$arg" in
+        --demo) profiles="--profile demo" ;;
+        *) echo "usage: ./udp up [--demo]" >&2; exit 2 ;;
+      esac
+    done
+    # The stack outlives this command, so the keepalive does too, until ./udp down. One left by
+    # an earlier up is replaced, not doubled.
+    if [ "${UDP_DRY_RUN:-}" != 1 ]; then keepalive_stop udp; keepalive_start udp infinity; fi
+    # shellcheck disable=SC2086
+    compose $profiles up -d --build --wait
+    ;;
+  down)
+    shift
+    [ $# -eq 0 ] || { echo "usage: ./udp down" >&2; exit 2; }
+    compose --profile app --profile demo --profile monitoring --profile scale down
+    [ "${UDP_DRY_RUN:-}" = 1 ] || keepalive_stop udp
+    ;;
+  load)
+    shift
+    docker=0
+    for arg in "$@"; do [ "$arg" = --docker ] && docker=1; done
+    if [ "$docker" -eq 0 ]; then exec uv run --locked udp load "$@"; fi
+    # Rebuild the argument list without --docker, keeping every other argument's spaces.
+    for arg in "$@"; do
+      shift
+      [ "$arg" = --docker ] || set -- "$@" "$arg"
+    done
+    compose run --rm app load "$@"
+    ;;
+  *)
+    exec uv run --locked udp "$@"
+    ;;
+esac

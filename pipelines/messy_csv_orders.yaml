@@ -2,8 +2,8 @@
 # quantity or date cannot be read dropped, types set, the outlier price capped and the gaps
 # filled. Two constraints are left to fail on purpose: a duplicated order and a negative
 # quantity are reported, not hidden.
-#   uv run --locked udp run messy_csv
-#   uv run --locked udp pipeline run messy_csv_orders
+#   ./udp load messy_csv
+#   ./udp pipeline run messy_csv_orders
 source: messy_csv
 dataset: orders
 profile: ends

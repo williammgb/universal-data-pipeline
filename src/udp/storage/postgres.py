@@ -516,7 +516,7 @@ class PostgresStages:
         schema, table = stage_table(Stage.RAW, source, dataset)
         types = stage_columns(self._conn, schema, table)
         if not types:
-            raise LoadError(f"{source}.{dataset} has no RAW table: run `udp run {source}` first")
+            raise LoadError(f"{source}.{dataset} has no RAW table: run `udp load {source}` first")
         reads = [read_as(name, kind) for name, kind in types]
         frame_schema = pl.Schema(
             {name: dtype for (name, _), (_, dtype) in zip(types, reads, strict=True)}

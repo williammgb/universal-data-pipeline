@@ -1,7 +1,7 @@
 """Running datasets on their `schedule:`.
 
 Schedules are read once when the scheduler starts. Each firing reads its source.yaml again and
-runs only its dataset through the same runner as `udp run`, on its own database connection, so
+runs only its dataset through the same runner as `udp load`, on its own database connection, so
 an overlap with any other run of that dataset is recorded by the runner as skipped.
 """
 

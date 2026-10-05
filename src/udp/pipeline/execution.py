@@ -276,7 +276,7 @@ def input_run(stages: PipelineStages, pipeline: PipelineDefinition) -> UUID:
             RunFailure(
                 "NoInput",
                 f"{source}.{dataset} has no rows in RAW from a succeeded ingest run; "
-                f"run `udp run {source}` first",
+                f"run `udp load {source}` first",
                 "",
             )
         )

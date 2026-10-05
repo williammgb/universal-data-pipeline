@@ -53,7 +53,7 @@ def main(
 
 
 @app.command()
-def run(
+def load(
     sources: Annotated[list[str], typer.Argument(help="Folder names under sources/.")],
     full_refresh: Annotated[
         bool,
@@ -289,7 +289,7 @@ def openapi() -> None:
 
 
 @app.command()
-def migrate(
+def update(
     migrations: Annotated[
         Path, typer.Option(help="Folder holding the migrations (Alembic's script location).")
     ] = Path("migrations"),

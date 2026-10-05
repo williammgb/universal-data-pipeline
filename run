@@ -77,9 +77,8 @@ stack_prom_port=
 stack_password=
 stack_key=
 
-# The Docker engine: inside WSL on this Windows machine, the machine's own on a Linux CI runner.
-# Decided once here, so the gate a person runs is the same gate a pull request runs.
-if command -v wsl.exe > /dev/null 2>&1; then engine="wsl.exe -e"; else engine=; fi
+# The Docker engine and the WSL keepalive, shared with ./udp.
+. "$(dirname "$0")/deploy/engine.sh"
 
 compose() {
   $engine env POSTGRES_PASSWORD="$stack_password" UDP_PG_PORT="$stack_port" \
@@ -88,22 +87,6 @@ compose() {
     UDP_API_KEYS="${UDP_API_KEYS:-}" DEMO_SCHEDULE="${DEMO_SCHEDULE:-}" \
     docker compose -p "$stack_project" -f deploy/compose.yaml \
     --profile app --profile demo --profile monitoring --profile scale "$@"
-}
-
-# WSL shuts the distro down about 15 seconds after the last wsl.exe command ends,
-# stopping every container with it — even while tests on Windows are still using
-# the database. One idle wsl.exe session held open for the life of the stack
-# keeps it up. Without WSL there is nothing to keep up.
-keepalive_start() {
-  [ -n "$engine" ] || return 0
-  MSYS_NO_PATHCONV=1 wsl.exe -e sh -c \
-    "echo \$\$ > /tmp/$stack_project.keepalive; exec sleep 86400" > /dev/null 2>&1 &
-}
-
-keepalive_stop() {
-  [ -n "$engine" ] || return 0
-  MSYS_NO_PATHCONV=1 wsl.exe -e sh -c \
-    "kill \$(cat /tmp/$stack_project.keepalive) 2>/dev/null; rm -f /tmp/$stack_project.keepalive"
 }
 
 # stack_start <project> <platform pg port> [<source pg port> <mock api port> [<udp api port>
@@ -131,7 +114,7 @@ stack_start() {
   # to a port published inside WSL hangs for two minutes instead of being refused.
   UDP_DATABASE_URL="postgresql://udp:$stack_password@127.0.0.1:$stack_port/udp"
   export UDP_DATABASE_URL
-  keepalive_start
+  keepalive_start "$stack_project" 86400
   if [ -z "$stack_source_port" ]; then
     compose up -d --wait postgres
     return
@@ -145,11 +128,11 @@ stack_start() {
 
 stack_stop() {
   compose down -v --remove-orphans > /dev/null 2>&1
-  keepalive_stop
+  keepalive_stop "$stack_project"
 }
 
 migrate() {
-  uv run --locked udp migrate
+  uv run --locked udp update
 }
 
 fast_gate() {
@@ -216,10 +199,10 @@ SMOKE_SOURCES="demo_csv demo_excel demo_db demo_api messy_csv messy_excel messy_
 smoke_sources() {
   compose build app migrate || return
   for source in $SMOKE_SOURCES; do
-    compose run --rm app run "$source" || return
+    compose run --rm app load "$source" || return
   done
   for source in $SMOKE_SOURCES; do
-    uv run --locked udp run "$source" || return
+    uv run --locked udp load "$source" || return
   done
   smoke_run && smoke_scheduler && smoke_api && smoke_pipeline && smoke_dashboard && smoke_metrics &&
     smoke_console && smoke_backup && smoke_hold
@@ -341,7 +324,7 @@ smoke_backup() {
   done
   # The restored copy is a working platform, not only a pile of rows.
   restored_run=$(UDP_DATABASE_URL="postgresql://udp:$stack_password@127.0.0.1:$stack_port/udp_restored" \
-    uv run --locked udp run demo_csv 2>&1) || {
+    uv run --locked udp load demo_csv 2>&1) || {
     printf '%s\n' "$restored_run"
     echo "a run against the restored database failed"
     return 1
@@ -433,7 +416,7 @@ memory_run() {
     migrate &&
     compose build scale-load migrate &&
     { compose run --rm --entrypoint sh scale-load -c \
-      'udp run scale_csv --full-refresh; ran=$?; echo "peak_bytes $(cat /sys/fs/cgroup/memory.peak)"; exit $ran' \
+      'udp load scale_csv --full-refresh; ran=$?; echo "peak_bytes $(cat /sys/fs/cgroup/memory.peak)"; exit $ran' \
       && echo 0 > "$log.code" || echo $? > "$log.code"; } 2>&1 | tee "$log"
   code=$(cat "$log.code" 2>/dev/null || echo 1)
   stack_stop || true

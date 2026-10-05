@@ -1,8 +1,8 @@
 # messy_api's readings, from RAW to clean.messy_api__readings: teams spelt one way, rows whose
 # score or date cannot be read dropped, types set, the broken sensor's temperature capped and
 # the gaps filled. A repeated reading and a negative score are reported, not hidden.
-#   uv run --locked udp run messy_api
-#   uv run --locked udp pipeline run messy_api_readings
+#   ./udp load messy_api
+#   ./udp pipeline run messy_api_readings
 source: messy_api
 dataset: readings
 profile: ends

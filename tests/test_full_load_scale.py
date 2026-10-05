@@ -41,7 +41,7 @@ def test_million_row_csv_merges_all_then_nothing_then_only_the_changes(tmp_path:
     runner = CliRunner()
 
     def run(*extra: str) -> tuple[int, int, str]:
-        arguments = ["run", "scale_csv", *extra]
+        arguments = ["load", "scale_csv", *extra]
         result = runner.invoke(app, arguments, env={"UDP_SOURCES_DIR": str(sources_dir)})
         assert result.exit_code == 0, result.output[-2000:]
         (loaded,) = _query(

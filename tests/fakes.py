@@ -440,7 +440,7 @@ class MemoryStages:
     ) -> pl.DataFrame:
         raw = self._loader.raw.get(raw_table(source, dataset))
         if raw is None:
-            raise LoadError(f"{source}.{dataset} has no RAW table: run `udp run {source}` first")
+            raise LoadError(f"{source}.{dataset} has no RAW table: run `udp load {source}` first")
         if ingest_runs is None:
             return raw.clone()
         return raw.filter(pl.col("_run_id").is_in([str(run) for run in ingest_runs]))

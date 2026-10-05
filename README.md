@@ -17,7 +17,7 @@ What it does, end to end:
   quarantined, and a run fails when too many are.
 - **Metadata**: every run records what it read, what it wrote, which columns the dataset has,
   and the settings the source was run with.
-- **Orchestration**: `udp run` by hand, or a scheduler container that runs datasets on their
+- **Orchestration**: `./udp load` by hand, or a scheduler container that runs datasets on their
   own cron expressions, with overlapping runs skipped rather than doubled.
 - **An API and a dashboard**: nine JSON routes under `/api`, and a React dashboard served by the
   same container for browsing datasets, previews, quality results and run history.
@@ -41,18 +41,18 @@ export UDP_API_KEYS=pick-a-key
 **2. Start it.** The database, the dashboard and API, and the scheduler:
 
 ```
-docker compose -f deploy/compose.yaml up -d --build --wait
+./udp up
 ```
 
 Or start it with the demo in place — the same platform plus a sample business database and a
 sample REST API, with all five demo sources already loaded:
 
 ```
-docker compose -f deploy/compose.yaml --profile demo up -d --build --wait
+./udp up --demo
 ```
 
-The platform's tables are created (or updated to a newer version) by a one-off `migrate`
-container that every other container waits for.
+The platform's tables are created (or updated to a newer version) by a one-off container
+running `udp update`, which every other container waits for.
 
 **3. Open the dashboard** at http://127.0.0.1:8000 and enter your API key when it asks for it.
 From there you can browse datasets, their columns, previews, quality results and run history,
@@ -63,7 +63,7 @@ every page and tab in plain English, and needs no API key to read.
 names in one command run one after another:
 
 ```
-docker compose -f deploy/compose.yaml run --rm app run my_source
+./udp load my_source --docker
 ```
 
 Datasets that have a `schedule:` in their `source.yaml` are also run by the scheduler on their
@@ -73,28 +73,29 @@ demo profile leaves the scheduler with nothing to do.
 To stop everything, keeping the data:
 
 ```
-docker compose -f deploy/compose.yaml --profile demo down
+./udp down
 ```
 
-Add `-v` to that command to delete the data as well.
+To delete the data as well, run
+`docker compose -f deploy/compose.yaml --profile demo down -v` instead.
 
 Without containers, the same platform runs from the command line against any PostgreSQL named
-by `UDP_DATABASE_URL`:
+by `UDP_DATABASE_URL` (it needs [uv](https://docs.astral.sh/uv/)):
 
 ```
-uv run --locked udp migrate                 create or update the platform's tables
-uv run --locked udp run demo_csv            load one source now (or several, by name)
-uv run --locked udp profile shop orders --stage raw
-                                            profile a dataset's RAW, STAGING or CLEAN table,
-                                            print it and store it (docs/stages-and-pipelines.md)
-uv run --locked udp pipeline run demo_csv_customers
-                                            run pipelines/demo_csv_customers.yaml: RAW through
-                                            its steps to CLEAN (docs/stages-and-pipelines.md)
-uv run --locked udp pipeline status <run id>
-                                            print a pipeline run's record
-uv run --locked udp schedule                run every scheduled dataset until stopped
-uv run --locked udp api                     serve the dashboard and the API on 127.0.0.1:8000
-uv run --locked udp doctor                  check the database connection
+./udp update                    create or update the platform's tables
+./udp load demo_csv             load one source now (or several, by name)
+./udp profile shop orders --stage raw
+                                profile a dataset's RAW, STAGING or CLEAN table, print it and
+                                store it (docs/stages-and-pipelines.md)
+./udp pipeline run demo_csv_customers
+                                run pipelines/demo_csv_customers.yaml: RAW through its steps
+                                to CLEAN (docs/stages-and-pipelines.md)
+./udp pipeline status <run id>  print a pipeline run's record
+./udp schedule                  run every scheduled dataset until stopped
+./udp api                       serve the dashboard and the API on 127.0.0.1:8000
+./udp doctor                    check the database connection
+./udp openapi                   print the API's description as JSON
 ```
 
 ## From raw data to a clean table
@@ -103,9 +104,9 @@ Loading a source only copies it in. Preparing it for use is a second, separate s
 **pipeline** — so the data as it arrived is always kept, and a mistake in the preparation never
 destroys it. The whole way, using the messy CSV demo as the example:
 
-1. **Load.** `udp run messy_csv` reads the file into the dataset's **RAW** table. RAW is only
+1. **Load.** `./udp load messy_csv` reads the file into the dataset's **RAW** table. RAW is only
    ever added to: every load's rows stay there, marked with the load that brought them.
-2. **Profile.** `udp profile messy_csv orders --stage raw` counts, per column, the missing
+2. **Profile.** `./udp profile messy_csv orders --stage raw` counts, per column, the missing
    values, the values that cannot be read as their type, the outliers and the duplicates. The
    dataset's **Profile** tab in the dashboard shows the same.
 3. **Constrain.** Write down what the clean data must satisfy — a column never empty, values
@@ -115,13 +116,13 @@ destroys it. The whole way, using the messy CSV demo as the example:
    unreadable rows dropped, types set, outliers capped, gaps filled — and its constraints. It is
    a file, `pipelines/messy_csv_orders.yaml`, or it is built step by step on the dashboard's
    **Pipeline** page. Every change saved is a new version, and each run records which one ran.
-5. **Run it.** `udp pipeline run messy_csv_orders`, or **Run** on the Pipeline page. The run
+5. **Run it.** `./udp pipeline run messy_csv_orders`, or **Run** on the Pipeline page. The run
    reads RAW, applies each step, checks the constraints and, only if no critical one failed,
    replaces the dataset's **CLEAN** table in one go. It records every step's rows in and out
    and values changed, and every constraint's outcome. A run that fails names the step that
    failed and why, and leaves RAW and the previous CLEAN table exactly as they were.
 6. **Read its lineage.** The dataset's **Lineage** tab — or the `lineage` part of
-   `udp pipeline status <run id> --json` — shows the chain the data took: the file it was read from, the RAW table, each step with its
+   `./udp pipeline status <run id> --json` — shows the chain the data took: the file it was read from, the RAW table, each step with its
    settings and counts, and the CLEAN table.
 
 Five demo sources show this on data that is wrong in the ways real data is: `messy_csv`,
@@ -146,7 +147,7 @@ A dataset's settings can also be changed from its **Configuration** tab in the d
 file is never written to: the edit is stored in the platform and laid over the file on every
 read, so the dataset's next run — by hand, over the API or on its schedule — uses it. A change
 that would need the table rebuilt is refused until you confirm it, and the tab then either saves
-it for you to rebuild later with `udp run <source> --full-refresh`, or rebuilds and runs on the
+it for you to rebuild later with `./udp load <source> --full-refresh`, or rebuilds and runs on the
 spot. An edit may not carry a `${NAME}` reference: those are filled from the platform's own
 environment and belong in the file.
 

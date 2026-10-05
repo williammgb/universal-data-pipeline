@@ -674,7 +674,7 @@ def test_the_profile_command_profiles_the_raw_table_the_run_command_made(
     def run(rows: str, *options: str) -> list[tuple[str, int]]:
         """Load the rows; returns RAW's row count per ingest run, oldest first."""
         orders.write_text(f"id,name,amount,day\n{rows}", encoding="utf-8")
-        loaded = runner.invoke(app, ["run", source, *options], env=env)
+        loaded = runner.invoke(app, ["load", source, *options], env=env)
         assert loaded.exit_code == 0, loaded.output
         with psycopg.connect(Settings().database_url) as conn:  # type: ignore[call-arg]
             counted = conn.execute(

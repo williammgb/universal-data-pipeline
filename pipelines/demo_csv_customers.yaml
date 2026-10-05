@@ -1,6 +1,6 @@
 # The demo pipeline: demo_csv's customers, from RAW to clean.demo_csv__customers.
-#   uv run --locked udp run demo_csv                     fill RAW first
-#   uv run --locked udp pipeline run demo_csv_customers  then prepare it
+#   ./udp load demo_csv                     fill RAW first
+#   ./udp pipeline run demo_csv_customers   then prepare it
 # What each part means: docs/stages-and-pipelines.md.
 source: demo_csv
 dataset: customers

@@ -1,8 +1,8 @@
 # messy_json's customers, from RAW to clean.messy_json__customers: plans spelt one way, rows
 # whose age or sign-up date cannot be read dropped, types set, the spend outlier capped and the
 # missing spend filled. A repeated customer and a negative age are reported, not hidden.
-#   uv run --locked udp run messy_json
-#   uv run --locked udp pipeline run messy_json_customers
+#   ./udp load messy_json
+#   ./udp pipeline run messy_json_customers
 source: messy_json
 dataset: customers
 profile: ends
