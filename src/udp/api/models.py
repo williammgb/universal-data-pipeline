@@ -1,7 +1,7 @@
 """What the API accepts and returns; these models are also what its OpenAPI document shows."""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -238,7 +238,8 @@ class PipelineDraft(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     profile: ProfileChoice = "ends"
-    constraints: list[dict[str, Any]] = Field(default=[], max_length=MAX_CONSTRAINTS)
+    # Left out, or null: the dataset's own constraints, as a pipeline file without any has.
+    constraints: Annotated[list[dict[str, Any]], Field(max_length=MAX_CONSTRAINTS)] | None = None
     steps: list[dict[str, Any]] = Field(default=[], max_length=MAX_STEPS)
 
 

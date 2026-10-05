@@ -471,6 +471,33 @@ def test_saving_runs_nothing_and_the_saved_version_is_what_runs() -> None:
     assert [check["constraint"] for check in run["validation"]] == ["not_null"]
 
 
+def test_a_draft_without_constraints_keeps_the_datasets_own_as_a_pipeline_file_does(
+    tmp_path: Path,
+) -> None:
+    sources = tmp_path / "sources"
+    (sources / "demo_csv").mkdir(parents=True)
+    declared = (SOURCES / "demo_csv" / "source.yaml").read_text(encoding="utf-8")
+    (sources / "demo_csv" / "source.yaml").write_text(
+        declared.rstrip("\n")
+        + "\n    constraints:\n      - constraint: not_null\n        column: customer_id\n",
+        encoding="utf-8",
+    )
+    catalog = MemoryCatalog(None, [("customer_id", "bigint"), ("city", "text")])
+    store = MemoryLoader()
+    app = create_app(cast(PostgresCatalog, catalog), sources, {}, lambda: nullcontext(store))
+    client = TestClient(app)
+    own = client.get(BUILT).json()["constraints"]
+
+    left_out = client.put(BUILT, json={"steps": [CITY_STEP]})
+    emptied = client.put(BUILT, json={"constraints": [], "steps": [CITY_STEP]})
+
+    assert left_out.status_code == 200, left_out.text
+    assert [item["constraint"] for item in own] == ["not_null"]
+    assert (left_out.json()["version"], left_out.json()["constraints"]) == (1, own)
+    # Saying "none" on purpose is kept as none, as a new version.
+    assert (emptied.json()["version"], emptied.json()["constraints"]) == (2, [])
+
+
 def test_an_invalid_draft_is_refused_naming_each_step_and_field_and_nothing_is_saved() -> None:
     client, _, _ = _builder_client()
     draft = {

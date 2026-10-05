@@ -626,7 +626,7 @@ def create_app(
                 f"pipelines/{name}.yaml declares a pipeline called '{name}'; it is changed in "
                 "that file, or saved here under another name",
             )
-        problems = draft_problems(draft.constraints, draft.steps) + [
+        problems = draft_problems(draft.constraints or [], draft.steps) + [
             (("steps", position, "script"), problem)
             for position, step in enumerate(draft.steps, 1)
             if step.get("type") == "python"

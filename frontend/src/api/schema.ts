@@ -539,13 +539,10 @@ export interface components {
          *     when it is saved, so a refusal can say which one and which field.
          */
         PipelineDraft: {
-            /**
-             * Constraints
-             * @default []
-             */
-            constraints: {
+            /** Constraints */
+            constraints?: {
                 [key: string]: unknown;
-            }[];
+            }[] | null;
             /**
              * Profile
              * @default ends
