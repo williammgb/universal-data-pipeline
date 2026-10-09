@@ -1,10 +1,18 @@
 /** How values from the API are shown. Times are UTC everywhere, matching the schedules. */
 
-export type Cell = { text: string; isNull: boolean };
+export type CellValue = string | number | boolean | { [key: string]: unknown } | unknown[] | null;
 
-export function cell(value: string | number | boolean | null): Cell {
-  if (value === null) return { text: "null", isNull: true };
-  return { text: typeof value === "string" ? value : String(value), isNull: false };
+/** A value as shown in a table: `text` on one line, `full` for when values are shown in full —
+ * the same text, except a JSON object or array, which is indented over several lines there. */
+export type Cell = { text: string; full: string; isNull: boolean };
+
+export function cell(value: CellValue): Cell {
+  if (value === null) return { text: "null", full: "null", isNull: true };
+  if (typeof value === "object") {
+    return { text: JSON.stringify(value), full: JSON.stringify(value, null, 2), isNull: false };
+  }
+  const text = typeof value === "string" ? value : String(value);
+  return { text, full: text, isNull: false };
 }
 
 /** An API timestamp as "YYYY-MM-DD HH:MM:SS" in UTC; unreadable input is passed through. */
@@ -32,6 +40,7 @@ const CONNECTOR_NAMES: Record<string, string> = {
   csv: "CSV",
   excel: "Excel",
   database: "Database",
+  json: "JSON",
   rest_api: "API",
 };
 

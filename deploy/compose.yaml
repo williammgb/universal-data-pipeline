@@ -77,7 +77,7 @@ services:
           memory: 512m
 
   # The anchor every container built from this image inherits, and the one-off runner for
-  # `compose run --rm app run <source>`. Its own profile keeps it out of a plain `up`, which
+  # `compose run --rm app load <source>`. Its own profile keeps it out of a plain `up`, which
   # the containers below undo with an empty profile list so they start by default.
   app: &app
     profiles: ["app"]
@@ -95,6 +95,8 @@ services:
       UDP_API_KEYS: ${UDP_API_KEYS:-}
     volumes:
       - ../sources:/app/sources:ro
+      # Next to sources/, where `udp pipeline run` and the API's pipeline runs look for them.
+      - ../pipelines:/app/pipelines:ro
     # Nothing that reads or writes the platform tables starts before they exist.
     depends_on:
       postgres:
@@ -115,7 +117,7 @@ services:
   migrate:
     <<: *app
     profiles: []
-    command: ["migrate"]
+    command: ["update"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -140,12 +142,12 @@ services:
       timeout: 3s
       retries: 30
 
-  # Loads the four demo sources once, so `--profile demo up` gives a dashboard with data in it.
+  # Loads the five demo sources once, so `--profile demo up` gives a dashboard with data in it.
   # Running it again reloads nothing that has not changed.
   demo-load:
     <<: *app
     profiles: ["demo"]
-    command: ["run", "demo_csv", "demo_excel", "demo_db", "demo_api"]
+    command: ["load", "demo_csv", "demo_excel", "demo_json", "demo_db", "demo_api"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -171,7 +173,7 @@ services:
       UDP_SOURCES_DIR: /scale
     volumes:
       - ../.work/scale:/scale:ro
-    command: ["run", "scale_csv", "--full-refresh"]
+    command: ["load", "scale_csv", "--full-refresh"]
     deploy:
       resources:
         limits:

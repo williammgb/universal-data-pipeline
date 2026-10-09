@@ -13,6 +13,15 @@ const values = fc.oneof(
   fc.string({ maxLength: 40 }),
 );
 
+/** A jsonb column's value: any JSON object or array, nested, as it arrives — parsed from the
+ * response's JSON, so never holding what JSON cannot say, like -0. */
+const documents = fc
+  .oneof(
+    fc.array(fc.jsonValue({ maxDepth: 3 })),
+    fc.dictionary(fc.string(), fc.jsonValue({ maxDepth: 3 })),
+  )
+  .map((value) => JSON.parse(JSON.stringify(value)) as { [key: string]: unknown } | unknown[]);
+
 describe("preview cells", () => {
   it("show any value the API can send, exactly, and mark only null as null", () => {
     fc.assert(
@@ -21,8 +30,22 @@ describe("preview cells", () => {
         expect(shown.isNull).toBe(value === null);
         if (typeof value === "string") expect(shown.text).toBe(value);
         else expect(shown.text).toBe(value === null ? "null" : String(value));
+        expect(shown.full).toBe(shown.text);
       }),
     );
+  });
+
+  it("show a JSON value as the same JSON: on one line, and indented in full", () => {
+    fc.assert(
+      fc.property(documents, (value) => {
+        const shown = cell(value);
+        expect(shown.isNull).toBe(false);
+        expect(shown.text).not.toContain("\n");
+        expect(JSON.parse(shown.text)).toEqual(value);
+        expect(JSON.parse(shown.full)).toEqual(value);
+      }),
+    );
+    expect(cell({ a: [1, 2] }).full).toBe('{\n  "a": [\n    1,\n    2\n  ]\n}');
   });
 });
 
@@ -48,11 +71,12 @@ describe("times and counts", () => {
 
 describe("sources and schedules", () => {
   it("name each connector the way a person does", () => {
-    expect(["csv", "excel", "database", "rest_api"].map(connectorName)).toEqual([
+    expect(["csv", "excel", "database", "rest_api", "json"].map(connectorName)).toEqual([
       "CSV",
       "Excel",
       "Database",
       "API",
+      "JSON",
     ]);
     expect(connectorName("parquet")).toBe("parquet");
   });

@@ -14,6 +14,7 @@ from uuid import UUID, uuid4, uuid7
 
 import polars as pl
 import psycopg
+import pydantic
 import pytest
 from fakes import MemoryCatalog, MemoryLoader
 from fastapi.testclient import TestClient
@@ -24,12 +25,15 @@ from psycopg import sql
 
 from udp.api.app import CHECKS_LIMIT, RUNS_QUEUED, create_app
 from udp.api.catalog import PostgresCatalog, json_value
+from udp.config.pipeline import PipelineFile, draft_problems, load_pipeline, resolve_pipeline
 from udp.config.source import load_source
 from udp.errors import ConfigError
+from udp.pipeline.execution import run_pipeline, start_pipeline
 from udp.pipeline.runner import run_source
 from udp.settings import Settings
 from udp.storage.loader import ConfigCopy, DatasetState, RunFailure, RunStart
 from udp.storage.postgres import PostgresLoader
+from udp.transformations import TRANSFORMATIONS
 
 UNREACHABLE = "postgresql://x:x@127.0.0.1:1/x"
 SOURCES = Path("sources")
@@ -117,16 +121,24 @@ def test_the_openapi_document_lists_every_route_and_the_docs_page_loads() -> Non
         "/api/datasets",
         "/api/datasets/{source}/{dataset}",
         "/api/datasets/{source}/{dataset}/config",
+        "/api/datasets/{source}/{dataset}/lineage",
+        "/api/datasets/{source}/{dataset}/pipelines/{name}",
+        "/api/datasets/{source}/{dataset}/pipelines/{name}/runs",
         "/api/datasets/{source}/{dataset}/profile",
         "/api/datasets/{source}/{dataset}/quality",
         "/api/datasets/{source}/{dataset}/rows",
         "/api/health",
+        "/api/pipeline-runs/{execution_id}",
+        "/api/pipelines/{name}/runs",
         "/api/runs",
         "/api/runs/{run_id}",
         "/api/sources",
         "/api/sources/{source}",
     ]
     assert set(paths["/api/runs"]) == {"get", "post"}
+    assert set(paths["/api/pipelines/{name}/runs"]) == {"post"}
+    assert set(paths["/api/datasets/{source}/{dataset}/pipelines/{name}"]) == {"get", "put"}
+    assert set(paths["/api/datasets/{source}/{dataset}/pipelines/{name}/runs"]) == {"post"}
     assert set(paths["/api/datasets/{source}/{dataset}/config"]) == {"get", "put"}
     assert client.get("/api/docs").status_code == 200
 
@@ -298,6 +310,444 @@ def test_a_run_request_starts_the_run_in_the_background_as_a_manual_run() -> Non
     assert (record["status"], record["trigger"]) == ("succeeded", "manual")
     assert record["started_at"] >= datetime.fromisoformat(accepted["requested_at"])
     assert ("demo_csv", "customers") in loader.datasets
+
+
+# --- pipeline runs -------------------------------------------------------------------------------
+
+
+def _loaded_demo() -> MemoryLoader:
+    """A store whose RAW holds demo_csv, as `udp load demo_csv` leaves it."""
+    loader = MemoryLoader()
+    run_source("demo_csv", load_source(SOURCES, "demo_csv", {}), SOURCES, loader)
+    return loader
+
+
+def test_a_pipeline_run_started_over_the_api_can_be_read_back_by_its_id() -> None:
+    loader = _loaded_demo()
+    client, app = _client(loader=loader)
+
+    response = client.post("/api/pipelines/demo_csv_customers/runs")
+    app.state.runs.shutdown(wait=True)
+
+    assert response.status_code == 202
+    accepted = response.json()
+    assert (accepted["pipeline"], accepted["version"]) == ("demo_csv_customers", 1)
+    assert (accepted["source"], accepted["dataset"]) == ("demo_csv", "customers")
+    record = client.get(f"/api/pipeline-runs/{accepted['execution_id']}")
+    assert record.status_code == 200
+    run = record.json()
+    assert (run["status"], run["version"], run["rows_in"], run["rows_out"]) == (
+        "succeeded",
+        1,
+        20,
+        20,
+    )
+    assert [step["type"] for step in run["steps"]] == ["normalize_values", "fill_missing"]
+    assert run["steps"][1]["values_changed"] == 1
+    assert [profile["stage"] for profile in run["profiles"]] == ["raw", "clean"]
+    assert all(check["passed"] for check in run["validation"])
+    assert [node["kind"] for node in run["lineage"]] == ["source", "raw", "step", "step", "clean"]
+    assert run["lineage"][0]["ingest_run_id"] == run["input_run_id"] is not None
+    assert ".".join(["clean", "demo_csv__customers"]) in loader.clean
+
+
+def test_a_pipeline_run_of_a_dataset_already_being_prepared_is_refused_naming_the_run() -> None:
+    loader = _loaded_demo()
+    pipeline = load_pipeline(SOURCES, "demo_csv_customers", {})
+    going = start_pipeline(loader, pipeline)
+    client, _ = _client(loader=loader)
+
+    refused = client.post("/api/pipelines/demo_csv_customers/runs")
+
+    assert refused.status_code == 409
+    assert str(going.execution_id) in refused.json()["detail"]
+    assert client.get(f"/api/pipeline-runs/{going.execution_id}").json()["status"] == "running"
+
+
+@pytest.mark.parametrize(
+    ("path", "status", "detail"),
+    [
+        ("/api/pipelines/nope/runs", 404, "pipeline 'nope' not found"),
+        ("/api/pipelines/Not-A-Name/runs", 404, "pipeline 'Not-A-Name' not found"),
+    ],
+)
+def test_a_pipeline_run_that_cannot_start_says_why(path: str, status: int, detail: str) -> None:
+    client, _ = _client()
+
+    response = client.post(path)
+
+    assert (response.status_code, response.json()["detail"]) == (status, detail)
+
+
+def test_an_invalid_pipeline_file_is_refused_naming_the_step(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    (sources / "demo_csv").mkdir(parents=True)
+    (sources / "demo_csv" / "source.yaml").write_text(
+        (SOURCES / "demo_csv" / "source.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (tmp_path / "pipelines").mkdir()
+    (tmp_path / "pipelines" / "bad.yaml").write_text(
+        "source: demo_csv\ndataset: customers\nsteps:\n  - type: fill_missing\n    columns: [a]\n",
+        encoding="utf-8",
+    )
+    client, _ = _client(sources=sources)
+
+    response = client.post("/api/pipelines/bad/runs")
+
+    assert response.status_code == 422
+    assert "step 1 (fill_missing): method: Field required" in response.json()["detail"]
+
+
+def test_an_unknown_pipeline_run_is_not_found() -> None:
+    client, _ = _client()
+
+    response = client.get("/api/pipeline-runs/01a0a3de-9cb0-73ec-be37-1caa01588b64")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == (
+        "pipeline run 01a0a3de-9cb0-73ec-be37-1caa01588b64 not found"
+    )
+
+
+# --- pipelines built in the dashboard ------------------------------------------------------------
+
+BUILT = "/api/datasets/demo_csv/customers/pipelines/customers_built"
+CITY_STEP = {"type": "normalize_values", "columns": ["city"], "trim": True}
+NOT_NULL = {"constraint": "not_null", "column": "customer_id", "critical": True}
+
+
+def _builder_client(loader: MemoryLoader | None = None) -> tuple[TestClient, Any, MemoryLoader]:
+    store = loader or MemoryLoader()
+    columns = [("customer_id", "bigint"), ("city", "text"), ("_run_id", "uuid")]
+    catalog = MemoryCatalog(None, columns)
+    app = create_app(cast(PostgresCatalog, catalog), SOURCES, {}, lambda: nullcontext(store))
+    return TestClient(app), app, store
+
+
+def test_a_pipeline_never_saved_is_new_with_the_datasets_columns_and_no_steps() -> None:
+    client, _, _ = _builder_client()
+
+    response = client.get(BUILT)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "name": "customers_built",
+        "source": "demo_csv",
+        "dataset": "customers",
+        "version": None,
+        "saved_at": None,
+        "profile": "ends",
+        "constraints": [],
+        "steps": [],
+        # The platform's own columns cannot be a step's column, so they are not offered.
+        "columns": [{"name": "customer_id", "type": "bigint"}, {"name": "city", "type": "text"}],
+    }
+
+
+def test_saving_runs_nothing_and_the_saved_version_is_what_runs() -> None:
+    loader = _loaded_demo()
+    client, app, _ = _builder_client(loader)
+    draft = {"profile": "ends", "constraints": [NOT_NULL], "steps": [CITY_STEP]}
+
+    saved = client.put(BUILT, json=draft)
+    again = client.put(BUILT, json=draft)
+
+    assert saved.status_code == 200, saved.text
+    assert (saved.json()["version"], again.json()["version"]) == (1, 1)
+    # Every setting the step runs with comes back, defaults included.
+    assert saved.json()["steps"] == [{**CITY_STEP, "case": None, "mapping": {}}]
+    assert client.get(BUILT).json()["steps"] == saved.json()["steps"]
+    with loader.stages() as stages:
+        assert stages.running_executions("demo_csv", "customers") == []
+    assert "clean.demo_csv__customers" not in loader.clean
+
+    accepted = client.post(f"{BUILT}/runs")
+    app.state.runs.shutdown(wait=True)
+
+    assert accepted.status_code == 202, accepted.text
+    assert (accepted.json()["pipeline"], accepted.json()["version"]) == ("customers_built", 1)
+    run = client.get(f"/api/pipeline-runs/{accepted.json()['execution_id']}").json()
+    assert (run["status"], run["version"], run["rows_out"]) == ("succeeded", 1, 20)
+    assert [step["type"] for step in run["steps"]] == ["normalize_values"]
+    assert [check["constraint"] for check in run["validation"]] == ["not_null"]
+
+
+def test_a_draft_without_constraints_keeps_the_datasets_own_as_a_pipeline_file_does(
+    tmp_path: Path,
+) -> None:
+    sources = tmp_path / "sources"
+    (sources / "demo_csv").mkdir(parents=True)
+    declared = (SOURCES / "demo_csv" / "source.yaml").read_text(encoding="utf-8")
+    (sources / "demo_csv" / "source.yaml").write_text(
+        declared.rstrip("\n")
+        + "\n    constraints:\n      - constraint: not_null\n        column: customer_id\n",
+        encoding="utf-8",
+    )
+    catalog = MemoryCatalog(None, [("customer_id", "bigint"), ("city", "text")])
+    store = MemoryLoader()
+    app = create_app(cast(PostgresCatalog, catalog), sources, {}, lambda: nullcontext(store))
+    client = TestClient(app)
+    own = client.get(BUILT).json()["constraints"]
+
+    left_out = client.put(BUILT, json={"steps": [CITY_STEP]})
+    emptied = client.put(BUILT, json={"constraints": [], "steps": [CITY_STEP]})
+
+    assert left_out.status_code == 200, left_out.text
+    assert [item["constraint"] for item in own] == ["not_null"]
+    assert (left_out.json()["version"], left_out.json()["constraints"]) == (1, own)
+    # Saying "none" on purpose is kept as none, as a new version.
+    assert (emptied.json()["version"], emptied.json()["constraints"]) == (2, [])
+
+
+def test_an_invalid_draft_is_refused_naming_each_step_and_field_and_nothing_is_saved() -> None:
+    client, _, _ = _builder_client()
+    draft = {
+        "constraints": [NOT_NULL, {"constraint": "min", "column": "lifetime_value"}],
+        "steps": [
+            CITY_STEP,
+            {"type": "outliers", "column": "city", "action": "flag", "upper_percentile": 150},
+            {"type": "nope"},
+        ],
+    }
+
+    response = client.put(BUILT, json=draft)
+
+    assert response.status_code == 422
+    problems = response.json()["detail"]
+    assert [problem["loc"] for problem in problems] == [
+        ["constraints", 2, "value"],
+        ["steps", 2, "upper_percentile"],
+        ["steps", 3, "type"],
+    ]
+    assert "less than or equal to 100" in problems[1]["msg"]
+    assert client.get(BUILT).json()["version"] is None
+
+
+DRAFT_KEYS = st.sampled_from(
+    [
+        *("columns", "column", "method", "value", "action", "upper_percentile", "to", "trim"),
+        *("case", "mapping", "on_invalid", "script", "timeout", "bogus"),
+    ]
+)
+DRAFT_VALUES = st.sampled_from(
+    [
+        *(["city"], [], "city", "median", "value", "flag", 50, 150, -1, True, "lower", {}),
+        *(None, "keep", "text", "decimal", {"a": "b"}),
+    ]
+)
+
+
+@settings(max_examples=300)
+@given(
+    steps=st.lists(
+        st.dictionaries(DRAFT_KEYS, DRAFT_VALUES, max_size=4).flatmap(
+            lambda settings: st.sampled_from([*sorted(TRANSFORMATIONS), "nope", 3, None]).map(
+                lambda kind: {**settings, "type": kind}
+            )
+        ),
+        max_size=3,
+    ),
+    constraints=st.lists(
+        st.fixed_dictionaries(
+            {"constraint": st.sampled_from(["not_null", "min", "unique", "pattern", "zz"])},
+            optional={
+                "column": st.sampled_from(["city", 3]),
+                "columns": st.sampled_from([["city"], []]),
+                "value": st.sampled_from([0, "x"]),
+                "pattern": st.sampled_from(["[a-z]+", "("]),
+            },
+        ),
+        max_size=2,
+    ),
+)
+def test_a_draft_with_no_problems_is_exactly_one_the_engine_loads(
+    steps: list[dict[str, Any]], constraints: list[dict[str, Any]]
+) -> None:
+    # The builder is told "saved" only for what a run then loads: the same rule, both ways.
+    config = load_source(SOURCES, "demo_csv", {})
+    written = {"source": "demo_csv", "dataset": "customers", "constraints": constraints}
+    try:
+        resolve_pipeline("p", PipelineFile.model_validate({**written, "steps": steps}), config, "p")
+        loads = True
+    except ConfigError, pydantic.ValidationError:
+        loads = False
+
+    assert (draft_problems(constraints, steps) == []) == loads
+
+
+@pytest.mark.parametrize(
+    ("script", "status"),
+    [
+        ("scripts/custom/customer_transform.py", 200),
+        ("scripts/custom/not_there.py", 422),
+        ("pyproject.toml", 422),
+        ("scripts/custom/../../pyproject.toml", 422),
+    ],
+)
+def test_a_python_step_saved_over_the_api_may_only_name_a_script_in_scripts_custom(
+    script: str, status: int
+) -> None:
+    client, _, _ = _builder_client()
+
+    response = client.put(BUILT, json={"steps": [{"type": "python", "script": script}]})
+
+    assert response.status_code == status, response.text
+    if status == 422:
+        assert response.json()["detail"][0]["loc"] == ["steps", 1, "script"]
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "status", "detail"),
+    [
+        (
+            "PUT",
+            "/api/datasets/demo_csv/customers/pipelines/demo_csv_customers",
+            409,
+            "pipelines/demo_csv_customers.yaml declares a pipeline called 'demo_csv_customers'",
+        ),
+        ("POST", f"{BUILT}/runs", 404, "pipeline 'customers_built' of demo_csv.customers is not"),
+        ("GET", "/api/datasets/demo_csv/nope/pipelines/x", 404, "dataset 'nope' is not in source"),
+        ("GET", "/api/datasets/nope/customers/pipelines/x", 404, "source 'nope' not found"),
+    ],
+)
+def test_a_pipeline_the_builder_cannot_save_or_run_says_why(
+    method: str, path: str, status: int, detail: str
+) -> None:
+    client, _, _ = _builder_client()
+
+    response = client.request(method, path, json={"steps": []} if method == "PUT" else None)
+
+    assert response.status_code == status
+    assert response.json()["detail"].startswith(detail)
+
+
+def test_a_pipeline_name_that_is_not_a_name_is_refused() -> None:
+    client, _, _ = _builder_client()
+
+    response = client.get("/api/datasets/demo_csv/customers/pipelines/Not-A-Name")
+
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"] == ["name"]
+
+
+# --- lineage -------------------------------------------------------------------------------------
+
+LINEAGE = "/api/datasets/demo_csv/customers/lineage"
+
+
+def _prepared(loader: MemoryLoader, steps: list[dict[str, Any]] | None = None) -> str:
+    """Run the demo pipeline over the loaded demo, or one named `broken` with these steps."""
+    if steps is None:
+        pipeline = load_pipeline(SOURCES, "demo_csv_customers", {})
+    else:
+        written = PipelineFile.model_validate(
+            {"source": "demo_csv", "dataset": "customers", "steps": steps}
+        )
+        pipeline = resolve_pipeline("broken", written, load_source(SOURCES, "demo_csv", {}), "b")
+    return str(run_pipeline(loader, pipeline).execution_id)
+
+
+def test_the_lineage_of_a_prepared_dataset_is_its_run_from_the_source_file_to_clean() -> None:
+    loader = _loaded_demo()
+    ran = _prepared(loader)
+    client, _, _ = _builder_client(loader)
+
+    body = client.get(LINEAGE).json()
+
+    assert (body["run"]["execution_id"], body["run"]["status"]) == (ran, "succeeded")
+    assert body["run"]["pipeline"] == "demo_csv_customers"
+    assert [item["execution_id"] for item in body["runs"]] == [ran]
+    chain = body["chain"]
+    assert [(node["kind"], node["name"]) for node in chain[1:]] == [
+        ("raw", "raw.demo_csv__customers"),
+        ("step", "normalize_values"),
+        ("step", "fill_missing"),
+        ("clean", "clean.demo_csv__customers"),
+    ]
+    assert chain[0]["kind"] == "source"
+    assert "customers.csv" in chain[0]["name"]
+    fill = chain[3]["step"]
+    assert (fill["position"], fill["status"], fill["rows_in"], fill["values_changed"]) == (
+        2,
+        "succeeded",
+        20,
+        1,
+    )
+    assert fill["configuration"]["columns"] == ["lifetime_value"]
+    assert fill["configuration"]["method"] == "median"
+    assert [node["profile"]["stage"] for node in chain if node["profile"]] == ["raw", "clean"]
+
+
+def test_a_past_run_shows_its_own_chain_and_a_failed_step_its_error(tmp_path: Path) -> None:
+    loader = _loaded_demo()
+    succeeded = _prepared(loader)
+    script = tmp_path / "broken.py"
+    script.write_text(
+        "def transform(df):\n    raise ValueError('cannot read row 3')\n", encoding="utf-8"
+    )
+    steps: list[dict[str, Any]] = [
+        {"type": "normalize_values", "columns": ["city"], "trim": True},
+        {"type": "python", "script": script.as_posix()},
+        {"type": "fill_missing", "columns": ["lifetime_value"], "method": "median"},
+    ]
+    failed = _prepared(loader, steps)
+    client, _, _ = _builder_client(loader)
+
+    latest = client.get(LINEAGE).json()
+    past = client.get(LINEAGE, params={"run": failed}).json()
+
+    # By default, the run that made the CLEAN table there is now; every run is offered.
+    assert latest["run"]["execution_id"] == succeeded
+    assert [item["execution_id"] for item in latest["runs"]] == [failed, succeeded]
+    assert [item["status"] for item in latest["runs"]] == ["failed", "succeeded"]
+    assert (past["run"]["execution_id"], past["run"]["pipeline"]) == (failed, "broken")
+    assert "cannot read row 3" in past["run"]["error"]
+    assert [
+        (node["kind"], node["step"]["status"] if node["step"] else None) for node in past["chain"]
+    ] == [
+        ("source", None),
+        ("raw", None),
+        ("step", "succeeded"),
+        ("step", "failed"),
+        ("step", "not_run"),
+    ]
+    assert "cannot read row 3" in past["chain"][3]["step"]["error"]
+    assert past["chain"][3]["step"]["configuration"]["script"] == script.as_posix()
+
+
+def test_a_dataset_no_pipeline_has_run_over_shows_its_load_from_source_to_table() -> None:
+    client, _, _ = _builder_client(_loaded_demo())
+
+    body = client.get(LINEAGE).json()
+
+    assert (body["run"], body["runs"]) == (None, [])
+    assert [(node["kind"], node["name"]) for node in body["chain"][1:]] == [
+        ("raw", "raw.demo_csv__customers"),
+        ("table", "datasets.demo_csv__customers"),
+    ]
+    assert body["chain"][0]["kind"] == "source"
+
+
+def test_a_dataset_never_loaded_has_no_lineage_yet() -> None:
+    client, _, _ = _builder_client()
+
+    body = client.get(LINEAGE).json()
+
+    assert (body["run"], body["runs"], body["chain"]) == (None, [], [])
+
+
+def test_a_run_that_is_not_the_datasets_or_a_dataset_that_is_not_there_is_not_found() -> None:
+    loader = _loaded_demo()
+    ran = _prepared(loader)
+    client, _, _ = _builder_client(loader)
+    elsewhere = client.get("/api/datasets/demo_csv/nope/lineage", params={"run": ran}).status_code
+    unknown = client.get(LINEAGE, params={"run": "01a0a3de-9cb0-73ec-be37-1caa01588b64"})
+
+    assert elsewhere == 404
+    assert unknown.status_code == 404
+    assert unknown.json()["detail"] == (
+        "pipeline run 01a0a3de-9cb0-73ec-be37-1caa01588b64 of 'demo_csv.customers' not found"
+    )
 
 
 # --- serving the built dashboard -----------------------------------------------------------------
@@ -827,6 +1277,66 @@ def test_a_run_requested_over_http_is_recorded_as_a_manual_run(tmp_path: Path) -
         "/api/runs", params={"source": source, "since": accepted["requested_at"]}
     ).json()["runs"]
     assert [(run["status"], run["trigger"]) for run in runs] == [("succeeded", "manual")]
+
+
+@pytest.mark.db
+def test_a_pipeline_run_requested_over_http_runs_against_postgres_and_reads_back(
+    tmp_path: Path,
+) -> None:
+    # The route opens a real loader in the request, takes the dataset's lock on its connection,
+    # and hands both to the background thread that carries the run out and frees the lock.
+    source = _prefix()
+    sources = tmp_path / "sources"
+    (sources / source).mkdir(parents=True)
+    (sources / source / "source.yaml").write_text(
+        "connection:\n  type: csv\ndatasets:\n  - name: items\n    path: items.csv\n",
+        encoding="utf-8",
+    )
+    (sources / source / "items.csv").write_text("id,name\n1, ada \n2,bo\n", encoding="utf-8")
+    (tmp_path / "pipelines").mkdir()
+    (tmp_path / "pipelines" / f"{source}_items.yaml").write_text(
+        f"source: {source}\ndataset: items\n"
+        "constraints:\n  - constraint: not_null\n    column: id\n    critical: true\n"
+        "steps:\n  - type: normalize_values\n    columns: [name]\n    trim: true\n",
+        encoding="utf-8",
+    )
+    with PostgresLoader(_url()) as loader:
+        (ingest,) = run_source(source, load_source(sources, source, {}), sources, loader)
+    assert ingest.status == "succeeded"
+    client, app = _db_client(sources)
+
+    accepted = client.post(f"/api/pipelines/{source}_items/runs")
+    app.state.runs.shutdown(wait=True)
+
+    assert accepted.status_code == 202, accepted.text
+    execution_id = accepted.json()["execution_id"]
+    run = client.get(f"/api/pipeline-runs/{execution_id}").json()
+    assert (run["status"], run["rows_in"], run["rows_out"], run["error"]) == (
+        "succeeded",
+        2,
+        2,
+        None,
+    )
+    assert run["input_run_id"] == str(ingest.run_id)
+    assert [(node["kind"], node["ingest_run_id"] is not None) for node in run["lineage"]] == [
+        ("source", True),
+        ("raw", True),
+        ("step", False),
+        ("clean", False),
+    ]
+    assert [check["passed"] for check in run["validation"]] == [True]
+    lineage = client.get(f"/api/datasets/{source}/items/lineage").json()
+    assert [item["execution_id"] for item in lineage["runs"]] == [execution_id]
+    assert lineage["runs"][0]["pipeline"] == f"{source}_items"
+    assert [node["kind"] for node in lineage["chain"]] == ["source", "raw", "step", "clean"]
+    with psycopg.connect(_url()) as conn:
+        clean = sql.Identifier("clean", f"{source}__items")
+        rows = conn.execute(sql.SQL("SELECT id, name FROM {} ORDER BY id").format(clean))
+        assert rows.fetchall() == [(1, "ada"), (2, "bo")]
+    # The background thread freed the dataset's lock: another connection can take it.
+    with PostgresLoader(_url()) as other:
+        assert other.lock_dataset(source, "items")
+        other.unlock_dataset(source, "items")
 
 
 SEARCHED_DATASETS = ["orders", "order_lines", "ordersx", "a_b", "ab"]

@@ -20,7 +20,7 @@ UNREACHABLE_DATABASE = "postgresql://x:x@127.0.0.1:1/x"
 class _NoEdits:
     """A loader that connects to nothing and has no stored configuration edits.
 
-    `udp run` reads each source's edits from the platform before it runs anything, so a test
+    `udp load` reads each source's edits from the platform before it runs anything, so a test
     that fakes the run itself has to stand in for that read as well.
     """
 
@@ -33,7 +33,7 @@ class _NoEdits:
     def __exit__(self, *_: object) -> None:
         return None
 
-    # What a test wants `udp run` to find stored for the source it runs.
+    # What a test wants `udp load` to find stored for the source it runs.
     overrides: ClassVar[dict[str, dict[str, object]]] = {}
 
     def read_overrides(self, source: str) -> dict[str, dict[str, object]]:
@@ -58,7 +58,7 @@ def test_invalid_config_exits_2_without_touching_the_database(tmp_path: Path) ->
 
     result = CliRunner().invoke(
         app,
-        ["run", "shop"],
+        ["load", "shop"],
         env={"UDP_DATABASE_URL": UNREACHABLE_DATABASE, "UDP_SOURCES_DIR": str(sources_dir)},
     )
 
@@ -77,7 +77,7 @@ def test_unset_secret_exits_2_without_touching_the_database(
 
     result = CliRunner().invoke(
         app,
-        ["run", "demo_api"],
+        ["load", "demo_api"],
         env={
             "UDP_DATABASE_URL": UNREACHABLE_DATABASE,
             "UDP_SOURCES_DIR": str(sources_dir),
@@ -93,7 +93,7 @@ def test_unset_secret_exits_2_without_touching_the_database(
 
 
 def test_a_run_uses_the_edits_stored_for_the_source(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`udp run` reads each source's stored edits and runs what they make of the file."""
+    """`udp load` reads each source's stored edits and runs what they make of the file."""
     ran: list[object] = []
 
     def fake_run_source(
@@ -107,7 +107,7 @@ def test_a_run_uses_the_edits_stored_for_the_source(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(_NoEdits, "overrides", {"customers": {"quarantine_threshold_percent": 42}})
     env = {"UDP_DATABASE_URL": UNREACHABLE_DATABASE, "UDP_SOURCES_DIR": "sources"}
 
-    result = CliRunner().invoke(app, ["run", "demo_csv"], env=env)
+    result = CliRunner().invoke(app, ["load", "demo_csv"], env=env)
 
     assert result.exit_code == 0, result.output
     (config,) = ran
@@ -132,8 +132,8 @@ def test_full_refresh_flag_reaches_the_runner(monkeypatch: pytest.MonkeyPatch) -
     runner = CliRunner()
     env = {"UDP_DATABASE_URL": UNREACHABLE_DATABASE, "UDP_SOURCES_DIR": "sources"}
 
-    assert runner.invoke(app, ["run", "demo_csv", "--full-refresh"], env=env).exit_code == 0
-    assert runner.invoke(app, ["run", "demo_csv"], env=env).exit_code == 0
+    assert runner.invoke(app, ["load", "demo_csv", "--full-refresh"], env=env).exit_code == 0
+    assert runner.invoke(app, ["load", "demo_csv"], env=env).exit_code == 0
     assert [call["full_refresh"] for call in calls] == [True, False]
 
 
@@ -151,7 +151,7 @@ def test_only_a_failed_run_makes_the_command_fail(
     monkeypatch.setattr("udp.cli.PostgresLoader", _NoEdits)
     env = {"UDP_DATABASE_URL": UNREACHABLE_DATABASE, "UDP_SOURCES_DIR": "sources"}
 
-    assert CliRunner().invoke(app, ["run", "demo_csv"], env=env).exit_code == exit_code
+    assert CliRunner().invoke(app, ["load", "demo_csv"], env=env).exit_code == exit_code
 
 
 def test_schedule_command_serves_the_configured_sources(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -227,7 +227,7 @@ def test_openapi_command_prints_the_api_description_without_a_database() -> None
 def test_demo_source_loads_then_skips_the_unchanged_file() -> None:
     runner = CliRunner()
 
-    for arguments in (["run", "demo_csv", "--full-refresh"], ["run", "demo_csv"]):
+    for arguments in (["load", "demo_csv", "--full-refresh"], ["load", "demo_csv"]):
         result = runner.invoke(app, arguments, env={"UDP_SOURCES_DIR": "sources"})
         assert result.exit_code == 0, result.output
 
@@ -274,7 +274,7 @@ def test_missing_file_exits_1_and_records_a_failed_run(tmp_path: Path) -> None:
     )
 
     result = CliRunner().invoke(
-        app, ["run", "lost_file"], env={"UDP_SOURCES_DIR": str(sources_dir)}
+        app, ["load", "lost_file"], env={"UDP_SOURCES_DIR": str(sources_dir)}
     )
 
     assert result.exit_code == 1, result.output

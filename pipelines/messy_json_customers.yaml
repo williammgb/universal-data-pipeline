@@ -1,0 +1,50 @@
+# messy_json's customers, from RAW to clean.messy_json__customers: plans spelt one way, rows
+# whose age or sign-up date cannot be read dropped, types set, the spend outlier capped and the
+# missing spend filled. A repeated customer and a negative age are reported, not hidden.
+#   ./udp load messy_json
+#   ./udp pipeline run messy_json_customers
+source: messy_json
+dataset: customers
+profile: ends
+constraints:
+  - constraint: not_null
+    column: id
+    critical: true
+  - constraint: allowed_values
+    column: plan
+    values: [gold, silver, bronze]
+    critical: true
+  - constraint: unique
+    columns: [id]
+  - constraint: min
+    column: age
+    value: 0
+steps:
+  - type: normalize_values
+    columns: [plan]
+    case: lower
+    mapping:
+      brons: bronze
+  - type: validate
+    constraints:
+      - constraint: datatype
+        column: age
+        type: integer
+      - constraint: datatype
+        column: signed_up
+        type: date
+    on_invalid: drop
+  - type: convert_type
+    column: age
+    to: integer
+  - type: convert_type
+    column: signed_up
+    to: date
+  - type: outliers
+    column: spend
+    action: cap
+    lower_percentile: 0
+    upper_percentile: 90
+  - type: fill_missing
+    columns: [spend]
+    method: median

@@ -16,13 +16,13 @@ from pydantic import (
 )
 
 from udp.connectors.base import ConnectionBase, DatasetBase, ExtractRequest, FileVersion
+from udp.connectors.records import MISSING, records_frame, value_at
 from udp.connectors.retry import RETRY_WAITS, retry
 from udp.errors import ExtractError
 
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 REQUEST_TIMEOUT_SECONDS = 30.0
 MAX_PAGES = 10_000
-INT64_MIN, INT64_MAX = -(2**63), 2**63 - 1
 
 ClientFactory = Callable[[str, Mapping[str, str], float], httpx.Client]
 
@@ -115,18 +115,6 @@ class RestApiDataset(DatasetBase):
         return self
 
 
-_MISSING = object()
-
-
-def _at(body: Any, path: str) -> Any:
-    node = body
-    for part in path.split("."):
-        if not isinstance(node, dict) or part not in node:
-            return _MISSING
-        node = node[part]
-    return node
-
-
 def _default_client(base_url: str, headers: Mapping[str, str], timeout: float) -> httpx.Client:
     return httpx.Client(base_url=base_url, headers=dict(headers), timeout=timeout)
 
@@ -143,47 +131,6 @@ class _RetryableStatus(Exception):
     def __init__(self, status: int) -> None:
         super().__init__(f"HTTP {status}")
         self.status = status
-
-
-def _kind(value: Any) -> str:
-    if isinstance(value, bool):
-        return "bool"
-    if isinstance(value, int):
-        return "int" if INT64_MIN <= value <= INT64_MAX else "other"
-    if isinstance(value, float):
-        return "float"
-    if isinstance(value, str):
-        return "str"
-    return "other"
-
-
-def _as_text(value: Any) -> str | None:
-    if value is None or isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False)
-
-
-def records_frame(records: Sequence[Mapping[str, Any]]) -> pl.DataFrame:
-    """One column per key seen on any record, each typed over the whole dataset."""
-    names: dict[str, None] = {}
-    for record in records:
-        names.update(dict.fromkeys(record))
-    series = []
-    for name in names:
-        values = [record.get(name) for record in records]
-        kinds = {_kind(value) for value in values if value is not None}
-        if not kinds:
-            series.append(pl.Series(name, values, dtype=pl.Null))
-        elif kinds == {"int"}:
-            series.append(pl.Series(name, values, dtype=pl.Int64))
-        elif kinds <= {"int", "float"}:
-            floats = [None if v is None else float(v) for v in values]
-            series.append(pl.Series(name, floats, dtype=pl.Float64))
-        elif kinds == {"bool"}:
-            series.append(pl.Series(name, values, dtype=pl.Boolean))
-        else:
-            series.append(pl.Series(name, [_as_text(v) for v in values], dtype=pl.String))
-    return pl.DataFrame(series)
 
 
 class RestApiConnector:
@@ -260,8 +207,10 @@ class RestApiConnector:
                     raise ExtractError(f"GET {endpoint}: the response is not JSON") from None
 
             def records(body: Any) -> list[Mapping[str, Any]]:
-                found = body if dataset.records_path is None else _at(body, dataset.records_path)
-                if found is _MISSING:
+                found = (
+                    body if dataset.records_path is None else value_at(body, dataset.records_path)
+                )
+                if found is MISSING:
                     raise ExtractError(f"GET {endpoint}: no '{dataset.records_path}' in response")
                 if not isinstance(found, list) or not all(isinstance(r, dict) for r in found):
                     raise ExtractError(f"GET {endpoint}: records are not a list of objects")
@@ -297,8 +246,8 @@ class RestApiConnector:
                     )
                     body = get(endpoint, query)
                     yield from records(body)
-                    cursor = _at(body, pagination.cursor_path)
-                    if cursor is _MISSING or cursor is None or cursor == "":
+                    cursor = value_at(body, pagination.cursor_path)
+                    if cursor is MISSING or cursor is None or cursor == "":
                         return
                     key = json.dumps(cursor, sort_keys=True)
                     if key in seen:
@@ -311,8 +260,8 @@ class RestApiConnector:
                 while True:
                     body = get(url, query)
                     yield from records(body)
-                    link = _at(body, pagination.next_path)
-                    if link is _MISSING or link is None:
+                    link = value_at(body, pagination.next_path)
+                    if link is MISSING or link is None:
                         return
                     if not isinstance(link, str):
                         raise ExtractError(f"GET {endpoint}: the next link is not text")

@@ -55,7 +55,8 @@ usage: ./run <task> [args]
   fast    the fast gate — under ~60s, no external services, no real data volume
   db      only the database tests, against a throwaway migrated Postgres
   full    the full gate — real size, real dependencies, allowed to be slow
-  smoke   start the real entrypoint and prove it comes up
+  smoke   start the real entrypoint and prove it comes up; with SMOKE_RUN="<command>"
+          also run that command against it:  SMOKE_RUN="udp doctor" ./run smoke
   image   build the container image:  ./run image <tag>
   memory  load five million rows in a container and print its peak memory (not a gate)
   check   syntax or lint one file:  ./run check path/to/file
@@ -76,9 +77,8 @@ stack_prom_port=
 stack_password=
 stack_key=
 
-# The Docker engine: inside WSL on this Windows machine, the machine's own on a Linux CI runner.
-# Decided once here, so the gate a person runs is the same gate a pull request runs.
-if command -v wsl.exe > /dev/null 2>&1; then engine="wsl.exe -e"; else engine=; fi
+# The Docker engine and the WSL keepalive, shared with ./udp.
+. "$(dirname "$0")/deploy/engine.sh"
 
 compose() {
   $engine env POSTGRES_PASSWORD="$stack_password" UDP_PG_PORT="$stack_port" \
@@ -87,22 +87,6 @@ compose() {
     UDP_API_KEYS="${UDP_API_KEYS:-}" DEMO_SCHEDULE="${DEMO_SCHEDULE:-}" \
     docker compose -p "$stack_project" -f deploy/compose.yaml \
     --profile app --profile demo --profile monitoring --profile scale "$@"
-}
-
-# WSL shuts the distro down about 15 seconds after the last wsl.exe command ends,
-# stopping every container with it — even while tests on Windows are still using
-# the database. One idle wsl.exe session held open for the life of the stack
-# keeps it up. Without WSL there is nothing to keep up.
-keepalive_start() {
-  [ -n "$engine" ] || return 0
-  MSYS_NO_PATHCONV=1 wsl.exe -e sh -c \
-    "echo \$\$ > /tmp/$stack_project.keepalive; exec sleep 86400" > /dev/null 2>&1 &
-}
-
-keepalive_stop() {
-  [ -n "$engine" ] || return 0
-  MSYS_NO_PATHCONV=1 wsl.exe -e sh -c \
-    "kill \$(cat /tmp/$stack_project.keepalive) 2>/dev/null; rm -f /tmp/$stack_project.keepalive"
 }
 
 # stack_start <project> <platform pg port> [<source pg port> <mock api port> [<udp api port>
@@ -130,7 +114,7 @@ stack_start() {
   # to a port published inside WSL hangs for two minutes instead of being refused.
   UDP_DATABASE_URL="postgresql://udp:$stack_password@127.0.0.1:$stack_port/udp"
   export UDP_DATABASE_URL
-  keepalive_start
+  keepalive_start "$stack_project" 86400
   if [ -z "$stack_source_port" ]; then
     compose up -d --wait postgres
     return
@@ -144,11 +128,11 @@ stack_start() {
 
 stack_stop() {
   compose down -v --remove-orphans > /dev/null 2>&1
-  keepalive_stop
+  keepalive_stop "$stack_project"
 }
 
 migrate() {
-  uv run --locked udp migrate
+  uv run --locked udp update
 }
 
 fast_gate() {
@@ -207,20 +191,58 @@ full_gate() {
   return "$code"
 }
 
-SMOKE_SOURCES="demo_csv demo_excel demo_db demo_api"
+# The messy ones too: their data is wrong on purpose, and a load must still succeed.
+SMOKE_SOURCES="demo_csv demo_excel demo_db demo_api messy_csv messy_excel messy_db messy_api messy_json"
 
 # migrate is built with app every time: compose gives it an image of its own, which down -v
 # keeps, so a migrate image left from an older smoke would apply older migrations.
 smoke_sources() {
   compose build app migrate || return
   for source in $SMOKE_SOURCES; do
-    compose run --rm app run "$source" || return
+    compose run --rm app load "$source" || return
   done
   for source in $SMOKE_SOURCES; do
-    uv run --locked udp run "$source" || return
+    uv run --locked udp load "$source" || return
   done
-  smoke_scheduler && smoke_api && smoke_dashboard && smoke_metrics && smoke_console &&
-    smoke_backup && smoke_hold
+  smoke_run && smoke_scheduler && smoke_api && smoke_pipeline && smoke_dashboard && smoke_metrics &&
+    smoke_console && smoke_backup && smoke_hold
+}
+
+# The api container reads pipelines/ through its own mount: the demo pipeline, started over HTTP,
+# must prepare demo_csv's RAW into CLEAN, and its record must name the ingest run it read.
+smoke_pipeline() {
+  base="http://127.0.0.1:$stack_http_port/api"
+  accepted=$(api_curl -fsS -X POST "$base/pipelines/demo_csv_customers/runs") || {
+    compose logs api; return 1; }
+  echo "$accepted"
+  id=$(printf '%s' "$accepted" | sed -n 's/.*"execution_id":"\([^"]*\)".*/\1/p')
+  [ -n "$id" ] || { echo "the pipeline run was not given an id"; return 1; }
+  deadline=$(( $(date +%s) + 60 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    run=$(api_curl -fsS "$base/pipeline-runs/$id") || return
+    case "$run" in
+      *'"status":"succeeded"'*)
+        case "$run" in
+          *'"input_run_id":null'*) echo "the pipeline run names no ingest run"; return 1 ;;
+        esac
+        printf '%s\n' "$run" | cut -c1-400; return 0 ;;
+      *'"status":"failed"'*) printf '%s\n' "$run"; compose logs api; return 1 ;;
+    esac
+    sleep 1
+  done
+  compose logs api
+  echo "the pipeline run requested over the api did not succeed within 60s"
+  return 1
+}
+
+# SMOKE_RUN="udp doctor" ./run smoke runs that one command against the
+# smoke stack once the demo sources have loaded, with the stack's database and API key in
+# its environment. It is the only way in: the stack's password is never written down, and
+# a ticket's runner was refused when it tried to read it out of other processes instead.
+smoke_run() {
+  [ -n "${SMOKE_RUN:-}" ] || return 0
+  echo "smoke run: $SMOKE_RUN"
+  sh -c "uv run --locked $SMOKE_RUN" || { echo "smoke run failed: $SMOKE_RUN"; return 1; }
 }
 
 # Everything under /api needs the stack's key; the dashboard's own pages and files do not.
@@ -285,6 +307,9 @@ smoke_backup() {
   # MSYS_NO_PATHCONV: without it Git Bash turns the container's /tmp path into a Windows one.
   dump=/tmp/udp-smoke.dump
   psql="compose exec -T postgres psql -U udp -tAX"
+  # The scheduler started earlier loads demo_csv every minute; a run it records between the
+  # dump and the count makes the two disagree. Nothing after this needs it.
+  compose stop scheduler > /dev/null 2>&1 || return
   MSYS_NO_PATHCONV=1 compose exec -T postgres pg_dump -U udp -Fc -f "$dump" udp || return
   $psql -d postgres -c 'DROP DATABASE IF EXISTS udp_restored' > /dev/null || return
   $psql -d postgres -c 'CREATE DATABASE udp_restored OWNER udp' > /dev/null || return
@@ -302,7 +327,7 @@ smoke_backup() {
   done
   # The restored copy is a working platform, not only a pile of rows.
   restored_run=$(UDP_DATABASE_URL="postgresql://udp:$stack_password@127.0.0.1:$stack_port/udp_restored" \
-    uv run --locked udp run demo_csv 2>&1) || {
+    uv run --locked udp load demo_csv 2>&1) || {
     printf '%s\n' "$restored_run"
     echo "a run against the restored database failed"
     return 1
@@ -394,7 +419,7 @@ memory_run() {
     migrate &&
     compose build scale-load migrate &&
     { compose run --rm --entrypoint sh scale-load -c \
-      'udp run scale_csv --full-refresh; ran=$?; echo "peak_bytes $(cat /sys/fs/cgroup/memory.peak)"; exit $ran' \
+      'udp load scale_csv --full-refresh; ran=$?; echo "peak_bytes $(cat /sys/fs/cgroup/memory.peak)"; exit $ran' \
       && echo 0 > "$log.code" || echo $? > "$log.code"; } 2>&1 | tee "$log"
   code=$(cat "$log.code" 2>/dev/null || echo 1)
   stack_stop || true

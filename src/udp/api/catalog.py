@@ -1,10 +1,8 @@
 """Every read the API makes, as plain SQL against the platform database."""
 
-import math
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import date, datetime, time
-from decimal import Decimal
+from datetime import datetime
 from threading import Lock
 from typing import Any
 from uuid import UUID
@@ -17,13 +15,13 @@ from psycopg_pool import ConnectionPool
 from udp import __version__
 from udp.api.metrics import LastRun, MetricsSnapshot, QualityFailures, RunTotals
 from udp.api.models import (
+    CellValue,
     CheckResult,
     Column,
     ConfigEdit,
     DatasetDetail,
     DatasetItem,
     DatasetProfile,
-    JsonValue,
     QualityReport,
     RowsPage,
     RunDetail,
@@ -36,25 +34,21 @@ from udp.api.models import (
     SourceItem,
 )
 from udp.api.profile import PROFILE_ROW_LIMIT, profile_table
+
+# How a stored value becomes JSON is the profile's rule as much as the catalog's: one function.
+from udp.profiling.models import json_value
 from udp.storage import overrides as override_store
 from udp.storage.loader import DatasetState
 
+__all__ = ["PostgresCatalog", "cell_value", "json_value"]
 
-def json_value(value: Any) -> JsonValue:
-    """A stored value as JSON: exact decimals and non-finite floats become text."""
-    if value is None or isinstance(value, bool | int | str):
+
+def cell_value(value: Any) -> CellValue:
+    """A value from a table's row as JSON: a jsonb value, which the driver has already read
+    into Python, as the JSON it holds; anything else by json_value's rule."""
+    if isinstance(value, dict | list):
         return value
-    if isinstance(value, float):
-        if math.isnan(value):
-            return "NaN"
-        if math.isinf(value):
-            return "Infinity" if value > 0 else "-Infinity"
-        return value
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, date | time):  # datetime is a date
-        return value.isoformat()
-    return str(value)  # UUID, and any other stored type, as its text form
+    return json_value(value)
 
 
 _DATASET_ITEMS = """
@@ -288,7 +282,7 @@ class PostgresCatalog:
             ).fetchall()
         return RowsPage(
             columns=[Column.model_validate(column) for column in columns],
-            rows=[{name: json_value(value) for name, value in row.items()} for row in rows[:limit]],
+            rows=[{name: cell_value(value) for name, value in row.items()} for row in rows[:limit]],
             limit=limit,
             offset=offset,
             has_more=len(rows) > limit,

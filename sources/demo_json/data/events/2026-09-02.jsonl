@@ -1,0 +1,5 @@
+{"seq": 6, "type": "page_view", "at": "2026-09-02T08:12:30Z", "user": "u-318", "payload": {"path": "/shop/pots"}}
+{"seq": 7, "type": "add_to_cart", "at": "2026-09-02T08:15:02Z", "user": "u-318", "payload": {"sku": "POT-03", "qty": 1}}
+
+{"seq": 8, "type": "checkout", "at": "2026-09-02T08:40:00Z", "user": "u-318", "payload": {"order": 3, "items": ["POT-03"], "gift": true}}
+{"seq": 9, "type": "search", "at": "2026-09-02T12:05:19Z", "user": "u-104", "payload": {"query": "green tea", "results": 4}}

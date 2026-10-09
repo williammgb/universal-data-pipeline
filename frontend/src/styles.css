@@ -451,6 +451,21 @@ td a:hover {
   display: inline;
 }
 
+/* A JSON value: one line when values are shortened, indented over several when shown in full. */
+.json-full {
+  display: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.values-full .json-line {
+  display: none;
+}
+
+.values-full .json-full {
+  display: block;
+}
+
 /* A floor so a column is readable, and a ceiling so one long JSON column cannot squeeze every
    other column down to the floor. */
 .values-full td {
@@ -992,6 +1007,358 @@ textarea:focus-visible {
   color: var(--ink-soft);
 }
 
+/* A link that does what a button does, drawn as one. */
+a.button {
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 7px;
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+/* The pipeline builder: one column of blocks, SOURCE at the top and CLEAN at the bottom. */
+.flow {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  max-width: 760px;
+}
+
+.flow > li:not(:last-child)::after {
+  content: "";
+  display: block;
+  width: 2px;
+  height: 16px;
+  margin-inline: auto;
+  background: var(--line);
+}
+
+.block {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.block.end {
+  background: var(--panel-sunk);
+  border-left-color: var(--ink-faint);
+}
+
+.block.failed {
+  border-left-color: var(--bad);
+}
+
+.block header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.block h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.block .end h3,
+.block.end h3 {
+  font-family: var(--mono);
+}
+
+.block-kind {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  font-weight: 600;
+}
+
+.block-tools {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+
+.block-tools button {
+  padding: 2px 9px;
+}
+
+.block-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px 14px;
+}
+
+.block-fields .config-label input:not([type="checkbox"]),
+.block-fields .config-label select {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+
+.config-label.stacked {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.block-fields .config-row:has(.column-picks) {
+  grid-column: 1 / -1;
+}
+
+.column-picks {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.flow + .panel {
+  max-width: 760px;
+}
+
+.column-picks legend {
+  padding: 0;
+  margin-bottom: 4px;
+}
+
+.pick {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.block-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+  margin: 0;
+}
+
+.block-facts .fact {
+  padding: 0;
+  border: 0;
+}
+
+.block-settings {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+}
+
+.block .refusal {
+  margin: 0;
+}
+
+.adder {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.flow > li > .adder {
+  justify-content: center;
+}
+
+.profile-box > summary {
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 10px;
+}
+
+th.num {
+  text-align: right;
+}
+
+/* The lineage tab: a column of blocks joined by connectors, beside the picked step's panel. A
+   chain taller than the window scrolls inside its own column, every block at full size. */
+.lineage .controls {
+  margin-bottom: 14px;
+}
+
+.lineage .controls .field {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.lineage .controls select {
+  max-width: 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
+}
+
+.lineage-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.lineage-chain {
+  list-style: none;
+  margin: 0;
+  padding: 2px 6px 2px 2px;
+  max-height: calc(100vh - 220px);
+  min-height: 160px;
+  overflow-y: auto;
+}
+
+.lineage-chain > li + li {
+  position: relative;
+  margin-top: 26px;
+}
+
+.lineage-chain > li + li::before {
+  content: "";
+  position: absolute;
+  left: 22px;
+  top: -27px;
+  height: 26px;
+  border-left: 2px solid var(--line);
+}
+
+.lineage-chain > li + li::after {
+  content: "";
+  position: absolute;
+  left: 18px;
+  top: -7px;
+  border: 5px solid transparent;
+  border-top-color: var(--line);
+}
+
+.lineage-node {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel-sunk);
+  padding: 10px 12px;
+  color: var(--ink);
+  font: inherit;
+  min-width: 0;
+}
+
+.lineage-node.step {
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.lineage-node.step.picked {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.lineage-node.step.failed {
+  border-color: var(--bad);
+  background: var(--bad-soft);
+}
+
+.lineage-node.step.not_run {
+  border-style: dashed;
+  color: var(--ink-faint);
+}
+
+.lineage-node.clean {
+  border-color: var(--ok);
+}
+
+.lineage-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.lineage-name {
+  font-family: var(--mono);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.lineage-meta {
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.lineage-step-error {
+  color: var(--bad);
+  font-family: var(--mono);
+  font-size: 12px;
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.lineage-detail {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.lineage-detail h2 {
+  margin: 0;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.lineage-detail h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.lineage-settings {
+  background: var(--panel-sunk);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.lineage-error {
+  margin: 0 0 12px;
+  color: var(--bad);
+  background: var(--bad-soft);
+  border-radius: 8px;
+  padding: 10px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.lineage-detail .lineage-error {
+  margin: 0;
+}
+
+@media (max-width: 720px) {
+  .lineage-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 520px) {
   .values {
     grid-template-columns: 1fr;
@@ -999,5 +1366,9 @@ textarea:focus-visible {
 
   .strip .fact {
     border-right: 0;
+  }
+
+  .block-fields {
+    grid-template-columns: 1fr;
   }
 }

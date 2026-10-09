@@ -5,6 +5,7 @@ from fractions import Fraction
 import polars as pl
 import structlog
 
+from udp.config.columns import is_json, json_text
 from udp.storage.loader import RunFindings
 
 log = structlog.get_logger(step="quarantine")
@@ -19,6 +20,8 @@ def row_records(rows: pl.DataFrame) -> pl.Series:
     values = [
         pl.col(name).cast(pl.String)
         if dtype.is_float() or isinstance(dtype, pl.Decimal)
+        else json_text(pl.col(name)).alias(name)
+        if is_json(dtype)
         else pl.col(name)
         for name, dtype in rows.schema.items()
     ]

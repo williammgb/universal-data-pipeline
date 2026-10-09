@@ -15,7 +15,7 @@ from typing import Any, cast
 import polars as pl
 import structlog
 
-from udp.config.columns import decimal_digits, storage_dtype
+from udp.config.columns import as_json, decimal_digits, is_json, json_text, storage_dtype
 from udp.errors import ValidationError
 from udp.quality.quarantine import quarantine
 from udp.storage.loader import RunFindings
@@ -59,6 +59,7 @@ _READABLE_AS: dict[str, Callable[[pl.DataType], bool]] = {
         _is_text_or_null(t)
         or _is_number(t)
         or isinstance(t, pl.Boolean | pl.Date | pl.Datetime | pl.Time)
+        or is_json(t)
     ),
     "integer": lambda t: _is_text_or_null(t) or _is_number(t),
     "decimal": lambda t: _is_text_or_null(t) or _is_number(t),
@@ -67,7 +68,11 @@ _READABLE_AS: dict[str, Callable[[pl.DataType], bool]] = {
     "date": lambda t: _is_text_or_null(t) or _is_temporal(t),
     "timestamp": lambda t: _is_text_or_null(t) or _is_temporal(t),
     "json": lambda t: (
-        _is_text_or_null(t) or _is_integer(t) or t.is_float() or isinstance(t, pl.Boolean)
+        _is_text_or_null(t)
+        or _is_integer(t)
+        or t.is_float()
+        or isinstance(t, pl.Boolean)
+        or is_json(t)
     ),
 }
 
@@ -81,8 +86,9 @@ def check_declared_columns(schema: pl.Schema, declared: Mapping[str, str]) -> No
         if name not in schema:
             raise ValidationError(f"declared column '{name}' is not in the data")
         if not _READABLE_AS[_family(kind)](schema[name]):
+            shown = "json" if is_json(schema[name]) else schema[name]
             raise ValidationError(
-                f"column '{name}' is read as {schema[name]} and cannot be stored as {kind}"
+                f"column '{name}' is read as {shown} and cannot be stored as {kind}"
             )
 
 
@@ -102,7 +108,7 @@ def apply_column_types(
         for name, kind in declared.items():
             values = convert(chunk[name], kind)
             converted.append(values)
-            unfit.append((values.is_null() & chunk[name].is_not_null()).alias(name))
+            unfit.append(unfit_values(chunk[name], values))
         result = chunk.with_columns(converted)
         flags = pl.DataFrame(unfit)
         rejected = flags.select(pl.any_horizontal(pl.all())).to_series()
@@ -120,6 +126,12 @@ def apply_column_types(
             quarantine(findings, chunk.filter(rejected), reasons.to_series())
             result = result.filter(~rejected)
         yield result
+
+
+def unfit_values(series: pl.Series, converted: pl.Series) -> pl.Series:
+    """True where a value is present but did not survive `convert`: the one definition of an
+    invalid value, shared by the load's quarantine and the profile's data-quality count."""
+    return (converted.is_null() & series.is_not_null()).alias(series.name)
 
 
 def convert(series: pl.Series, declared: str) -> pl.Series:
@@ -143,6 +155,8 @@ def _to_text(series: pl.Series) -> pl.Series:
     if isinstance(dtype, pl.Datetime):
         pattern = "%Y-%m-%dT%H:%M:%S%.f" + ("%:z" if dtype.time_zone else "")
         return _select(series, pl.col("v").dt.to_string(pattern))
+    if is_json(dtype):
+        return _select(series, json_text(pl.col("v")))
     return series.cast(pl.String)
 
 
@@ -382,6 +396,8 @@ def _to_json(series: pl.Series) -> pl.Series:
     value = pl.col("v")
     dtype = series.dtype
     expression: pl.Expr
+    if is_json(dtype):
+        return series
     if isinstance(dtype, pl.String):
         valid = [text for text in series.drop_nulls().unique() if _json_valid(text)]
         expression = pl.when(value.is_in(pl.Series(valid, dtype=pl.String).implode())).then(value)
@@ -389,7 +405,7 @@ def _to_json(series: pl.Series) -> pl.Series:
         expression = pl.when(value.is_finite()).then(value.cast(pl.String))
     else:
         expression = value.cast(pl.String)
-    return _select(series, expression)
+    return _select(series, as_json(expression))
 
 
 _CONVERTERS: dict[str, Callable[[pl.Series], pl.Series]] = {

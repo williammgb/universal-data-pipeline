@@ -1,0 +1,5 @@
+{"seq": 1, "type": "page_view", "at": "2026-09-01T09:00:12Z", "user": "u-104", "payload": {"path": "/shop", "referrer": "search"}}
+{"seq": 2, "type": "add_to_cart", "at": "2026-09-01T09:03:40Z", "user": "u-104", "payload": {"sku": "MUG-01", "qty": 2}}
+{"seq": 3, "type": "page_view", "at": "2026-09-01T10:21:05Z", "user": "u-211", "payload": {"path": "/shop/tea"}}
+{"seq": 4, "type": "checkout", "at": "2026-09-01T10:30:00Z", "user": "u-104", "payload": {"order": 1, "items": ["MUG-01", "TEA-07"]}}
+{"seq": 5, "type": "page_view", "at": "2026-09-01T11:00:47Z", "user": null, "payload": {"path": "/"}}

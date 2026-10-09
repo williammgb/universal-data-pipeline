@@ -3,11 +3,11 @@
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import AbstractContextManager, asynccontextmanager
+from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 import psycopg
@@ -26,8 +26,14 @@ from udp.api.models import (
     DatasetConfig,
     DatasetDetail,
     DatasetItem,
+    DatasetLineage,
     DatasetProfile,
     Health,
+    LineageNode,
+    LineageRun,
+    PipelineDraft,
+    PipelineRun,
+    PipelineRunAccepted,
     QualityReport,
     RowsPage,
     RunAccepted,
@@ -36,22 +42,101 @@ from udp.api.models import (
     RunsPage,
     RunStatus,
     RunTrigger,
+    SavedPipeline,
     SourceDetail,
     SourceItem,
 )
 from udp.config.overrides import differences, editable_fields
-from udp.config.source import SOURCE_FILE, load_source
+from udp.config.pipeline import (
+    PipelineDefinition,
+    PipelineFile,
+    draft_problems,
+    load_pipeline,
+    pipeline_exists,
+    read_pipeline_file,
+    resolve_pipeline,
+)
+from udp.config.source import SOURCE_FILE, SourceConfig, load_source
 from udp.connectors.base import DatasetBase
 from udp.errors import ConfigError
-from udp.names import RESERVED_COLUMNS, name_problem
+from udp.names import RESERVED_COLUMNS, name_problem, table_name
 from udp.orchestration.scheduler import RUNS_AT_ONCE
+from udp.pipeline.execution import (
+    PipelineBusy,
+    ProfileRecord,
+    carry_out,
+    read_run,
+    start_pipeline,
+)
+from udp.pipeline.execution import Started as StartedPipeline
 from udp.pipeline.incremental import rebuild_reasons
 from udp.pipeline.runner import run_source
-from udp.storage.loader import Loader
+from udp.storage.loader import Loader, PipelineVersion, RunRef
 
 log = structlog.get_logger(step="api")
 
 RUNS_QUEUED = 16
+
+# A python step runs its script as the platform itself: from the API, where anyone with a key can
+# save a pipeline, it may only name a script the operator put in this folder.
+SCRIPTS_FROM_API = Path("scripts", "custom")
+
+
+def script_problem(script: Any) -> str | None:
+    """Why a python step saved from the API may not run this script, or None when it may."""
+    if not isinstance(script, str) or not script:
+        return None  # The step's own settings check says what is missing.
+    path = Path(script)
+    inside = (
+        not path.is_absolute()
+        and ".." not in path.parts
+        and path.resolve().is_relative_to(SCRIPTS_FROM_API.resolve())
+    )
+    if not inside:
+        folder = SCRIPTS_FROM_API.as_posix()
+        return f"a script saved from the dashboard must be a file under {folder}/"
+    if not path.is_file():
+        return f"{script} is not a file"
+    return None
+
+
+# The pipeline runs the lineage tab offers to pick; an older one still opens by its id.
+LINEAGE_RUNS = 50
+
+
+def chain_of(run: PipelineRun) -> list[LineageNode]:
+    """The run's chain, each node with the profile taken there: where the data came from, then
+    every step of the version — one that failed or never ran too, which the stored lineage, made
+    as the data passes, does not hold — then CLEAN, when the run got there."""
+
+    def taken(stage: str, after_step: int | None = None) -> ProfileRecord | None:
+        return next(
+            (
+                profile
+                for profile in run.profiles
+                if profile.stage == stage and profile.after_step == after_step
+            ),
+            None,
+        )
+
+    chain = [
+        LineageNode(
+            kind=node.kind, name=node.name, profile=taken("raw") if node.kind == "raw" else None
+        )
+        for node in run.lineage
+        if node.kind in ("source", "raw")
+    ]
+    chain += [
+        LineageNode(kind="step", name=step.type, step=step, profile=taken("staging", step.position))
+        for step in run.steps
+    ]
+    chain += [
+        LineageNode(kind="clean", name=node.name, profile=taken("clean"))
+        for node in run.lineage
+        if node.kind == "clean"
+    ]
+    return chain
+
 
 Limit = Annotated[int, Query(ge=1, le=500)]
 Offset = Annotated[int, Query(ge=0)]
@@ -240,6 +325,57 @@ def create_app(
     @app.get("/api/datasets/{source}/{dataset}/profile")
     def profile(source: str, dataset: str) -> DatasetProfile:
         return found(catalog.profile(source, dataset), f"dataset '{source}.{dataset}'")
+
+    @app.get("/api/datasets/{source}/{dataset}/lineage")
+    def lineage(source: str, dataset: str, run: UUID | None = None) -> DatasetLineage:
+        """Where the dataset's data came from and what each step did to it: the chain of one
+        pipeline run — `run`, or by default the one that made the current CLEAN table — or, when
+        no pipeline has run over the dataset, of its newest load."""
+        source_with_edits(source, dataset)
+        with open_loader() as loader, loader.stages() as stages:
+            runs = stages.executions(source, dataset, LINEAGE_RUNS)
+            picked = run or next(
+                (item.execution_id for item in runs if item.status == "succeeded"),
+                runs[0].execution_id if runs else None,
+            )
+            record = None if picked is None else read_run(stages, picked)
+            if run is not None and (
+                record is None or (record.source, record.dataset) != (source, dataset)
+            ):
+                raise HTTPException(404, f"pipeline run {run} of '{source}.{dataset}' not found")
+            loaded = stages.last_ingest(source, dataset) if record is None else None
+            plain = () if loaded is None else stages.read_lineage(RunRef(ingest_run_id=loaded))
+        choices = [
+            LineageRun(
+                execution_id=item.execution_id,
+                pipeline=item.pipeline,
+                version=item.version,
+                status=item.status,
+                started_at=item.started_at,
+            )
+            for item in runs
+        ]
+        if record is None:
+            # No pipeline has run: the load took the source to RAW and to the dataset's table.
+            chain = [LineageNode(kind=node.kind, name=node.name) for node in plain]
+            if chain:
+                table = f"datasets.{table_name(source, dataset)}"
+                chain.append(LineageNode(kind="table", name=table))
+            return DatasetLineage(source=source, dataset=dataset, run=None, runs=[], chain=chain)
+        return DatasetLineage(
+            source=source,
+            dataset=dataset,
+            run=LineageRun(
+                execution_id=record.execution_id,
+                pipeline=record.pipeline,
+                version=record.version,
+                status=record.status,
+                started_at=record.started_at,
+                error=record.error,
+            ),
+            runs=choices,
+            chain=chain_of(record),
+        )
 
     @app.get("/api/datasets/{source}/{dataset}/quality")
     def quality(source: str, dataset: str) -> QualityReport:
@@ -446,6 +582,199 @@ def create_app(
             datasets=datasets,
             requested_at=requested_at,
         )
+
+    def give_back_a_place() -> None:
+        with app.state.queue:
+            app.state.queued -= 1
+
+    def carry_out_in_background(
+        resources: ExitStack, loader: Loader, started: StartedPipeline
+    ) -> None:
+        """The pipeline run's steps, off the request, on the connection that holds its lock."""
+        try:
+            with resources:
+                carry_out(loader, started)
+        except Exception as error:
+            log.error(
+                "pipeline run started over the API could not finish",
+                execution_id=str(started.execution_id),
+                error=repr(error),
+            )
+        finally:
+            give_back_a_place()
+
+    @app.post("/api/pipelines/{name}/runs", status_code=202)
+    def start_pipeline_run(name: str) -> PipelineRunAccepted:
+        """Start a run of pipelines/<name>.yaml. It is recorded as running before this answers,
+        so its id can be followed at once; a dataset another run holds is refused (409)."""
+        if not pipeline_exists(sources_dir, name):
+            raise HTTPException(404, f"pipeline '{name}' not found")
+        try:
+            written = read_pipeline_file(sources_dir, name)
+        except ConfigError as error:
+            raise HTTPException(422, str(error)) from error
+        return run_in_the_background(
+            name,
+            lambda loader: load_pipeline(
+                sources_dir, name, env, loader.read_overrides(written.source)
+            ),
+        )
+
+    def run_in_the_background(
+        name: str, definition: Callable[[Loader], PipelineDefinition]
+    ) -> PipelineRunAccepted:
+        """Record a run of the pipeline `definition` reads as running, and carry it out off the
+        request on the connection that holds its lock."""
+        if not take_a_place():
+            raise HTTPException(429, f"{RUNS_QUEUED} runs are already waiting; try again later")
+        resources = ExitStack()
+        try:
+            loader = resources.enter_context(open_loader())
+            pipeline = definition(loader)
+            started = start_pipeline(loader, pipeline)
+            app.state.runs.submit(carry_out_in_background, resources, loader, started)
+        except BaseException as error:
+            resources.close()
+            give_back_a_place()
+            if isinstance(error, ConfigError):
+                raise HTTPException(422, str(error)) from error
+            if isinstance(error, PipelineBusy):
+                raise HTTPException(409, str(error)) from error
+            raise
+        log.info("pipeline run requested", pipeline=name, execution_id=str(started.execution_id))
+        return PipelineRunAccepted(
+            execution_id=started.execution_id,
+            pipeline=name,
+            version=started.version.version,
+            source=pipeline.source,
+            dataset=pipeline.dataset.name,
+            requested_at=started.started_at,
+        )
+
+    @app.get("/api/pipeline-runs/{execution_id}")
+    def pipeline_run(execution_id: UUID) -> PipelineRun:
+        """A pipeline run's record: its steps, constraints, profiles and lineage so far."""
+        with open_loader() as loader, loader.stages() as stages:
+            record = read_run(stages, execution_id)
+        return found(record, f"pipeline run {execution_id}")
+
+    # --- pipelines built in the dashboard ---------------------------------------------------------
+
+    def source_with_edits(source: str, dataset: str) -> tuple[SourceConfig[Any, Any], DatasetBase]:
+        """The source as a run reads it — its file with the stored edits — and the dataset in it."""
+        a_source(source)
+        try:
+            config = load_source(sources_dir, source, env, catalog.overrides(source))
+        except ConfigError as error:
+            raise HTTPException(422, str(error)) from error
+        chosen = next((item for item in config.datasets if item.name == dataset), None)
+        if chosen is None:
+            raise HTTPException(404, f"dataset '{dataset}' is not in source '{source}'")
+        return config, chosen
+
+    def a_pipeline_name(name: str) -> None:
+        problem = name_problem(name)
+        if problem is not None:
+            raise HTTPException(422, [{"loc": ["name"], "msg": f"'{name}' {problem}"}])
+
+    def saved_view(
+        source: str, dataset: DatasetBase, name: str, version: PipelineVersion | None
+    ) -> SavedPipeline:
+        _, columns = catalog.loaded_state(source, dataset.name)
+        stored = None if version is None else version.definition
+        return SavedPipeline(
+            name=name,
+            source=source,
+            dataset=dataset.name,
+            version=None if version is None else version.version,
+            saved_at=None if version is None else version.created_at,
+            profile=(stored or {}).get("profile", "ends"),
+            constraints=(
+                stored["constraints"]
+                if stored is not None
+                else [constraint.model_dump(mode="json") for constraint in dataset.constraints]
+            ),
+            steps=[] if stored is None else stored["steps"],
+            columns=[
+                Column(name=column, type=kind)
+                for column, kind in columns
+                if column not in RESERVED_COLUMNS
+            ],
+        )
+
+    @app.get("/api/datasets/{source}/{dataset}/pipelines/{name}")
+    def saved_pipeline(source: str, dataset: str, name: str) -> SavedPipeline:
+        """The pipeline's newest saved version; a name never saved is a new pipeline."""
+        _, chosen = source_with_edits(source, dataset)
+        a_pipeline_name(name)
+        with open_loader() as loader, loader.stages() as stages:
+            version = stages.read_pipeline(source, dataset, name)
+        return saved_view(source, chosen, name, version)
+
+    @app.put("/api/datasets/{source}/{dataset}/pipelines/{name}")
+    def save_pipeline(source: str, dataset: str, name: str, draft: PipelineDraft) -> SavedPipeline:
+        """Store the draft as the pipeline's next version; one equal to the newest is not stored
+        again. Nothing runs. Every problem is a 422 listing where it is, `["steps", 2, "method"]`,
+        and what is wrong, so nothing is saved that a run would then refuse to load."""
+        config, chosen = source_with_edits(source, dataset)
+        a_pipeline_name(name)
+        if pipeline_exists(sources_dir, name):
+            raise HTTPException(
+                409,
+                f"pipelines/{name}.yaml declares a pipeline called '{name}'; it is changed in "
+                "that file, or saved here under another name",
+            )
+        problems = draft_problems(draft.constraints or [], draft.steps) + [
+            (("steps", position, "script"), problem)
+            for position, step in enumerate(draft.steps, 1)
+            if step.get("type") == "python"
+            and (problem := script_problem(step.get("script"))) is not None
+        ]
+        if problems:
+            raise HTTPException(
+                422, [{"loc": list(where), "msg": message} for where, message in problems]
+            )
+        written = PipelineFile(
+            source=source,
+            dataset=dataset,
+            profile=draft.profile,
+            constraints=cast(Any, draft.constraints),
+            steps=draft.steps,
+        )
+        try:
+            pipeline = resolve_pipeline(name, written, config, f"pipeline '{name}'")
+        except ConfigError as error:
+            raise HTTPException(422, str(error)) from error
+        with open_loader() as loader, loader.stages() as stages:
+            version = stages.save_pipeline(
+                source,
+                dataset,
+                name,
+                pipeline.stored(),
+                pipeline.step_definitions,
+                datetime.now(UTC),
+            )
+        log.info("pipeline saved", pipeline=name, version=version.version, source=source)
+        return saved_view(source, chosen, name, version)
+
+    @app.post("/api/datasets/{source}/{dataset}/pipelines/{name}/runs", status_code=202)
+    def start_saved_pipeline_run(source: str, dataset: str, name: str) -> PipelineRunAccepted:
+        """Start a run of the pipeline's newest saved version, followed as a file's run is."""
+        source_with_edits(source, dataset)
+        a_pipeline_name(name)
+
+        def newest(loader: Loader) -> PipelineDefinition:
+            with loader.stages() as stages:
+                version = stages.read_pipeline(source, dataset, name)
+            if version is None:
+                raise HTTPException(404, f"pipeline '{name}' of {source}.{dataset} is not saved")
+            config = load_source(sources_dir, source, env, loader.read_overrides(source))
+            written = PipelineFile.model_validate(
+                {**version.definition, "source": source, "dataset": dataset}
+            )
+            return resolve_pipeline(name, written, config, f"pipeline '{name}'")
+
+        return run_in_the_background(name, newest)
 
     _serve_dashboard(app, dashboard_dir)
     return app

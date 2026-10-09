@@ -1,0 +1,24 @@
+# The demo pipeline: demo_csv's customers, from RAW to clean.demo_csv__customers.
+#   ./udp load demo_csv                     fill RAW first
+#   ./udp pipeline run demo_csv_customers   then prepare it
+# What each part means: docs/stages-and-pipelines.md.
+source: demo_csv
+dataset: customers
+profile: ends
+constraints:
+  - constraint: not_null
+    column: customer_id
+    critical: true
+  - constraint: unique
+    columns: [customer_id]
+    critical: true
+  - constraint: min
+    column: lifetime_value
+    value: 0
+steps:
+  - type: normalize_values
+    columns: [first_name, last_name, city]
+    trim: true
+  - type: fill_missing
+    columns: [lifetime_value]
+    method: median

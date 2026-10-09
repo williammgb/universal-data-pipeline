@@ -1,0 +1,17 @@
+[
+  {"id": 1, "name": "Anna de Vries", "email": "anna@example.nl", "plan": "gold", "age": 34, "signed_up": "2023-01-15", "spend": 120.5},
+  {"id": 2, "name": "Bram Jansen", "email": "bram@example.nl", "plan": "Gold", "age": 41, "signed_up": "2023-02-01", "spend": 80.0},
+  {"id": 3, "name": "Chris Peters", "plan": "GOLD ", "age": 29, "signed_up": "2023-02-11", "spend": 45.25},
+  {"id": 4, "name": "Dana Smit", "email": "dana@example.nl", "plan": "silver", "age": "forty", "signed_up": "2023-03-05", "spend": 60.0},
+  {"id": 5, "name": "Erik Bos", "email": "erik@example.nl", "plan": "Silver", "age": 52, "signed_up": "2023-13-01", "spend": 15.75},
+  {"id": 6, "name": "Fleur Mulder", "email": null, "plan": "bronze", "age": 23, "signed_up": "2023-04-20", "spend": null},
+  {"id": 7, "name": "Gijs Visser", "email": "gijs@example.nl", "plan": "bronze", "age": 38, "signed_up": "2023-05-02", "spend": 98000000.0},
+  {"id": 8, "name": "Hanna Meijer", "email": "hanna@example.nl", "plan": "brons", "age": 45, "signed_up": "2023-05-17", "spend": 33.3, "loyalty": {"tier": 2, "since": "2021"}},
+  {"id": 9, "name": "Ivo de Boer", "email": "ivo@example.nl", "plan": "silver", "age": 31, "signed_up": "2023-06-01", "spend": 72.4},
+  {"id": 9, "name": "Ivo de Boer", "email": "ivo@example.nl", "plan": "silver", "age": 31, "signed_up": "2023-06-01", "spend": 72.4},
+  {"id": 10, "name": "Jet Bakker", "email": "jet@example.nl", "plan": "gold", "age": -3, "signed_up": "2023-06-12", "spend": 210.0},
+  {"id": 11, "name": "Kees Dekker", "plan": "silver", "signed_up": "2023-07-04"},
+  {"id": 12, "name": "Lotte Smits", "email": "lotte@example.nl", "plan": "Bronze", "age": 27, "signed_up": "2023-07-19", "spend": 19.99, "referred_by": 3},
+  {"id": 13, "name": "Mark Hendriks", "email": "mark@example.nl", "plan": "gold", "age": 60, "signed_up": "2023-08-08", "spend": 150.0},
+  {"id": 14, "name": "Noor Vermeulen", "email": "noor@example.nl", "plan": "silver", "age": 36, "signed_up": "2023-09-23", "spend": 66.6}
+]

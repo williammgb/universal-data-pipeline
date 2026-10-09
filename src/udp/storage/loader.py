@@ -7,7 +7,9 @@ from uuid import UUID
 
 import polars as pl
 
+from udp.config.columns import is_json
 from udp.errors import LoadError, SchemaDriftError
+from udp.names import Stage, stage_table
 
 Column = tuple[str, str]
 Watermark = int | date | datetime
@@ -54,6 +56,8 @@ def column_type(name: str, dtype: pl.DataType) -> str:
         return "timestamp with time zone" if dtype.time_zone else "timestamp without time zone"
     if isinstance(dtype, pl.Decimal):
         return f"numeric({dtype.precision},{dtype.scale})"
+    if is_json(dtype):
+        return "jsonb"
     simple = _SIMPLE_TYPES.get(dtype.base_type())
     if simple is None:
         raise LoadError(f"column '{name}' has type {dtype}, which cannot be stored yet")
@@ -70,7 +74,9 @@ class ColumnChanges:
     missing: tuple[str, ...]
 
 
-def column_changes(table: str, existing: Sequence[Column], incoming: pl.Schema) -> ColumnChanges:
+def column_changes(
+    table: str, existing: Sequence[Column], incoming: pl.Schema, schema: str = "datasets"
+) -> ColumnChanges:
     """How a table's columns change to take a batch. Columns are only ever added.
 
     A column the batch lacks is kept; a column with no values in the batch fits any
@@ -83,9 +89,14 @@ def column_changes(table: str, existing: Sequence[Column], incoming: pl.Schema) 
         if name not in stored:
             added.append((name, kind))
         elif kind != stored[name] and not isinstance(dtype, pl.Null):
+            remedy = (
+                "run with --full-refresh to rebuild the table"
+                if schema == "datasets"
+                else "RAW keeps what was ingested, so a column never changes type"
+            )
             raise SchemaDriftError(
-                f"column '{name}' of datasets.{table} is {stored[name]} but this run read it "
-                f"as {kind}; run with --full-refresh to rebuild the table"
+                f"column '{name}' of {schema}.{table} is {stored[name]} but this run read it "
+                f"as {kind}; {remedy}"
             )
     missing = tuple(name for name in stored if name not in incoming)
     return ColumnChanges(tuple(added), missing)
@@ -183,6 +194,15 @@ class LoadTransaction(Protocol):
         """Remove datasets.<table> if it exists."""
         ...
 
+    def drop_raw(self, source: str, dataset: str) -> None:
+        """Remove the dataset's RAW table if it exists, so the next load starts it over."""
+        ...
+
+    def append_raw(self, source: str, dataset: str) -> int:
+        """Add the rows the last load in this transaction read, platform columns included, to the
+        dataset's RAW table, creating it on first use. Returns the rows added."""
+        ...
+
     def replace_table(self, table: str, chunks: Iterable[pl.DataFrame]) -> LoadResult:
         """Replace every row of datasets.<table> with the chunks."""
         ...
@@ -231,6 +251,18 @@ class LoadTransaction(Protocol):
     def succeed_run(
         self, run_id: UUID, *, ended_at: datetime, rows_extracted: int, rows_loaded: int
     ) -> None: ...
+
+    def record_lineage(
+        self,
+        source: str,
+        dataset: str,
+        run: RunRef,
+        nodes: Sequence[LineageNode],
+        recorded_at: datetime,
+    ) -> None:
+        """Add nodes to the end of the run's lineage, with the transaction's other writes: an
+        ingest run's is where it read the source, then RAW."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -305,3 +337,356 @@ class Loader(Protocol):
     ) -> None:
         """Record a run as failed, writing its row if the run never got one. Commits at once."""
         ...
+
+    def stages(self) -> AbstractContextManager[PipelineStages]:
+        """The stage tables and the V2 records; everything done through them commits together."""
+        ...
+
+
+# V2: what pipelines are, what each run of one did, and what was measured at each stage.
+# The tables are created by migration 0006 and described in docs/stages-and-pipelines.md.
+
+
+@dataclass(frozen=True)
+class RunRef:
+    """The run a stored result belongs to: an ingest run (`platform.pipeline_runs`) or a run of a
+    V2 pipeline (`platform.pipeline_executions`) — exactly one of the two."""
+
+    ingest_run_id: UUID | None = None
+    execution_id: UUID | None = None
+
+    def __post_init__(self) -> None:
+        if (self.ingest_run_id is None) == (self.execution_id is None):
+            raise ValueError("a result belongs to exactly one run: an ingest run or an execution")
+
+
+def _check_after_step(stage: Stage, run: RunRef, after_step: int | None) -> None:
+    """A result taken between steps is of STAGING, inside an execution, after step 1 or later."""
+    if after_step is None:
+        return
+    if after_step < 1:
+        raise ValueError(f"after_step must be 1 or more, not {after_step}")
+    if stage is not Stage.STAGING or run.execution_id is None:
+        raise ValueError("only a STAGING result inside a pipeline execution follows a step")
+
+
+@dataclass(frozen=True)
+class StepDefinition:
+    """One step of a pipeline, in its place in the list, with the settings it runs with."""
+
+    step_type: str
+    configuration: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.step_type:
+            raise ValueError("a step needs a type")
+
+
+@dataclass(frozen=True)
+class PipelineVersion:
+    """One version of a pipeline definition. Versions are never changed: an edit adds one."""
+
+    pipeline_id: int
+    source: str
+    dataset: str
+    name: str
+    version: int
+    definition: dict[str, Any]
+    steps: tuple[StepDefinition, ...]
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class ExecutionStart:
+    execution_id: UUID
+    pipeline_id: int
+    version: int
+    trigger: Literal["manual", "scheduled"]
+    started_at: datetime
+
+
+StepStatus = Literal["running", "succeeded", "failed"]
+
+
+@dataclass(frozen=True)
+class StepRun:
+    """What one step did in one execution; `position` is the step's place in the pipeline. A
+    python step also records the hash of the script it ran, what the script printed, and the
+    script line it failed on."""
+
+    position: int
+    status: StepStatus
+    started_at: datetime
+    ended_at: datetime | None = None
+    rows_in: int | None = None
+    rows_out: int | None = None
+    values_changed: int | None = None
+    error_class: str | None = None
+    error_message: str | None = None
+    script_sha256: str | None = None
+    output: str | None = None
+    error_line: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.position < 1:
+            raise ValueError(f"a step's position is 1 or more, not {self.position}")
+        if (self.status == "running") != (self.ended_at is None):
+            raise ValueError("a step has an end time exactly when it is no longer running")
+        if (self.status == "failed") != (self.error_message is not None):
+            raise ValueError("a step has an error message exactly when it failed")
+
+
+@dataclass(frozen=True)
+class Execution:
+    """One run of one pipeline version, as stored, with its steps in order. `input_run_id` is
+    the ingest run whose RAW it read, once it has read it."""
+
+    execution_id: UUID
+    pipeline_id: int
+    version: int
+    source: str
+    dataset: str
+    trigger: str
+    status: str
+    started_at: datetime
+    ended_at: datetime | None
+    rows_in: int | None
+    rows_out: int | None
+    failed_step: int | None
+    error_class: str | None
+    error_message: str | None
+    steps: tuple[StepRun, ...]
+    input_run_id: UUID | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionSummary:
+    """One execution as a list of a dataset's runs names it."""
+
+    execution_id: UUID
+    pipeline: str
+    version: int
+    status: Literal["running", "succeeded", "failed"]
+    started_at: datetime
+
+
+@dataclass(frozen=True)
+class Profile:
+    """A profile of one dataset at one stage, taken in one run; `result` is the profile itself."""
+
+    source: str
+    dataset: str
+    stage: Stage
+    run: RunRef
+    table_rows: int
+    result: dict[str, Any]
+    profiled_at: datetime
+    after_step: int | None = None
+
+    def __post_init__(self) -> None:
+        stage_table(self.stage, self.source, self.dataset)
+        _check_after_step(Stage(self.stage), self.run, self.after_step)
+        if self.table_rows < 0:
+            raise ValueError(f"a table has 0 rows or more, not {self.table_rows}")
+
+
+@dataclass(frozen=True)
+class StoredProfile:
+    profile_id: int
+    profile: Profile
+
+
+@dataclass(frozen=True)
+class Violation:
+    """One value that broke a constraint, and the row it is in, by its key or its position."""
+
+    column: str
+    row_key: dict[str, Any]
+    value: str | None
+
+
+@dataclass(frozen=True)
+class ConstraintResult:
+    """One constraint's outcome on one dataset at one stage in one run."""
+
+    source: str
+    dataset: str
+    stage: Stage
+    run: RunRef
+    position: int
+    constraint_type: str
+    columns: tuple[str, ...]
+    critical: bool
+    passed: bool
+    failing_rows: int | None
+    failing_values: int | None
+    message: str
+    settings: dict[str, Any]
+    checked_at: datetime
+    after_step: int | None = None
+    violations: tuple[Violation, ...] = ()
+
+    def __post_init__(self) -> None:
+        stage_table(self.stage, self.source, self.dataset)
+        _check_after_step(Stage(self.stage), self.run, self.after_step)
+        if self.position < 1:
+            raise ValueError(f"a constraint's position is 1 or more, not {self.position}")
+        for count in (self.failing_rows, self.failing_values):
+            if count is not None and count < 0:
+                raise ValueError(f"a count of failures is 0 or more, not {count}")
+        if self.passed and self.violations:
+            raise ValueError("a constraint that held has no violations")
+
+
+NodeKind = Literal["source", "raw", "step", "clean"]
+
+
+@dataclass(frozen=True)
+class LineageNode:
+    """One place data passed through. `name` is where the source was read from for a source,
+    the schema-qualified table for RAW and CLEAN, and the step's type for a step."""
+
+    kind: NodeKind
+    name: str
+    step_position: int | None = None
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("a lineage node needs a name")
+        if (self.kind == "step") != (self.step_position is not None):
+            raise ValueError("a step node, and only a step node, has a step position")
+        if self.step_position is not None and self.step_position < 1:
+            raise ValueError(f"a step's position is 1 or more, not {self.step_position}")
+
+
+def stage_node(stage: Stage, source: str, dataset: str) -> LineageNode:
+    """The lineage node of a dataset's RAW or CLEAN table."""
+    if stage is Stage.STAGING:
+        raise ValueError("STAGING is not in the lineage: the steps are")
+    schema, table = stage_table(stage, source, dataset)
+    return LineageNode("raw" if stage is Stage.RAW else "clean", f"{schema}.{table}")
+
+
+def check_chain(source: str, dataset: str, run: RunRef, nodes: Sequence[LineageNode]) -> None:
+    """Raise ValueError unless the nodes are, in order, the start of a valid chain for the run.
+
+    An ingest run takes a source to RAW. An execution takes RAW through its steps, in pipeline
+    order, to CLEAN; a chain that stops early is one recorded as the run goes, or a run that failed.
+    """
+    allowed: dict[str | None, set[str]] = (
+        {None: {"source"}, "source": {"raw"}}
+        if run.ingest_run_id is not None
+        else {None: {"raw"}, "raw": {"step", "clean"}, "step": {"step", "clean"}}
+    )
+    expected = {
+        "raw": stage_node(Stage.RAW, source, dataset).name,
+        "clean": stage_node(Stage.CLEAN, source, dataset).name,
+    }
+    previous: LineageNode | None = None
+    for node in nodes:
+        if node.kind not in allowed.get(previous.kind if previous else None, set()):
+            after = f"after {previous.kind}" if previous else "first"
+            raise ValueError(f"a {node.kind} node cannot come {after} in this run's lineage")
+        if node.kind in expected and node.name != expected[node.kind]:
+            raise ValueError(f"the {node.kind} node of {source}.{dataset} is {expected[node.kind]}")
+        if (
+            node.step_position is not None
+            and previous is not None
+            and previous.step_position is not None
+            and node.step_position <= previous.step_position
+        ):
+            raise ValueError("steps appear in the lineage in pipeline order")
+        previous = node
+
+
+class PipelineStages(Protocol):
+    """What a pipeline run reads and writes, inside one transaction (`Loader.stages`).
+
+    `PostgresStages` is the real one; the docstrings there say what each call does.
+    """
+
+    def save_pipeline(
+        self,
+        source: str,
+        dataset: str,
+        name: str,
+        definition: dict[str, Any],
+        steps: Sequence[StepDefinition],
+        created_at: datetime,
+    ) -> PipelineVersion: ...
+
+    def read_pipeline(
+        self, source: str, dataset: str, name: str, version: int | None = None
+    ) -> PipelineVersion | None: ...
+
+    def read_pipeline_version(self, pipeline_id: int, version: int) -> PipelineVersion | None: ...
+
+    def running_executions(self, source: str, dataset: str) -> list[UUID]:
+        """The executions over the dataset still marked running, oldest first."""
+        ...
+
+    def executions(self, source: str, dataset: str, limit: int) -> list[ExecutionSummary]:
+        """The dataset's executions of any pipeline and status, newest first, at most `limit`."""
+        ...
+
+    def newest_run(self, stage: Stage, source: str, dataset: str) -> RunRef | None: ...
+
+    def last_ingest(self, source: str, dataset: str) -> UUID | None:
+        """The ingest run that last read the dataset's source into RAW — the run its saved state
+        names — or None when none has. A run that skipped an unchanged file read nothing and is
+        not it; a run that read zero rows is."""
+        ...
+
+    def record_input(self, execution_id: UUID, ingest_run_id: UUID) -> None:
+        """Record the ingest run whose RAW the execution read."""
+        ...
+
+    def read_raw(
+        self, source: str, dataset: str, ingest_runs: Sequence[UUID] | None = None
+    ) -> pl.DataFrame:
+        """RAW's rows, platform columns included: of the named ingest runs, or every row."""
+        ...
+
+    def write_staging(self, source: str, dataset: str, frame: pl.DataFrame) -> None:
+        """Make STAGING exactly this frame, replacing any STAGING table there was."""
+        ...
+
+    def start_execution(self, start: ExecutionStart) -> None: ...
+
+    def record_step(self, execution_id: UUID, step: StepRun) -> None: ...
+
+    def finish_execution(
+        self,
+        execution_id: UUID,
+        *,
+        ended_at: datetime,
+        rows_in: int | None,
+        rows_out: int | None,
+        failure: RunFailure | None = None,
+        failed_step: int | None = None,
+    ) -> None: ...
+
+    def read_execution(self, execution_id: UUID) -> Execution | None: ...
+
+    def record_profile(self, profile: Profile) -> int: ...
+
+    def read_profiles(
+        self, source: str, dataset: str, stage: Stage | None = None, run: RunRef | None = None
+    ) -> list[StoredProfile]: ...
+
+    def record_constraint_results(self, results: Sequence[ConstraintResult]) -> None: ...
+
+    def read_constraint_results(
+        self, source: str, dataset: str, stage: Stage | None = None, run: RunRef | None = None
+    ) -> list[ConstraintResult]: ...
+
+    def record_lineage(
+        self,
+        source: str,
+        dataset: str,
+        run: RunRef,
+        nodes: Sequence[LineageNode],
+        recorded_at: datetime,
+    ) -> None: ...
+
+    def read_lineage(self, run: RunRef) -> tuple[LineageNode, ...]: ...

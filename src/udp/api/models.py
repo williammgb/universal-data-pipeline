@@ -1,12 +1,38 @@
 """What the API accepts and returns; these models are also what its OpenAPI document shows."""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
-JsonValue = str | int | float | bool | None
+from udp.config.pipeline import ProfileChoice
+
+# So is a pipeline run's record, with the engine that writes it.
+from udp.pipeline.execution import PipelineRun, ProfileRecord, StepRecord
+
+# The profile's models live with the profiling engine; the API returns them as they are.
+from udp.profiling.models import (
+    ColumnProfile,
+    DatasetProfile,
+    JsonValue,
+    ProfileKind,
+    ValueCount,
+)
+
+__all__ = [
+    "ColumnProfile",
+    "DatasetProfile",
+    "JsonValue",
+    "PipelineRun",
+    "ProfileKind",
+    "ProfileRecord",
+    "StepRecord",
+    "ValueCount",
+]
+
+# A value in a table's row: a jsonb column's value arrives as the JSON it holds.
+CellValue = JsonValue | dict[str, Any] | list[Any]
 RunStatus = Literal["running", "succeeded", "failed", "skipped"]
 RunTrigger = Literal["manual", "scheduled"]
 
@@ -85,45 +111,10 @@ class DatasetDetail(DatasetItem):
 
 class RowsPage(BaseModel):
     columns: list[Column]
-    rows: list[dict[str, JsonValue]]
+    rows: list[dict[str, CellValue]]
     limit: int
     offset: int
     has_more: bool
-
-
-class ValueCount(BaseModel):
-    value: JsonValue
-    count: int
-
-
-ProfileKind = Literal["number", "date", "text", "other"]
-
-
-class ColumnProfile(BaseModel):
-    name: str
-    type: str
-    kind: ProfileKind
-    missing: int
-    # number and date columns: the finite range, and a 20-bar histogram between its ends
-    min: JsonValue = None
-    max: JsonValue = None
-    mean: JsonValue = None
-    histogram: list[int] | None = None
-    # text columns: every value when there are few, otherwise the most and least used
-    distinct: int | None = None
-    appear_once: int | None = None
-    all_values: list[ValueCount] | None = None
-    most_used: list[ValueCount] | None = None
-    least_used: list[ValueCount] | None = None
-    pattern: str | None = None
-    pattern_share: float | None = None
-
-
-class DatasetProfile(BaseModel):
-    table_rows: int
-    profiled_rows: int
-    sampled: bool
-    columns: list[ColumnProfile]
 
 
 class CheckResult(BaseModel):
@@ -223,3 +214,83 @@ class RunAccepted(BaseModel):
     source: str
     datasets: list[str]
     requested_at: datetime
+
+
+class PipelineRunAccepted(BaseModel):
+    """A pipeline run recorded as running; `GET /api/pipeline-runs/{execution_id}` follows it."""
+
+    execution_id: UUID
+    pipeline: str
+    version: int
+    source: str
+    dataset: str
+    requested_at: datetime
+
+
+# More than any pipeline a person builds by hand; a cap, so one request cannot ask for millions.
+MAX_STEPS = 100
+MAX_CONSTRAINTS = 200
+
+
+class PipelineDraft(BaseModel):
+    """A pipeline as the builder holds it: what `pipelines/<name>.yaml` would say, without the
+    source and dataset, which the address names. Each constraint and step is checked one by one
+    when it is saved, so a refusal can say which one and which field."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile: ProfileChoice = "ends"
+    # Left out, or null: the dataset's own constraints, as a pipeline file without any has.
+    constraints: Annotated[list[dict[str, Any]], Field(max_length=MAX_CONSTRAINTS)] | None = None
+    steps: list[dict[str, Any]] = Field(default=[], max_length=MAX_STEPS)
+
+
+class SavedPipeline(BaseModel):
+    """A pipeline's newest saved version, or — `version` null — a new one: no steps, and the
+    dataset's own constraints. Every step carries every setting it runs with, defaults included.
+    `columns` is the dataset's columns as stored, so the builder offers the names that exist."""
+
+    name: str
+    source: str
+    dataset: str
+    version: int | None
+    saved_at: datetime | None
+    profile: ProfileChoice
+    constraints: list[dict[str, Any]]
+    steps: list[dict[str, Any]]
+    columns: list[Column]
+
+
+class LineageRun(BaseModel):
+    """One pipeline run of a dataset, as the lineage tab offers it to pick; `error` is filled in
+    only for the run shown, when it failed."""
+
+    execution_id: UUID
+    pipeline: str
+    version: int
+    status: Literal["running", "succeeded", "failed"]
+    started_at: datetime
+    error: str | None = None
+
+
+class LineageNode(BaseModel):
+    """One place the data passed through, in order. A step carries what it did in the run, or
+    `not_run`; `profile` is the profile the run took there, when it took one. `table` is the
+    dataset's own table, the end of the chain of a dataset no pipeline has run over."""
+
+    kind: Literal["source", "raw", "step", "clean", "table"]
+    name: str
+    step: StepRecord | None = None
+    profile: ProfileRecord | None = None
+
+
+class DatasetLineage(BaseModel):
+    """Where the dataset's data came from and what was done to it: the chain of one pipeline
+    run — `run`, by default the one that made the current CLEAN table — or, when no pipeline has
+    run over the dataset, its newest load's. `runs` are the runs to pick from, newest first."""
+
+    source: str
+    dataset: str
+    run: LineageRun | None
+    runs: list[LineageRun]
+    chain: list[LineageNode]
