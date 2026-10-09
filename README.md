@@ -98,6 +98,23 @@ by `UDP_DATABASE_URL` (it needs [uv](https://docs.astral.sh/uv/)):
 ./udp openapi                   print the API's description as JSON
 ```
 
+## Run without cloning
+
+The published image runs the same platform with no source code. In an empty folder, with
+Docker running:
+
+```
+mkdir sources
+curl -fsSLO https://raw.githubusercontent.com/williammgb/universal-data-pipeline/main/deploy/compose.release.yaml
+export POSTGRES_PASSWORD=pick-a-password
+export UDP_API_KEYS=pick-a-key
+docker compose -f compose.release.yaml up -d --wait
+```
+
+Then open http://127.0.0.1:8000. Your sources go in `sources/` next to the file, and
+`docker compose -f compose.release.yaml run --rm app load my_source` loads one. It runs the
+`latest` release; to pin one, set `UDP_VERSION` first, as in `export UDP_VERSION=1.2.0`.
+
 ## From raw data to a clean table
 
 Loading a source only copies it in. Preparing it for use is a second, separate step — a
