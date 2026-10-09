@@ -316,7 +316,7 @@ def test_a_run_request_starts_the_run_in_the_background_as_a_manual_run() -> Non
 
 
 def _loaded_demo() -> MemoryLoader:
-    """A store whose RAW holds demo_csv, as `udp run demo_csv` leaves it."""
+    """A store whose RAW holds demo_csv, as `udp load demo_csv` leaves it."""
     loader = MemoryLoader()
     run_source("demo_csv", load_source(SOURCES, "demo_csv", {}), SOURCES, loader)
     return loader

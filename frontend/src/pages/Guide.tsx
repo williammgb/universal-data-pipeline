@@ -123,7 +123,7 @@ datasets:
     load_mode: full`}</code>
         </pre>
         <p>
-          Then run <code>uv run --locked udp run my_shop</code> once. It reads the file, tidies the
+          Then run <code>./udp load my_shop</code> once. It reads the file, tidies the
           column names (<code>Customer ID</code> becomes <code>customer_id</code>), works out a type
           for every column, writes the table, and the dataset appears in the list on this
           dashboard.

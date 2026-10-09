@@ -42,8 +42,8 @@ The step types and their settings are the transformations' own (`src/udp/transfo
 a `python` step is described in `custom-python-steps.md`, and constraints in `constraints.md`.
 
 ```
-uv run --locked udp pipeline run demo_csv_customers      run it; exit 0 when it succeeded
-uv run --locked udp pipeline status <run id> [--json]    read a run's record back
+./udp pipeline run demo_csv_customers      run it; exit 0 when it succeeded
+./udp pipeline status <run id> [--json]    read a run's record back
 ```
 
 Over the API, `POST /api/pipelines/{name}/runs` starts a run and answers at once (202) with its
@@ -109,9 +109,9 @@ prompt gets an error saying the table is append-only. New rows and new columns c
 added by later ingest runs; a column cannot change its type, because that would change what was
 ingested.
 
-**`udp run` fills RAW.** Each run adds the rows it read to RAW in the same transaction as the
+**`udp load` fills RAW.** Each run adds the rows it read to RAW in the same transaction as the
 dataset's own table, with the same columns and types, so a failed run adds nothing. A first load,
-and `udp run <source> --full-refresh`, deletes RAW and starts it over with that run's rows — the
+and `udp load <source> --full-refresh`, deletes RAW and starts it over with that run's rows — the
 one way out when a source column changes type.
 
 Because RAW keeps every ingest, a dataset loaded in full every day keeps every day's copy. That

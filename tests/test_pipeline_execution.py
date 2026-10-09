@@ -75,7 +75,7 @@ class Shop:
 
     def ingest(self, frame: pl.DataFrame = ORDERS) -> UUID:
         """An ingest run that appends the frame to RAW and saves the dataset's state naming it,
-        recorded as succeeded — as `udp run` leaves a dataset, without its lineage."""
+        recorded as succeeded — as `udp load` leaves a dataset, without its lineage."""
         run = RunStart(uuid.uuid7(), self.source, self.dataset, "manual", self.now())
         self.loader.start_run(run)
         rows = with_platform_columns(frame, run.run_id, run.started_at)
@@ -530,7 +530,7 @@ def test_a_dataset_with_nothing_in_raw_fails_the_run_saying_what_to_do(shop: Sho
     run = shop.run(shop.pipeline(load_mode="full"))
 
     assert run.status == "failed"
-    assert run.error is not None and f"run `udp run {shop.source}` first" in run.error
+    assert run.error is not None and f"run `udp load {shop.source}` first" in run.error
 
 
 # --- one run of a dataset at a time -------------------------------------------------------------
@@ -581,7 +581,7 @@ def test_a_run_whose_process_died_is_marked_interrupted_by_the_next(shop: Shop) 
 def test_the_demo_pipeline_runs_over_demo_csv_from_the_cli() -> None:
     runner = CliRunner()
     env = {"UDP_SOURCES_DIR": "sources"}
-    loaded = runner.invoke(app, ["run", "demo_csv"], env=env)
+    loaded = runner.invoke(app, ["load", "demo_csv"], env=env)
     assert loaded.exit_code == 0, loaded.output[-3000:]
     url = Settings().database_url  # type: ignore[call-arg]
     raw = (

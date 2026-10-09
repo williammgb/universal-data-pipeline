@@ -7,14 +7,14 @@ a clean table when there is a real amount of it.
 
 The 20 rows of `sources/messy_csv/data/orders.csv` repeated to 1,000,000, every problem in them
 included, each copy's order ids moved on so copies are not duplicates of each other. Loaded
-with `udp run`, then prepared by `pipelines/messy_csv_orders.yaml` with `udp pipeline run`,
+with `udp load`, then prepared by `pipelines/messy_csv_orders.yaml` with `udp pipeline run`,
 into the PostgreSQL of the full gate's stack.
 
 | | |
 |---|---|
 | Rows in | 1,000,000 |
 | Rows out | 900,000 — the word in a quantity and the date that does not exist drop one row each per 20 |
-| `udp run` (file to RAW) | 21.1 s |
+| `udp load` (file to RAW) | 21.1 s |
 | `udp pipeline run` (RAW to CLEAN) | 33.9 s |
 | The seven steps together | 0.5 s — normalize_values 0.10, validate 0.22, convert_type 0.05 and 0.06, outliers 0.03, fill_missing 0.02 and 0.04 |
 

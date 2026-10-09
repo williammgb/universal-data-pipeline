@@ -25,7 +25,7 @@ datasets:
 Then:
 
 ```
-uv run --locked udp run my_shop
+./udp load my_shop
 ```
 
 That reads the file, cleans the column names (`Customer ID` becomes `customer_id`), works out a
@@ -230,23 +230,26 @@ describes the code that ran, and editing it makes the next run reload everything
 ## Running it
 
 ```
-uv run --locked udp run my_shop                  every dataset of the source
-uv run --locked udp run my_shop other_shop       several sources, one after another
-uv run --locked udp run my_shop --full-refresh   forget the saved state and reload
+./udp load my_shop                          every dataset of the source
+./udp load my_shop other_shop               several sources, one after another
+./udp load my_shop --full-refresh           forget the saved state and reload
+./udp load my_shop --docker                 the same, inside the running containers
 ```
 
 Exit codes: 0 when every dataset succeeded or was skipped, 1 when a run failed, 2 when the
 configuration is invalid — with the file and field named.
 
-To have it run by itself, give the dataset a `schedule:` and start the scheduler:
+To have it run by itself, give the dataset a `schedule:` and start the scheduler — it starts
+with the platform's containers, or runs on its own without them:
 
 ```
-docker compose -f deploy/compose.yaml up -d scheduler
+./udp up                                    the platform, its scheduler included
+./udp schedule                              the scheduler alone, until stopped
 ```
 
 ## Seeing it
 
-With the API up (`udp api`, or the `api` container), the dashboard lists the dataset, its
+With the API up (`./udp api`, or the `api` container), the dashboard lists the dataset, its
 columns, a preview of its rows, its quality results and its run history. If the API has keys
 configured (`UDP_API_KEYS`), the dashboard asks for one the first time it is refused.
 
@@ -264,7 +267,7 @@ Two things follow from that:
   message.
 - A change that would need the table rebuilt — the load mode, the watermark, the primary key, or
   a declared type the table contradicts — is refused once, with its reasons. You then either
-  save it anyway, and rebuild when you choose with `udp run <source> --full-refresh`, or use
+  save it anyway, and rebuild when you choose with `./udp load <source> --full-refresh`, or use
   **Rebuild and run now**, which saves the change and starts that rebuild in one step.
 - An edit may not carry a `${NAME}` reference. Those are filled from the platform's own
   environment, so they belong in `source.yaml`, which only whoever runs the platform writes.

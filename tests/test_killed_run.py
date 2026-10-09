@@ -79,7 +79,7 @@ def test_killing_a_run_mid_load_leaves_table_columns_and_state_unchanged(tmp_pat
     pl.DataFrame({"id": ids, "amount": ids * 2, "updated": 1}).write_csv(folder / "orders.csv")
     runner = CliRunner()
     env = {"UDP_SOURCES_DIR": str(sources_dir)}
-    result = runner.invoke(app, ["run", "killed", "--full-refresh"], env=env)
+    result = runner.invoke(app, ["load", "killed", "--full-refresh"], env=env)
     assert result.exit_code == 0, result.output
     before = _snapshot()
 
@@ -105,7 +105,7 @@ def test_killing_a_run_mid_load_leaves_table_columns_and_state_unchanged(tmp_pat
         stalled, status, _, _ = _latest_run()
         assert status == "running"
 
-        overlapping = runner.invoke(app, ["run", "killed"], env=env)
+        overlapping = runner.invoke(app, ["load", "killed"], env=env)
         assert overlapping.exit_code == 0, overlapping.output
         assert _latest_run()[1] == "skipped"
     finally:
@@ -120,7 +120,7 @@ def test_killing_a_run_mid_load_leaves_table_columns_and_state_unchanged(tmp_pat
         assert time.monotonic() < deadline, "the killed run's dataset lock was never freed"
         time.sleep(0.2)
 
-    after = runner.invoke(app, ["run", "killed"], env=env)
+    after = runner.invoke(app, ["load", "killed"], env=env)
 
     assert after.exit_code == 0, after.output
     assert _latest_run()[1] == "succeeded"

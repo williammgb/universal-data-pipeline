@@ -30,7 +30,7 @@ def _fingerprint(table: str, key: str) -> str:
 
 def _run(source: str, sources_dir: Path | str = "sources", *, refresh: bool = False) -> int:
     """Run a source and return the rows its most recent run loaded."""
-    arguments = ["run", source, *(["--full-refresh"] if refresh else [])]
+    arguments = ["load", source, *(["--full-refresh"] if refresh else [])]
     result = CliRunner().invoke(app, arguments, env={"UDP_SOURCES_DIR": str(sources_dir)})
     assert result.exit_code == 0, result.output[-3000:]
     loaded = _scalar(

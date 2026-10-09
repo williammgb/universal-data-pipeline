@@ -42,11 +42,11 @@ def test_approved_dependency_imports(module: str) -> None:
     importlib.import_module(module)
 
 
-def test_migrate_without_migrations_exits_2_before_touching_the_database(
+def test_update_without_migrations_exits_2_before_touching_the_database(
     tmp_path: Path,
 ) -> None:
     env = {"UDP_DATABASE_URL": "postgresql://nobody:nothing@127.0.0.1:1/none"}
-    result = CliRunner().invoke(app, ["migrate", "--migrations", str(tmp_path)], env=env)
+    result = CliRunner().invoke(app, ["update", "--migrations", str(tmp_path)], env=env)
 
     assert result.exit_code == 2
     assert "no migrations found" in result.output
@@ -63,14 +63,14 @@ def _csv_source(root: Path, name: str, rows: str) -> None:
     )
 
 
-def test_run_refuses_every_source_when_one_of_them_has_a_bad_config(tmp_path: Path) -> None:
+def test_load_refuses_every_source_when_one_of_them_has_a_bad_config(tmp_path: Path) -> None:
     _csv_source(tmp_path, "first", "1,a\n")
     env = {
         "UDP_SOURCES_DIR": str(tmp_path),
         "UDP_DATABASE_URL": "postgresql://nobody:nothing@127.0.0.1:1/none",
     }
 
-    result = CliRunner().invoke(app, ["run", "first", "missing"], env=env)
+    result = CliRunner().invoke(app, ["load", "first", "missing"], env=env)
 
     # Exit 2 for the config, not 1 for a failed run: the database was never opened.
     assert result.exit_code == 2
@@ -78,12 +78,12 @@ def test_run_refuses_every_source_when_one_of_them_has_a_bad_config(tmp_path: Pa
 
 
 @pytest.mark.db
-def test_run_loads_several_sources_in_one_command(tmp_path: Path) -> None:
+def test_load_loads_several_sources_in_one_command(tmp_path: Path) -> None:
     _csv_source(tmp_path, "first", "1,a\n2,b\n")
     _csv_source(tmp_path, "second", "3,c\n")
     env = {"UDP_SOURCES_DIR": str(tmp_path), "UDP_DATABASE_URL": os.environ["UDP_DATABASE_URL"]}
 
-    result = CliRunner().invoke(app, ["run", "first", "second", "--full-refresh"], env=env)
+    result = CliRunner().invoke(app, ["load", "first", "second", "--full-refresh"], env=env)
 
     assert result.exit_code == 0, result.output[-2000:]
     with psycopg.connect(os.environ["UDP_DATABASE_URL"]) as conn:
@@ -94,10 +94,18 @@ def test_run_loads_several_sources_in_one_command(tmp_path: Path) -> None:
     assert loaded == [("first", 2), ("second", 1)]
 
 
+@pytest.mark.parametrize("old", ["run", "migrate"])
+def test_the_old_command_names_are_gone(old: str) -> None:
+    result = CliRunner().invoke(app, [old])
+
+    assert result.exit_code != 0
+    assert "No such command" in result.output
+
+
 @pytest.mark.db
-def test_migrate_twice_leaves_the_database_at_the_newest_revision() -> None:
+def test_update_twice_leaves_the_database_at_the_newest_revision() -> None:
     for _ in range(2):
-        result = CliRunner().invoke(app, ["migrate"])
+        result = CliRunner().invoke(app, ["update"])
         assert result.exit_code == 0, result.output[-2000:]
     with psycopg.connect(os.environ["UDP_DATABASE_URL"]) as conn:
         row = conn.execute("SELECT version_num FROM alembic_version").fetchone()

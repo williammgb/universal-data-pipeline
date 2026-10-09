@@ -1,4 +1,4 @@
-"""`udp migrate` creates the V2 tables on an empty database and upgrades an existing V1 one
+"""`udp update` creates the V2 tables on an empty database and upgrades an existing V1 one
 without touching what is in it; a second run changes nothing."""
 
 import os
@@ -69,7 +69,7 @@ def _tables(snapshot: dict[str, Any], schema: str) -> set[str]:
 
 
 def _migrate() -> None:
-    result = CliRunner().invoke(app, ["migrate"])
+    result = CliRunner().invoke(app, ["update"])
     assert result.exit_code == 0, result.output[-2000:]
 
 
@@ -87,7 +87,7 @@ def test_the_migrated_database_has_every_v2_table_and_a_second_migrate_changes_n
 
 @pytest.fixture
 def empty_database(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
-    """A database of its own, which `udp migrate` and Alembic reach through UDP_DATABASE_URL."""
+    """A database of its own, which `udp update` and Alembic reach through UDP_DATABASE_URL."""
     url = Settings().database_url  # type: ignore[call-arg]
     name = f"udp_migrate_{uuid.uuid4().hex[:12]}"
     with psycopg.connect(url, autocommit=True) as admin:

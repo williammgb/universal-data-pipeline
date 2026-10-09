@@ -66,7 +66,7 @@ def _invoke(arguments: list[str], sources: Path | str = "sources") -> Any:
 
 
 def _ingest(source: str, sources: Path | str = "sources") -> None:
-    result = _invoke(["run", source], sources)
+    result = _invoke(["load", source], sources)
     assert result.exit_code == 0, result.output[-3000:]
 
 
@@ -268,7 +268,7 @@ def test_pipeline_performance_on_the_messy_csv_scaled_up(tmp_path: Path) -> None
 
     assert (code, run.status, run.rows_in) == (0, "succeeded", rows)
     print(
-        f"\nperformance: {rows} rows; udp run {loaded - started:.1f}s; "
+        f"\nperformance: {rows} rows; udp load {loaded - started:.1f}s; "
         f"udp pipeline run {prepared - loaded:.1f}s ({run.rows_out} rows out); "
         + "; ".join(f"step {s.position} {s.type} {s.duration_seconds:.2f}s" for s in run.steps)
     )

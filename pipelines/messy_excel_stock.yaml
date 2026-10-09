@@ -1,8 +1,8 @@
 # messy_excel's stock, from RAW to clean.messy_excel__stock: categories spelt one way, rows
 # whose count or date cannot be read dropped, types set, the outlier cost capped and the gaps
 # filled. A row entered twice and a negative count are reported, not hidden.
-#   uv run --locked udp run messy_excel
-#   uv run --locked udp pipeline run messy_excel_stock
+#   ./udp load messy_excel
+#   ./udp pipeline run messy_excel_stock
 source: messy_excel
 dataset: stock
 profile: ends

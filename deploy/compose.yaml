@@ -77,7 +77,7 @@ services:
           memory: 512m
 
   # The anchor every container built from this image inherits, and the one-off runner for
-  # `compose run --rm app run <source>`. Its own profile keeps it out of a plain `up`, which
+  # `compose run --rm app load <source>`. Its own profile keeps it out of a plain `up`, which
   # the containers below undo with an empty profile list so they start by default.
   app: &app
     profiles: ["app"]
@@ -117,7 +117,7 @@ services:
   migrate:
     <<: *app
     profiles: []
-    command: ["migrate"]
+    command: ["update"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -147,7 +147,7 @@ services:
   demo-load:
     <<: *app
     profiles: ["demo"]
-    command: ["run", "demo_csv", "demo_excel", "demo_json", "demo_db", "demo_api"]
+    command: ["load", "demo_csv", "demo_excel", "demo_json", "demo_db", "demo_api"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -173,7 +173,7 @@ services:
       UDP_SOURCES_DIR: /scale
     volumes:
       - ../.work/scale:/scale:ro
-    command: ["run", "scale_csv", "--full-refresh"]
+    command: ["load", "scale_csv", "--full-refresh"]
     deploy:
       resources:
         limits:
