@@ -307,6 +307,9 @@ smoke_backup() {
   # MSYS_NO_PATHCONV: without it Git Bash turns the container's /tmp path into a Windows one.
   dump=/tmp/udp-smoke.dump
   psql="compose exec -T postgres psql -U udp -tAX"
+  # The scheduler started earlier loads demo_csv every minute; a run it records between the
+  # dump and the count makes the two disagree. Nothing after this needs it.
+  compose stop scheduler > /dev/null 2>&1 || return
   MSYS_NO_PATHCONV=1 compose exec -T postgres pg_dump -U udp -Fc -f "$dump" udp || return
   $psql -d postgres -c 'DROP DATABASE IF EXISTS udp_restored' > /dev/null || return
   $psql -d postgres -c 'CREATE DATABASE udp_restored OWNER udp' > /dev/null || return
