@@ -57,6 +57,7 @@ usage: ./run <task> [args]
   full    the full gate — real size, real dependencies, allowed to be slow
   smoke   start the real entrypoint and prove it comes up; with SMOKE_RUN="<command>"
           also run that command against it:  SMOKE_RUN="udp doctor" ./run smoke
+  ui      drive the dashboard pages a ticket changed in a headless browser, with screenshots
   image   build the container image:  ./run image <tag>
   memory  load five million rows in a container and print its peak memory (not a gate)
   check   syntax or lint one file:  ./run check path/to/file
@@ -300,6 +301,18 @@ smoke_console() {
   node frontend/e2e/console-check.mjs "http://127.0.0.1:$stack_http_port"
 }
 
+# The pages a ticket changed, driven in headless chromium the way a person would. The dashboard
+# is built and served by vite's own preview server and each script answers the API itself, so
+# this needs no containers and can show what the demo data has none of, a failed run among them.
+# Every script saves its screenshots under .work/screens.
+ui_gate() {
+  npm --prefix frontend run --silent build || return
+  npx --prefix frontend playwright install chromium > /dev/null || return
+  for script in frontend/e2e/ticket-*.mjs; do
+    node "$script" || return
+  done
+}
+
 # A backup nobody has restored is a hope, not a backup. The platform database is dumped,
 # restored into a second database beside it, compared row for row, and then run against: an
 # unchanged file must load nothing, which only holds if the saved state came back too.
@@ -464,6 +477,7 @@ case "$task" in
   db)    gate db db_gate "$@" ;;
   full)  gate full full_gate "$@" ;;
   smoke) gate smoke smoke_gate ;;
+  ui)    gate ui ui_gate ;;
   memory) memory_run "$@" ;;
   check)
     # One file, checked after an edit. `uvx` runs ruff on its own instead of out of .venv:

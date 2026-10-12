@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 
 import {
@@ -14,7 +14,7 @@ import { cell, connectorName, count, describeSchedule, moment } from "../format"
 import { runsQuery } from "../runFilters";
 import Config from "./Config";
 import Lineage from "./Lineage";
-import { Blank, Fact, Problem, Status, Waiting } from "./parts";
+import { Blank, Fact, Problem, RunError, Status, Waiting } from "./parts";
 import Profile from "./Profile";
 
 // Exported so the guide names the same tabs this page renders: renaming one here renames it
@@ -39,6 +39,9 @@ export const TAB_NAMES: Record<Tab, string> = {
   lineage: "Lineage",
 };
 
+/** How long the "Run requested" pop-up stays before it leaves by itself. */
+const POPUP_MS = 6000;
+
 export default function Dataset() {
   const { source = "", dataset = "" } = useParams();
   const [params] = useSearchParams();
@@ -46,6 +49,18 @@ export default function Dataset() {
   const tab: Tab = TABS.includes(asked as Tab) ? (asked as Tab) : "schema";
   const detail = useDataset(source, dataset);
   const start = useStartRun(source, dataset);
+
+  // The time in the pop-up under Run now, or null while there is none to show. Each accepted
+  // start shows its own time for 6 seconds; pressing again, or leaving the page, clears the
+  // timer of the one before. A start that failed has no time, so it shows no pop-up.
+  const [requested, setRequested] = useState<string | null>(null);
+  useEffect(() => {
+    const at = start.data?.requested_at ?? null;
+    setRequested(at);
+    if (!at) return;
+    const timer = setTimeout(() => setRequested(null), POPUP_MS);
+    return () => clearTimeout(timer);
+  }, [start.data]);
 
   return (
     <main>
@@ -70,10 +85,14 @@ export default function Dataset() {
           >
             {start.isPending ? "Starting…" : "Run now"}
           </button>
+          {requested ? (
+            <div className="popup" role="status">
+              Run requested at <span className="when">{moment(requested)}</span>
+            </div>
+          ) : null}
         </div>
       </div>
       {start.error ? <Problem error={start.error} /> : null}
-      {start.data ? <p className="note">Run requested at {moment(start.data.requested_at)}.</p> : null}
 
       <div className="tabs">
         {TABS.map((name) => (
@@ -336,6 +355,7 @@ function DatasetRuns({ source, dataset }: { source: string; dataset: string }) {
             <th className="mono">Extracted</th>
             <th className="mono">Loaded</th>
             <th className="mono">Quarantined</th>
+            <th>Error</th>
           </tr>
         </thead>
         <tbody>
@@ -351,6 +371,9 @@ function DatasetRuns({ source, dataset }: { source: string; dataset: string }) {
               <td className="num">{count(run.rows_extracted)}</td>
               <td className="num">{count(run.rows_loaded)}</td>
               <td className="num">{count(run.rows_quarantined)}</td>
+              <td className="why">
+                <RunError run={run} />
+              </td>
             </tr>
           ))}
         </tbody>
