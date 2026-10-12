@@ -4,25 +4,38 @@
 #   ./udp up [--demo]              start the platform in containers (with the demo sources)
 #   ./udp down                     stop every container, keeping the data
 #   ./udp load <source>... --docker
-#                                  load sources inside the running containers
+#                                  load sources inside the running containers, building the
+#                                  image first so the load runs the current code
 #   ./udp <anything else>          the same as `uv run --locked udp <anything else>`
 #
-# With UDP_DRY_RUN=1 a container command prints the compose call instead of making it.
+# With UDP_DRY_RUN=1 a container command prints the compose call instead of making it, and on
+# standard error the names (never the values) of the variables it would pass on.
 set -eu
 cd "$(dirname "$0")"
 . deploy/engine.sh
 
-# Compose sees only what is passed to it: through WSL, this shell's variables do not cross.
+# Compose sees only what is passed to it: through WSL, this shell's variables do not cross. A
+# variable that is unset or empty here is left out, so deploy/.env can supply it: an empty value
+# handed over would win over the file's.
 compose() {
+  called="docker compose -f deploy/compose.yaml $*"
+  set -- docker compose -f deploy/compose.yaml "$@"
+  passing=
+  value=
+  for name in POSTGRES_PASSWORD UDP_API_KEYS UDP_PG_PORT UDP_SOURCE_PG_PORT UDP_MOCK_API_PORT \
+    UDP_API_PORT UDP_PROM_PORT DEMO_SCHEDULE; do
+    # Only the fixed names above are ever handed to eval.
+    eval "value=\${$name:-}"
+    [ -n "$value" ] || continue
+    set -- "$name=$value" "$@"
+    passing="$passing $name"
+  done
   if [ "${UDP_DRY_RUN:-}" = 1 ]; then
-    echo "docker compose -f deploy/compose.yaml $*"
+    echo "$called"
+    echo "passing:$passing" >&2
     return
   fi
-  $engine env POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-}" UDP_API_KEYS="${UDP_API_KEYS:-}" \
-    UDP_PG_PORT="${UDP_PG_PORT:-}" UDP_SOURCE_PG_PORT="${UDP_SOURCE_PG_PORT:-}" \
-    UDP_MOCK_API_PORT="${UDP_MOCK_API_PORT:-}" UDP_API_PORT="${UDP_API_PORT:-}" \
-    UDP_PROM_PORT="${UDP_PROM_PORT:-}" DEMO_SCHEDULE="${DEMO_SCHEDULE:-}" \
-    COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-udp}" docker compose -f deploy/compose.yaml "$@"
+  $engine env COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-udp}" "$@"
 }
 
 case "${1:-}" in
@@ -57,7 +70,8 @@ case "${1:-}" in
       shift
       [ "$arg" = --docker ] || set -- "$@" "$arg"
     done
-    compose run --rm app load "$@"
+    # `run` alone never rebuilds an image that exists, and `up` does not build this one.
+    compose run --rm --build app load "$@"
     ;;
   *)
     exec uv run --locked udp "$@"
