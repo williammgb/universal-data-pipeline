@@ -217,7 +217,7 @@ async function datasetPage(inside, theme) {
   await page.waitForTimeout(400);
 
   const text = await note.textContent();
-  check(text === "Run requested at 2026-10-12 17:49:21", `${theme}: the note reads "${text}"`);
+  check(text === "Run requested at 2026-10-12 19:49:21", `${theme}: the note reads "${text}"`);
   const noteBox = await note.boundingBox();
   const groupBox = await page.locator(".head .right").boundingBox();
   const buttonBox = await button.boundingBox();

@@ -329,7 +329,7 @@ describe("the dashboard", () => {
     expect(screen.getByRole("link", { name: "orders" })).toBeTruthy();
     expect(screen.getByText("* * * * *")).toBeTruthy();
     expect(screen.getByText("succeeded")).toBeTruthy();
-    expect(screen.getByText("2026-09-16 07:14:00")).toBeTruthy();
+    expect(screen.getByText("2026-09-16 09:14:00")).toBeTruthy();
     // Rows are the table's own count, not what the last run added.
     expect(screen.getByText("20")).toBeTruthy();
     expect(screen.getByText("1,000")).toBeTruthy();
@@ -517,7 +517,7 @@ describe("the dashboard", () => {
     await waitFor(() => expect(asked).toContain("POST /api/runs"));
     // The time is in an element of its own now, so the sentence is read off the whole note.
     expect((await screen.findByRole("status")).textContent).toBe(
-      "Run requested at 2026-09-16 08:00:00",
+      "Run requested at 2026-09-16 10:00:00",
     );
   });
 
@@ -539,7 +539,7 @@ describe("the dashboard", () => {
       (await screen.findByRole("button", { name: "Run now" })).click();
 
       const note = await screen.findByRole("status");
-      expect(note.textContent).toBe("Run requested at 2026-09-16 08:00:00");
+      expect(note.textContent).toBe("Run requested at 2026-09-16 10:00:00");
       // Inside the header's right-hand group, beside the button that caused it.
       expect(note.parentElement?.className).toBe("right");
       expect(note.parentElement?.parentElement?.className).toBe("head");
@@ -555,7 +555,7 @@ describe("the dashboard", () => {
       answers["POST /api/runs"] = accepted("2026-09-16T08:00:04Z");
       screen.getByRole("button", { name: "Run now" }).click();
       await waitFor(() =>
-        expect(screen.getByRole("status").textContent).toBe("Run requested at 2026-09-16 08:00:04"),
+        expect(screen.getByRole("status").textContent).toBe("Run requested at 2026-09-16 10:00:04"),
       );
       expect(screen.getAllByRole("status")).toHaveLength(1);
       // 9 seconds after the first press, which is past the first note's own 6 seconds.
@@ -665,7 +665,7 @@ describe("the dashboard", () => {
 
     expect(await screen.findByText(/could not connect to the source database/)).toBeTruthy();
     expect(screen.getByText("ExtractError")).toBeTruthy();
-    expect(screen.getByText("2026-09-16 07:02:38 · 7.0s")).toBeTruthy();
+    expect(screen.getByText("2026-09-16 09:02:38 · 7.0s")).toBeTruthy();
     expect(screen.getByText("—")).toBeTruthy();
     expect(screen.getByText(/Traceback \(most recent call last\)/)).toBeTruthy();
     expect(screen.getByText("1 rows failed")).toBeTruthy();
@@ -718,6 +718,26 @@ describe("the dashboard", () => {
     expect(asked.some((call) => call.includes("status=failed"))).toBe(true);
   });
 
+  it("shows the address's UTC moment as Amsterdam time in the From box, and asks in UTC", async () => {
+    const asked = serve({ "GET /api/runs": { body: RUNS }, "GET /api/sources": { body: SOURCES } });
+
+    show("/runs?since=2026-09-16T07:00:00Z");
+
+    const from = (await screen.findByLabelText("From")) as HTMLInputElement;
+    expect(from.value).toBe("2026-09-16T09:00");
+    expect(asked.some((call) => decodeURIComponent(call).includes("since=2026-09-16T07:00:00Z"))).toBe(
+      true,
+    );
+
+    fireEvent.change(from, { target: { value: "2026-09-16T10:30" } });
+    await waitFor(() =>
+      expect(
+        asked.some((call) => decodeURIComponent(call).includes("since=2026-09-16T08:30:00Z")),
+      ).toBe(true),
+    );
+    expect(from.value).toBe("2026-09-16T10:30");
+  });
+
   it("asks for an API key when the API refuses the request", async () => {
     window.localStorage.setItem("udp.apiKey", "wrong");
     serve({
@@ -746,7 +766,8 @@ describe("the dashboard", () => {
     // The schedule is edited: the file says nothing, so the tag and the way back both appear.
     expect(screen.getByText("edited")).toBeTruthy();
     expect(screen.getByRole("button", { name: /use the file/ })).toBeTruthy();
-    expect(screen.getByText("every day at 06:00 UTC")).toBeTruthy();
+    // The real clock: 06:00 UTC is 08:00 in Amsterdam in summer and 07:00 in winter.
+    expect(screen.getByText(/^every day at 0[78]:00$/)).toBeTruthy();
 
     fireEvent.change(cron, { target: { value: "15 */2 * * *" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -806,6 +827,8 @@ describe("the dashboard", () => {
     expect(guide).toContain("API key");
     expect(guide).toContain("schedule");
     expect(guide).toContain("cron fields in UTC");
+    expect(guide).toContain("Amsterdam time");
+    expect(screen.getByRole("banner").textContent).toContain("all times Amsterdam");
     // A page that reads nothing cannot fail on a machine with no API to read.
     expect(asked).toEqual([]);
   });
