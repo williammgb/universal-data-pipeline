@@ -512,6 +512,59 @@ def test_only_the_datasets_running_runs_become_interrupted(
             assert record["error_class"] != INTERRUPTED
 
 
+def test_row_check_results_reads_back_one_runs_row_checks_as_recorded(harness: Harness) -> None:
+    dataset = f"d{uuid.uuid4().hex[:12]}"
+    loaded, other = _start_run(harness.loader), _start_run(harness.loader)
+    now = datetime.now(UTC)
+    row_checks = [
+        CheckResult(
+            0, "not_null", ("id",), "error", False, 2, None, "2 rows are empty", {"column": "id"}
+        ),
+        CheckResult(
+            2, "range", ("amount",), "warn", True, 0, None, "in range", {"column": "amount"}
+        ),
+    ]
+    findings = RunFindings("contract_quality", dataset)
+    findings.results.extend(
+        [
+            row_checks[0],
+            CheckResult(1, "min_rows", (), "error", True, None, 3, "3 rows", {"rows": 1}),
+            row_checks[1],
+        ]
+    )
+    elsewhere = RunFindings("contract_quality", dataset)
+    elsewhere.results.append(
+        CheckResult(0, "regex", ("name",), "warn", False, 1, None, "no match", {"pattern": "x"})
+    )
+
+    with harness.loader.transaction() as transaction:
+        transaction.record_findings(loaded, findings, now)
+        transaction.record_findings(other, elsewhere, now)
+        assert transaction.row_check_results(loaded) == row_checks
+
+    with harness.loader.transaction() as transaction:
+        assert transaction.row_check_results(loaded) == row_checks
+        assert transaction.row_check_results(uuid.uuid7()) == []
+
+
+def test_raw_exists_only_while_the_dataset_has_a_raw_table(harness: Harness) -> None:
+    source, table = f"contract{uuid.uuid4().hex[:12]}", _new_table()
+
+    with harness.loader.transaction() as transaction:
+        assert not transaction.raw_exists(source, "t")
+        transaction.replace_table(table, iter([FIRST]))
+        transaction.append_raw(source, "t")
+        assert transaction.raw_exists(source, "t")
+    with harness.loader.transaction() as transaction:
+        assert transaction.raw_exists(source, "t")
+        assert not transaction.raw_exists(source, "u")
+        transaction.drop_raw(source, "t")
+        assert not transaction.raw_exists(source, "t")
+    with harness.loader.transaction() as transaction:
+        assert not transaction.raw_exists(source, "t")
+    harness.drop_table(table)
+
+
 @pytest.mark.db
 def test_a_postgres_lock_holds_across_connections_until_its_holder_closes() -> None:
     url = Settings().database_url  # type: ignore[call-arg]

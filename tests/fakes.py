@@ -12,6 +12,8 @@ from udp.errors import LoadError
 from udp.names import Stage, stage_table
 from udp.storage.loader import (
     INTERRUPTED,
+    ROW_CHECK_TYPES,
+    CheckResult,
     Column,
     ColumnChanges,
     ConfigCopy,
@@ -211,6 +213,11 @@ class MemoryTransaction:
     def drop_raw(self, source: str, dataset: str) -> None:
         self.raw[raw_table(source, dataset)] = _DROPPED
 
+    def raw_exists(self, source: str, dataset: str) -> bool:
+        name = raw_table(source, dataset)
+        found = self.raw.get(name, self._loader.raw.get(name))
+        return found is not None and found is not _DROPPED
+
     def append_raw(self, source: str, dataset: str) -> int:
         if self._loaded is None:
             raise LoadError(f"nothing was loaded for {source}.{dataset} to add to RAW")
@@ -296,6 +303,15 @@ class MemoryTransaction:
                 }
             )
         self.run_updates.setdefault(run_id, {})["rows_quarantined"] = findings.quarantined_rows
+
+    def row_check_results(self, run_id: UUID) -> list[CheckResult]:
+        fields = CheckResult.__dataclass_fields__
+        found = [
+            CheckResult(**{name: row[name] for name in fields})
+            for row in [*self._loader.quality_results, *self.quality_results]
+            if row["run_id"] == run_id and row["check_type"] in ROW_CHECK_TYPES
+        ]
+        return sorted(found, key=lambda result: result.position)
 
     def succeed_run(
         self, run_id: UUID, *, ended_at: datetime, rows_extracted: int, rows_loaded: int

@@ -406,8 +406,13 @@ def test_an_unchanged_file_is_not_read_again_but_its_table_is_still_checked(
     skipped = shop.run()
 
     assert (skipped.status, skipped.rows_loaded) == ("succeeded", 0)
-    (result,) = shop.results(skipped)
-    assert (result["check_type"], result["passed"], result["table_rows"]) == ("min_rows", True, 3)
+    rows_checked, copied = shop.results(skipped)
+    assert (rows_checked["check_type"], rows_checked["passed"], rows_checked["table_rows"]) == (
+        "min_rows",
+        True,
+        3,
+    )
+    assert (copied["position"], copied["check_type"], copied["passed"]) == (1, "not_null", True)
 
 
 def test_an_unchanged_file_whose_table_went_stale_fails_its_freshness_check(
