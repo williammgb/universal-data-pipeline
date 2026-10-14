@@ -183,12 +183,18 @@ def _load_dataset(
     dataset = request.dataset
     table = table_name(source, dataset.name)
     state = None if full_refresh else transaction.read_state(source, dataset.name)
+    if state is not None and not transaction.raw_exists(source, dataset.name):
+        # Loaded before RAW existed: only a load of every source row gives RAW all of them.
+        log.info("no RAW copy yet; loading in full once", step="load")
+        state = None
     file = connector.file_version(request)
     transform_file = find_transform(request.source_dir)
     digest = config_sha256(dataset, transform_file.sha256 if transform_file else None)
 
-    if is_unchanged_file(state, file, digest):
+    if state is not None and is_unchanged_file(state, file, digest):
         log.info("file unchanged, skipped", step="extract", path=file.path if file else None)
+        # The same file with the same settings: the loading run's row-check counts still hold.
+        findings.results.extend(transaction.row_check_results(state.run_id))
         if dataset.checks or dataset.columns:
             check_dataset(transaction, table, dataset, findings, started_at)
         return 0

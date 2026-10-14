@@ -1,4 +1,5 @@
 import json
+import shutil
 from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
@@ -7,7 +8,7 @@ from typing import Any
 
 import polars as pl
 import pytest
-from fakes import MemoryLoader
+from fakes import MemoryLoader, raw_table
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -274,6 +275,100 @@ def test_unchanged_file_is_skipped_and_the_table_stays_identical(tmp_path: Path)
         0,
     )
     assert shop.table.equals(before)
+
+
+DEMO_CSV = Path(__file__).parents[1] / "sources" / "demo_csv"
+
+
+def test_a_second_load_of_an_unchanged_file_keeps_every_check(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    shutil.copytree(DEMO_CSV, sources / "demo_csv")
+    config = load_source(sources, "demo_csv", {})
+    loader = MemoryLoader()
+
+    def load() -> tuple[RunOutcome, list[dict[str, Any]]]:
+        (outcome,) = run_source("demo_csv", config, sources, loader)
+        assert outcome.status == "succeeded"
+        results = [
+            {name: value for name, value in row.items() if name not in ("run_id", "checked_at")}
+            for row in loader.quality_results
+            if row["run_id"] == outcome.run_id
+        ]
+        return outcome, results
+
+    first, loaded = load()
+    second, again = load()
+    third, once_more = load()
+
+    assert first.rows_loaded
+    assert (second.rows_loaded, third.rows_loaded) == (0, 0)
+    assert [row["position"] for row in again] == [0, 1, 2, 3, 4]
+    assert [row["check_type"] for row in again] == [
+        "not_null",
+        "unique",
+        "min_rows",
+        "range",
+        "regex",
+    ]
+    assert again == loaded
+    assert once_more == loaded
+
+
+APPEND = "    load_mode: append\n    watermark: updated\n"
+
+
+def _lose_raw(shop: Shop) -> None:
+    """Leave the dataset as a load before RAW existed did: state saved, no RAW table."""
+    del shop.loader.raw[raw_table("shop", "orders")]
+
+
+def test_a_dataset_without_a_raw_copy_is_loaded_in_full_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    configure_logging()
+    shop = Shop(tmp_path, APPEND)
+    shop.write(ORDERS)
+    shop.run()
+    _lose_raw(shop)
+    capsys.readouterr()
+
+    reloaded = shop.run()
+
+    record = shop.record(reloaded)
+    assert (record["status"], record["rows_extracted"], record["rows_loaded"]) == (
+        "succeeded",
+        3,
+        3,
+    )
+    assert sorted(shop.table["id"].to_list()) == [1, 2, 3]
+    assert sorted(shop.loader.raw[raw_table("shop", "orders")]["id"].to_list()) == [1, 2, 3]
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    said = [e["step"] for e in events if e["event"] == "no RAW copy yet; loading in full once"]
+    assert said == ["load"]
+
+    _lose_raw(shop)
+    assert shop.run(full_refresh=True).rows_loaded == 3
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert not [e for e in events if e["event"] == "no RAW copy yet; loading in full once"]
+
+
+def test_a_dataset_without_a_raw_copy_is_skipped_once_it_has_one(tmp_path: Path) -> None:
+    shop = Shop(tmp_path, APPEND)
+    shop.write(ORDERS)
+    shop.run()
+    _lose_raw(shop)
+    shop.run()
+    raw = shop.loader.raw[raw_table("shop", "orders")]
+
+    again = shop.run()
+
+    record = shop.record(again)
+    assert (record["status"], record["rows_extracted"], record["rows_loaded"]) == (
+        "succeeded",
+        0,
+        0,
+    )
+    assert shop.loader.raw[raw_table("shop", "orders")].equals(raw)
 
 
 def test_merge_writes_only_changed_and_new_rows(tmp_path: Path) -> None:
