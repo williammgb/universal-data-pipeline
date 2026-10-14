@@ -1,7 +1,7 @@
 import { Link, useSearchParams } from "react-router";
 
 import { useRuns, useSources } from "../api/client";
-import { count, moment } from "../format";
+import { count, fromInput, moment, toInput } from "../format";
 import { RUNS_PER_PAGE, RUN_STATUSES, RUN_TRIGGERS, parse, runsQuery, serialize } from "../runFilters";
 import { Problem, RunError, Status, Waiting } from "./parts";
 
@@ -78,25 +78,21 @@ export default function Runs() {
           </select>
         </label>
         <label className="field" htmlFor="filter-since">
-          From (UTC)
+          From
           <input
             id="filter-since"
             type="datetime-local"
-            value={(filters.since ?? "").slice(0, 16)}
-            onChange={(event) =>
-              change("since", event.target.value ? `${event.target.value}:00Z` : "")
-            }
+            value={toInput(filters.since ?? "")}
+            onChange={(event) => change("since", fromInput(event.target.value))}
           />
         </label>
         <label className="field" htmlFor="filter-until">
-          To (UTC)
+          To
           <input
             id="filter-until"
             type="datetime-local"
-            value={(filters.until ?? "").slice(0, 16)}
-            onChange={(event) =>
-              change("until", event.target.value ? `${event.target.value}:00Z` : "")
-            }
+            value={toInput(filters.until ?? "")}
+            onChange={(event) => change("until", fromInput(event.target.value))}
           />
         </label>
       </div>

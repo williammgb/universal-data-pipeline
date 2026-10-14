@@ -1,4 +1,8 @@
-/** How values from the API are shown. Times are UTC everywhere, matching the schedules. */
+/** How values from the API are shown. Times are shown in Amsterdam time; the API, the addresses
+ * and the schedules themselves stay in UTC. */
+
+/** The one zone every moment on the dashboard is shown in, whatever the browser's own zone. */
+export const TIME_ZONE = "Europe/Amsterdam";
 
 export type CellValue = string | number | boolean | { [key: string]: unknown } | unknown[] | null;
 
@@ -15,12 +19,74 @@ export function cell(value: CellValue): Cell {
   return { text, full: text, isNull: false };
 }
 
-/** An API timestamp as "YYYY-MM-DD HH:MM:SS" in UTC; unreadable input is passed through. */
+type Wall = { year: string; month: string; day: string; hour: string; minute: string; second: string };
+
+const WALL = new Intl.DateTimeFormat("en-GB", {
+  timeZone: TIME_ZONE,
+  hourCycle: "h23",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+
+/** The date and clock time in TIME_ZONE at a moment, read by part name, never by punctuation. */
+function wall(when: Date): Wall {
+  const parts: Record<string, string> = {};
+  for (const part of WALL.formatToParts(when)) parts[part.type] = part.value;
+  const { year = "", month = "", day = "", hour = "", minute = "", second = "" } = parts;
+  return { year: year.padStart(4, "0"), month, day, hour, minute, second };
+}
+
+/** How many minutes TIME_ZONE is ahead of UTC at a moment: 60 in winter, 120 in summer. */
+function offsetMinutes(when: Date): number {
+  const shown = wall(when);
+  const asUtc = new Date(0);
+  asUtc.setUTCFullYear(Number(shown.year), Number(shown.month) - 1, Number(shown.day));
+  asUtc.setUTCHours(Number(shown.hour), Number(shown.minute), Number(shown.second), 0);
+  const whole = when.getTime() - when.getUTCMilliseconds();
+  return Math.round((asUtc.getTime() - whole) / 60000);
+}
+
+function readable(value: string): Date | null {
+  const when = new Date(value);
+  return Number.isNaN(when.getTime()) ? null : when;
+}
+
+/** An API timestamp as "YYYY-MM-DD HH:MM:SS" in Amsterdam time; unreadable input is passed
+ * through. */
 export function moment(value: string | null): string {
   if (value === null) return "—";
-  const when = new Date(value);
-  if (Number.isNaN(when.getTime())) return value;
-  return when.toISOString().replace("T", " ").slice(0, 19);
+  const when = readable(value);
+  if (when === null) return value;
+  const shown = wall(when);
+  return `${shown.year}-${shown.month}-${shown.day} ${shown.hour}:${shown.minute}:${shown.second}`;
+}
+
+/** An API moment as the Amsterdam "YYYY-MM-DDTHH:MM" a datetime-local box takes; "" for empty or
+ * unreadable text. */
+export function toInput(instant: string): string {
+  const when = instant ? readable(instant) : null;
+  if (when === null) return "";
+  const shown = wall(when);
+  return `${shown.year}-${shown.month}-${shown.day}T${shown.hour}:${shown.minute}`;
+}
+
+/** An Amsterdam time typed in a datetime-local box as the UTC moment "YYYY-MM-DDTHH:MM:00Z";
+ * "" for empty or unreadable text. A time in the hour skipped in March is read as one hour later,
+ * and one in the hour repeated in October as the second, winter-time one. */
+export function fromInput(typed: string): string {
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?$/.exec(typed);
+  if (!match) return "";
+  const guess = readable(`${match[1]}:00Z`);
+  if (guess === null) return "";
+  const first = offsetMinutes(guess);
+  let result = guess.getTime() - first * 60000;
+  const second = offsetMinutes(new Date(result));
+  if (second !== first) result = guess.getTime() - second * 60000;
+  return `${new Date(result).toISOString().slice(0, 16)}:00Z`;
 }
 
 export function duration(started: string, ended: string | null): string {
@@ -65,8 +131,11 @@ function every(field: string): number | null {
 const two = (value: number) => String(value).padStart(2, "0");
 
 /** A five-field cron schedule in plain English, for the common shapes only; null otherwise,
- * so an unusual schedule is shown as it is written rather than described wrongly. */
-export function describeSchedule(schedule: string): string | null {
+ * so an unusual schedule is shown as it is written rather than described wrongly. The cron is
+ * UTC; a clock time is given in Amsterdam time as of `now`. Where that moves the time to another
+ * day, "every day" needs nothing and a single weekday names the next day, but "every weekday"
+ * and "on day N of every month" cannot be said truly that way, so they keep the UTC time. */
+export function describeSchedule(schedule: string, now: Date = new Date()): string | null {
   const fields = schedule.trim().split(/\s+/);
   if (fields.length !== 5) return null;
   const [minute, hour, day, month, weekday] = fields as [string, string, string, string, string];
@@ -87,14 +156,18 @@ export function describeSchedule(schedule: string): string | null {
   }
   const hh = whole(hour, 0, 23);
   if (hh === null) return null;
-  const time = `${two(hh)}:${two(at)} UTC`;
+  const minutes = hh * 60 + at + offsetMinutes(now);
+  const shift = Math.floor(minutes / 1440);
+  const local = minutes - shift * 1440;
+  const time = `${two(Math.floor(local / 60))}:${two(local % 60)}`;
+  const utc = shift === 0 ? time : `${two(hh)}:${two(at)} UTC`;
   if (everyDay) return `every day at ${time}`;
   if (day === "*") {
-    if (weekday === "1-5") return `every weekday at ${time}`;
+    if (weekday === "1-5") return `every weekday at ${utc}`;
     const wd = whole(weekday, 0, 7);
-    return wd === null ? null : `every ${DAYS[wd % 7]} at ${time}`;
+    return wd === null ? null : `every ${DAYS[(((wd + shift) % 7) + 7) % 7]} at ${time}`;
   }
   const dd = whole(day, 1, 31);
   if (dd === null || weekday !== "*") return null;
-  return `on day ${dd} of every month at ${time}`;
+  return `on day ${dd} of every month at ${utc}`;
 }

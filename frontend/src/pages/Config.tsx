@@ -7,7 +7,7 @@ import {
   useStartRun,
   type DatasetConfig,
 } from "../api/client";
-import { describeSchedule } from "../format";
+import { describeSchedule, moment } from "../format";
 import { Problem, Waiting } from "./parts";
 
 /** The declared types a column can be given; `decimal` needs its digits, so it is typed out. */
@@ -486,7 +486,7 @@ export default function Config({ source, dataset }: { source: string; dataset: s
             {answer.history.map((edit) => (
               <div className="change" key={edit.changed_at}>
                 <time dateTime={edit.changed_at}>
-                  {edit.changed_at.replace("T", " ").slice(0, 19)}
+                  {moment(edit.changed_at)}
                 </time>
                 <div className="what">
                   {Object.entries(edit.changed).map(([field, move]) => {
