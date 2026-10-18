@@ -2,12 +2,13 @@ from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, get_args
 from uuid import UUID
 
 import polars as pl
 
 from udp.config.columns import is_json
+from udp.config.quality import ROW_CHECKS
 from udp.errors import LoadError, SchemaDriftError
 from udp.names import Stage, stage_table
 
@@ -170,6 +171,12 @@ class CheckResult:
     settings: dict[str, Any]
 
 
+# The check_type a row check's result is recorded under.
+ROW_CHECK_TYPES = frozenset(
+    get_args(check.model_fields["check"].annotation)[0] for check in ROW_CHECKS
+)
+
+
 @dataclass
 class RunFindings:
     """What a run quarantined and what its checks found, recorded whether it succeeds or not.
@@ -196,6 +203,10 @@ class LoadTransaction(Protocol):
 
     def drop_raw(self, source: str, dataset: str) -> None:
         """Remove the dataset's RAW table if it exists, so the next load starts it over."""
+        ...
+
+    def raw_exists(self, source: str, dataset: str) -> bool:
+        """Whether the dataset's RAW table exists."""
         ...
 
     def append_raw(self, source: str, dataset: str) -> int:
@@ -246,6 +257,10 @@ class LoadTransaction(Protocol):
 
     def record_findings(self, run_id: UUID, findings: RunFindings, recorded_at: datetime) -> None:
         """Write quarantined rows and check results, and the run's quarantined count."""
+        ...
+
+    def row_check_results(self, run_id: UUID) -> list[CheckResult]:
+        """The row checks' results one run recorded, by position."""
         ...
 
     def succeed_run(

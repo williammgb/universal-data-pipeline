@@ -28,8 +28,9 @@ explains every page and tab in it.
 
 From a clone of the repository, with Docker running and `POSTGRES_PASSWORD` and `UDP_API_KEYS`
 set, `./udp up` builds the image and starts the database, the dashboard and API, and the
-scheduler. The platform's tables are created (or updated to a newer version) by a one-off
-container running `udp update`, which every other container waits for.
+scheduler. The two variables are exported in the shell or kept in `deploy/.env`, which Docker
+Compose reads and git ignores. The platform's tables are created (or updated to a newer version)
+by a one-off container running `udp update`, which every other container waits for.
 
 ```
 ./udp up                      start the platform

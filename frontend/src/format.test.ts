@@ -1,7 +1,16 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import { cell, connectorName, count, describeSchedule, duration, moment } from "./format";
+import {
+  cell,
+  connectorName,
+  count,
+  describeSchedule,
+  duration,
+  fromInput,
+  moment,
+  toInput,
+} from "./format";
 
 /** Every shape a preview cell can arrive in, per the API's JSON rule. */
 const values = fc.oneof(
@@ -50,11 +59,43 @@ describe("preview cells", () => {
 });
 
 describe("times and counts", () => {
-  it("show a timestamp in UTC whatever offset it arrives in", () => {
-    expect(moment("2026-09-16T07:14:00.250Z")).toBe("2026-09-16 07:14:00");
-    expect(moment("2026-09-16T09:00:00+02:00")).toBe("2026-09-16 07:00:00");
+  it("show a timestamp in Amsterdam time whatever offset it arrives in", () => {
+    expect(moment("2026-09-16T07:14:00.250Z")).toBe("2026-09-16 09:14:00");
+    expect(moment("2026-09-16T09:00:00+02:00")).toBe("2026-09-16 09:00:00");
+    expect(moment("2026-01-15T07:14:00Z")).toBe("2026-01-15 08:14:00");
+    expect(moment("2026-12-31T23:30:00Z")).toBe("2027-01-01 00:30:00");
     expect(moment(null)).toBe("—");
     expect(moment("not a time")).toBe("not a time");
+  });
+
+  it("read a typed Amsterdam time as a UTC moment, March's missing and October's twice hours too", () => {
+    expect(fromInput("2026-09-16T09:00")).toBe("2026-09-16T07:00:00Z");
+    expect(fromInput("2026-01-15T09:00")).toBe("2026-01-15T08:00:00Z");
+    expect(fromInput("2026-03-29T02:30")).toBe("2026-03-29T01:30:00Z");
+    expect(fromInput("2026-10-25T02:30")).toBe("2026-10-25T01:30:00Z");
+    expect(fromInput("")).toBe("");
+    expect(fromInput("not a time")).toBe("");
+  });
+
+  it("put a UTC moment in a time box as Amsterdam time", () => {
+    expect(toInput("2026-09-16T07:00:00Z")).toBe("2026-09-16T09:00");
+    expect(toInput("2026-09-16T09:00:00+02:00")).toBe("2026-09-16T09:00");
+    expect(toInput("")).toBe("");
+    expect(toInput("not a time")).toBe("");
+  });
+
+  it("give back the same moment after a round trip through the time box, every minute of a year", () => {
+    const start = Date.UTC(2026, 0, 1);
+    fc.assert(
+      fc.property(fc.integer({ min: 0, max: 366 * 1440 }), (minute) => {
+        const instant = new Date(start + minute * 60000).toISOString().slice(0, 16) + ":00Z";
+        const shown = toInput(instant);
+        // The repeated hour in October shows two moments the same way; the box gives the later.
+        const back = fromInput(shown);
+        expect(toInput(back)).toBe(shown);
+        if (back !== instant) expect(Date.parse(back) - Date.parse(instant)).toBe(3600000);
+      }),
+    );
   });
 
   it("measure how long a run took, and say so only when it ended", () => {
@@ -81,19 +122,39 @@ describe("sources and schedules", () => {
     expect(connectorName("parquet")).toBe("parquet");
   });
 
+  const SUMMER = new Date("2026-07-01T12:00:00Z");
+  const WINTER = new Date("2026-01-15T12:00:00Z");
+
   it.each([
     ["* * * * *", "every minute"],
     ["*/15 * * * *", "every 15 minutes"],
     ["*/1 * * * *", "every minute"],
     ["5 * * * *", "every hour at :05"],
     ["30 */6 * * *", "every 6 hours at :30"],
-    ["0 2 * * *", "every day at 02:00 UTC"],
-    ["30 8 * * 1-5", "every weekday at 08:30 UTC"],
-    ["0 9 * * 1", "every Monday at 09:00 UTC"],
-    ["0 9 * * 7", "every Sunday at 09:00 UTC"],
-    ["0 0 1 * *", "on day 1 of every month at 00:00 UTC"],
-  ])("describe %s as %s", (schedule, plain) => {
-    expect(describeSchedule(schedule)).toBe(plain);
+    ["0 2 * * *", "every day at 04:00"],
+    ["30 8 * * 1-5", "every weekday at 10:30"],
+    ["0 9 * * 1", "every Monday at 11:00"],
+    ["0 9 * * 7", "every Sunday at 11:00"],
+    ["0 0 1 * *", "on day 1 of every month at 02:00"],
+    ["0 23 * * *", "every day at 01:00"],
+    ["0 23 * * 1", "every Tuesday at 01:00"],
+    ["0 23 * * 6", "every Sunday at 01:00"],
+    ["0 22 * * 1", "every Tuesday at 00:00"],
+    ["30 23 * * 1-5", "every weekday at 23:30 UTC"],
+    ["0 23 1 * *", "on day 1 of every month at 23:00 UTC"],
+  ])("describe %s in summer as %s", (schedule, plain) => {
+    expect(describeSchedule(schedule, SUMMER)).toBe(plain);
+  });
+
+  it.each([
+    ["* * * * *", "every minute"],
+    ["*/15 * * * *", "every 15 minutes"],
+    ["5 * * * *", "every hour at :05"],
+    ["30 */6 * * *", "every 6 hours at :30"],
+    ["0 2 * * *", "every day at 03:00"],
+    ["0 22 * * 1", "every Monday at 23:00"],
+  ])("describe %s in winter as %s", (schedule, plain) => {
+    expect(describeSchedule(schedule, WINTER)).toBe(plain);
   });
 
   it.each([
@@ -106,6 +167,7 @@ describe("sources and schedules", () => {
     "0 9 * * 1-3",
     "* * * *",
   ])("leave %s undescribed rather than describe it wrongly", (schedule) => {
-    expect(describeSchedule(schedule)).toBeNull();
+    expect(describeSchedule(schedule, SUMMER)).toBeNull();
+    expect(describeSchedule(schedule, WINTER)).toBeNull();
   });
 });

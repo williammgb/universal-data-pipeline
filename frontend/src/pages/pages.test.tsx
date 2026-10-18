@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -329,7 +329,7 @@ describe("the dashboard", () => {
     expect(screen.getByRole("link", { name: "orders" })).toBeTruthy();
     expect(screen.getByText("* * * * *")).toBeTruthy();
     expect(screen.getByText("succeeded")).toBeTruthy();
-    expect(screen.getByText("2026-09-16 07:14:00")).toBeTruthy();
+    expect(screen.getByText("2026-09-16 09:14:00")).toBeTruthy();
     // Rows are the table's own count, not what the last run added.
     expect(screen.getByText("20")).toBeTruthy();
     expect(screen.getByText("1,000")).toBeTruthy();
@@ -515,7 +515,67 @@ describe("the dashboard", () => {
     (await screen.findByRole("button", { name: "Run now" })).click();
 
     await waitFor(() => expect(asked).toContain("POST /api/runs"));
-    expect(await screen.findByText(/Run requested at 2026-09-16 08:00:00/)).toBeTruthy();
+    // The time is in an element of its own now, so the sentence is read off the whole note.
+    expect((await screen.findByRole("status")).textContent).toBe(
+      "Run requested at 2026-09-16 10:00:00",
+    );
+  });
+
+  it("pops the run-requested note up under the buttons and takes it away after 6 seconds", async () => {
+    const accepted = (at: string): Answer => ({
+      body: { source: "demo_csv", datasets: ["customers"], requested_at: at },
+      status: 202,
+    });
+    const answers: Record<string, Answer> = {
+      "GET /api/datasets/demo_csv/customers": { body: DETAIL },
+      "POST /api/runs": accepted("2026-09-16T08:00:00Z"),
+    };
+    serve(answers);
+    // The clock is faked but still follows the real one, so the page's requests are answered
+    // as usual and only the 6 seconds are skipped.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      show("/datasets/demo_csv/customers");
+      (await screen.findByRole("button", { name: "Run now" })).click();
+
+      const note = await screen.findByRole("status");
+      expect(note.textContent).toBe("Run requested at 2026-09-16 10:00:00");
+      // Inside the header's right-hand group, beside the button that caused it.
+      expect(note.parentElement?.className).toBe("right");
+      expect(note.parentElement?.parentElement?.className).toBe("head");
+      expect(note.parentElement?.contains(screen.getByRole("button", { name: "Run now" }))).toBe(
+        true,
+      );
+
+      // Pressed again 4 seconds later: one note, with the new time, for 6 seconds of its own.
+      act(() => {
+        vi.advanceTimersByTime(4000);
+      });
+      expect(screen.getByRole("status")).toBeTruthy();
+      answers["POST /api/runs"] = accepted("2026-09-16T08:00:04Z");
+      screen.getByRole("button", { name: "Run now" }).click();
+      await waitFor(() =>
+        expect(screen.getByRole("status").textContent).toBe("Run requested at 2026-09-16 10:00:04"),
+      );
+      expect(screen.getAllByRole("status")).toHaveLength(1);
+      // 9 seconds after the first press, which is past the first note's own 6 seconds.
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
+      expect(screen.getByRole("status")).toBeTruthy();
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(screen.queryByRole("status")).toBeNull();
+
+      // A start the platform refuses says why under the header, and pops nothing up.
+      answers["POST /api/runs"] = { body: { detail: "the scheduler is not running" }, status: 503 };
+      screen.getByRole("button", { name: "Run now" }).click();
+      expect(await screen.findByText("the scheduler is not running")).toBeTruthy();
+      expect(screen.queryByRole("status")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows a failed run's error class and keeps the status filter in the address", async () => {
@@ -527,6 +587,67 @@ describe("the dashboard", () => {
     expect(asked.some((call) => call.includes("status=failed"))).toBe(true);
     const status = screen.getByLabelText("Status") as HTMLSelectElement;
     expect(status.value).toBe("failed");
+  });
+
+  it("says why a run failed in the Runs table and in the dataset's Runs tab", async () => {
+    const firstLine =
+      "could not read table 'actor': failed to resolve host 'source-postgres': [Errno -5]";
+    const message = `${firstLine}\n(Background on this error at: https://sqlalche.me/e/20/e3q8)`;
+    const failed = RUNS.runs[0]!;
+    const runs: RunsPage = {
+      ...RUNS,
+      runs: [
+        { ...failed, error_message: message },
+        // An error with a name and no message, and a run that went well.
+        { ...failed, run_id: "01a0a3c1-77be-7d41-9f2e-6b0a6d4b18cd", error_message: null },
+        {
+          ...failed,
+          run_id: "01a0a3de-9cb0-73ec-be37-1caa01588b64",
+          status: "succeeded",
+          rows_loaded: 20,
+          error_class: null,
+          error_message: null,
+        },
+      ],
+    };
+    serve({
+      "GET /api/runs": { body: runs },
+      "GET /api/sources": { body: SOURCES },
+      "GET /api/datasets/demo_csv/customers": { body: DETAIL },
+    });
+
+    for (const path of ["/runs", "/datasets/demo_csv/customers?tab=runs"]) {
+      const page = show(path);
+
+      const names = await screen.findAllByText("ExtractError");
+      expect(names).toHaveLength(2);
+      const [why, nameOnly] = names.map((name) => name.parentElement);
+      expect(why?.textContent).toBe(`ExtractError ${firstLine}`);
+      expect(why?.getAttribute("title")).toBe(message);
+      expect(document.body.textContent).not.toContain("Background on this error");
+      expect(nameOnly?.textContent).toBe("ExtractError");
+      expect(nameOnly?.getAttribute("title")).toBe("ExtractError");
+
+      // The Error column is the last one, and a run without an error has the dash in it.
+      expect(screen.getAllByRole("columnheader").at(-1)?.textContent).toBe("Error");
+      const rows = screen.getAllByRole("row");
+      expect(rows).toHaveLength(4);
+      expect(within(rows.at(-1)!).getAllByRole("cell").at(-1)?.textContent).toBe("—");
+
+      page.unmount();
+    }
+  });
+
+  it("shows the Runs title with no line under it", async () => {
+    serve({ "GET /api/runs": { body: RUNS }, "GET /api/sources": { body: SOURCES } });
+
+    show("/runs");
+
+    expect(await screen.findByText("ExtractError")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Runs" }).parentElement?.textContent).toBe("Runs");
+    // The sentence is put together here, so that searching the code for it finds nothing.
+    const gone = ["filters are", "kept in the address"].join(" ");
+    expect(document.body.textContent).not.toContain(gone);
   });
 
   it("shows a run's error, its counts and its checks", async () => {
@@ -544,7 +665,7 @@ describe("the dashboard", () => {
 
     expect(await screen.findByText(/could not connect to the source database/)).toBeTruthy();
     expect(screen.getByText("ExtractError")).toBeTruthy();
-    expect(screen.getByText("2026-09-16 07:02:38 · 7.0s")).toBeTruthy();
+    expect(screen.getByText("2026-09-16 09:02:38 · 7.0s")).toBeTruthy();
     expect(screen.getByText("—")).toBeTruthy();
     expect(screen.getByText(/Traceback \(most recent call last\)/)).toBeTruthy();
     expect(screen.getByText("1 rows failed")).toBeTruthy();
@@ -597,6 +718,26 @@ describe("the dashboard", () => {
     expect(asked.some((call) => call.includes("status=failed"))).toBe(true);
   });
 
+  it("shows the address's UTC moment as Amsterdam time in the From box, and asks in UTC", async () => {
+    const asked = serve({ "GET /api/runs": { body: RUNS }, "GET /api/sources": { body: SOURCES } });
+
+    show("/runs?since=2026-09-16T07:00:00Z");
+
+    const from = (await screen.findByLabelText("From")) as HTMLInputElement;
+    expect(from.value).toBe("2026-09-16T09:00");
+    expect(asked.some((call) => decodeURIComponent(call).includes("since=2026-09-16T07:00:00Z"))).toBe(
+      true,
+    );
+
+    fireEvent.change(from, { target: { value: "2026-09-16T10:30" } });
+    await waitFor(() =>
+      expect(
+        asked.some((call) => decodeURIComponent(call).includes("since=2026-09-16T08:30:00Z")),
+      ).toBe(true),
+    );
+    expect(from.value).toBe("2026-09-16T10:30");
+  });
+
   it("asks for an API key when the API refuses the request", async () => {
     window.localStorage.setItem("udp.apiKey", "wrong");
     serve({
@@ -625,7 +766,8 @@ describe("the dashboard", () => {
     // The schedule is edited: the file says nothing, so the tag and the way back both appear.
     expect(screen.getByText("edited")).toBeTruthy();
     expect(screen.getByRole("button", { name: /use the file/ })).toBeTruthy();
-    expect(screen.getByText("every day at 06:00 UTC")).toBeTruthy();
+    // The real clock: 06:00 UTC is 08:00 in Amsterdam in summer and 07:00 in winter.
+    expect(screen.getByText(/^every day at 0[78]:00$/)).toBeTruthy();
 
     fireEvent.change(cron, { target: { value: "15 */2 * * *" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -685,6 +827,8 @@ describe("the dashboard", () => {
     expect(guide).toContain("API key");
     expect(guide).toContain("schedule");
     expect(guide).toContain("cron fields in UTC");
+    expect(guide).toContain("Amsterdam time");
+    expect(screen.getByRole("banner").textContent).toContain("all times Amsterdam");
     // A page that reads nothing cannot fail on a machine with no API to read.
     expect(asked).toEqual([]);
   });

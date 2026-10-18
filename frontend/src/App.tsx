@@ -75,7 +75,7 @@ export default function App() {
             Guide
           </NavLink>
         </nav>
-        <div className="clock">all times UTC</div>
+        <div className="clock">all times Amsterdam</div>
       </header>
       <ErrorBoundary>
         {/* The guide reads nothing from the API, so it stays reachable when the key prompt has

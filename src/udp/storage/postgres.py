@@ -24,6 +24,8 @@ from udp.quality.constraints import check_stage
 from udp.storage import overrides as override_store
 from udp.storage.loader import (
     INTERRUPTED,
+    ROW_CHECK_TYPES,
+    CheckResult,
     Column,
     ColumnChanges,
     ConfigCopy,
@@ -215,6 +217,15 @@ class PostgresTransaction:
         self._conn.execute(
             sql.SQL("DROP TABLE IF EXISTS {}").format(_stage_identifier(Stage.RAW, source, dataset))
         )
+
+    def raw_exists(self, source: str, dataset: str) -> bool:
+        schema, table = stage_table(Stage.RAW, source, dataset)
+        row = self._conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_tables "
+            "WHERE schemaname = %s AND tablename = %s)",
+            [schema, table],
+        ).fetchone()
+        return bool(row and row[0])
 
     def append_raw(self, source: str, dataset: str) -> int:
         # The stage table still holds the load's rows, typed as the dataset table types them, so
@@ -414,6 +425,38 @@ class PostgresTransaction:
             "UPDATE platform.pipeline_runs SET rows_quarantined = %s WHERE run_id = %s",
             [findings.quarantined_rows, run_id],
         )
+
+    def row_check_results(self, run_id: UUID) -> list[CheckResult]:
+        rows = self._conn.execute(
+            "SELECT position, check_type, columns, severity, passed, failing_rows, table_rows, "
+            "message, settings FROM platform.quality_results "
+            "WHERE run_id = %s AND check_type = ANY(%s) ORDER BY position",
+            [run_id, sorted(ROW_CHECK_TYPES)],
+        ).fetchall()
+        return [
+            CheckResult(
+                position=position,
+                check_type=check_type,
+                columns=tuple(columns),
+                severity=severity,
+                passed=passed,
+                failing_rows=failing_rows,
+                table_rows=table_rows,
+                message=message,
+                settings=settings,
+            )
+            for (
+                position,
+                check_type,
+                columns,
+                severity,
+                passed,
+                failing_rows,
+                table_rows,
+                message,
+                settings,
+            ) in rows
+        ]
 
     def succeed_run(
         self, run_id: UUID, *, ended_at: datetime, rows_extracted: int, rows_loaded: int

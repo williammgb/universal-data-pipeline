@@ -21,6 +21,7 @@
   --bad-soft: #fadfe1;
   --idle: #55627a;
   --idle-soft: #e3e8f0;
+  --shadow: 0 8px 24px rgb(23 32 46 / 0.14);
   --radius: 10px;
   --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", "DejaVu Sans Mono", Consolas, monospace;
@@ -46,6 +47,7 @@
     --bad-soft: #3a1418;
     --idle: #a3b0c2;
     --idle-soft: #232d3a;
+    --shadow: 0 8px 24px rgb(0 0 0 / 0.5);
   }
 }
 
@@ -68,6 +70,7 @@
   --bad-soft: #3a1418;
   --idle: #a3b0c2;
   --idle-soft: #232d3a;
+  --shadow: 0 8px 24px rgb(0 0 0 / 0.5);
 }
 
 * {
@@ -163,7 +166,9 @@ main {
   word-break: break-all;
 }
 
+/* The pop-up under the buttons is placed against this group. */
 .head .right {
+  position: relative;
   margin-left: auto;
   display: flex;
   gap: 8px;
@@ -180,12 +185,102 @@ main {
 input,
 select {
   font: inherit;
-  font-size: 14px;
+  font-size: 13px;
+  line-height: 20px;
   color: var(--ink);
-  background: var(--panel);
+  background-color: var(--panel);
   border: 1px solid var(--line);
   border-radius: 7px;
-  padding: 6px 10px;
+  padding: 4px 9px;
+}
+
+/* The parts inside a date field make it taller than its text; it is held to the height every
+   other field has, so a row of filters lines up. */
+input[type="datetime-local"] {
+  height: 30px;
+}
+
+/* A dropdown keeps the browser's own element and gets our box and arrow in every browser. The
+   arrow is two small gradients side by side, each half of a triangle pointing down, so it takes
+   its colour from the theme without a picture. */
+select {
+  appearance: none;
+  padding-right: 27px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--ink-soft) 50%),
+    linear-gradient(135deg, var(--ink-soft) 50%, transparent 50%);
+  background-position:
+    right 13px center,
+    right 9px center;
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+
+select:hover {
+  border-color: var(--ink-faint);
+}
+
+/* Chrome and Edge let the opened list of a real dropdown be styled. Firefox and Safari skip
+   this block and keep their own list under the box above. */
+@supports (appearance: base-select) {
+  select,
+  select::picker(select) {
+    appearance: base-select;
+  }
+
+  /* A chosen value too long for its box is cut with an ellipsis. The browser's own box did
+     that by itself; in this one text-overflow does not reach the text, so the value is let
+     wrap anywhere and clamped to its first line, which draws the same ellipsis. */
+  select {
+    display: -webkit-inline-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+    line-clamp: 1;
+    overflow: hidden;
+    white-space: normal;
+    word-break: break-all;
+  }
+
+  /* Our arrow is the background above. */
+  select::picker-icon {
+    display: none;
+  }
+
+  select::picker(select) {
+    margin-block: 4px;
+    padding: 4px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: var(--panel);
+    color: var(--ink);
+    box-shadow: var(--shadow);
+  }
+
+  select option {
+    padding: 5px 9px;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+    word-break: normal;
+  }
+
+  select option:hover,
+  select option:focus-visible {
+    background-color: var(--panel-sunk);
+  }
+
+  select option:checked {
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  /* The browser draws its tick before the text; it goes to the right-hand end instead. */
+  select option::checkmark {
+    order: 1;
+    margin-left: auto;
+    padding-left: 12px;
+  }
 }
 
 input[type="search"] {
@@ -302,6 +397,31 @@ td a:hover {
   text-overflow: ellipsis;
   display: inline-block;
   vertical-align: bottom;
+}
+
+/* Why a run failed, in a run list: this cell wraps where every other cell stays on one line,
+   and its text is cut after two lines. The whole message is the tooltip. */
+td.why {
+  white-space: normal;
+}
+
+.why-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  min-width: 30ch;
+  max-width: 52ch;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.why-text b {
+  font-family: var(--mono);
+  font-weight: 600;
+  color: var(--ink);
 }
 
 .pill {
@@ -436,6 +556,53 @@ td a:hover {
   font-size: 13px;
   color: var(--ink-soft);
   margin: 0;
+}
+
+/* A note that pops up under the header's buttons and leaves by itself. It is drawn over the
+   page, so nothing below it moves when it comes and goes. */
+.popup {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 5;
+  width: max-content;
+  max-width: calc(100vw - 40px);
+  padding: 6px 11px;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  animation: popup-in 160ms ease-out;
+}
+
+.popup::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+  vertical-align: middle;
+}
+
+.popup .when {
+  font-family: var(--mono);
+}
+
+@keyframes popup-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .popup {
+    animation: none;
+  }
 }
 
 .note code {
@@ -1102,10 +1269,16 @@ a.button {
   gap: 10px 14px;
 }
 
-.block-fields .config-label input:not([type="checkbox"]),
-.block-fields .config-label select {
+.block-fields .config-label input:not([type="checkbox"]) {
   flex: 1 1 120px;
   min-width: 0;
+}
+
+/* A dropdown is as wide as its text; only the inputs stretch across the cell. */
+.block-fields .config-label select {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .config-label.stacked {

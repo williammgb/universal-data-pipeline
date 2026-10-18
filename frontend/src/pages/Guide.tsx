@@ -217,12 +217,14 @@ datasets:
         <p>
           A dataset&rsquo;s <b>schedule</b> is when the platform copies it on its own, written as
           five cron fields in UTC — <code>*/15 * * * *</code> is every fifteen minutes,{" "}
-          <code>0 6 * * *</code> is every day at 06:00. Wherever a schedule is shown, the plain
-          English version is next to it, so you never have to read the cron yourself.
+          <code>0 6 * * *</code> is every day at 06:00 UTC, which the dashboard shows as 08:00 in
+          summer and 07:00 in winter. Wherever a schedule is shown, the plain English version is
+          next to it, so you never have to read the cron yourself.
         </p>
         <p>
           A dataset with no schedule is only ever copied when someone presses <b>Run now</b> or
-          runs the command. Every time on this dashboard is UTC, as the bar at the top says.
+          runs the command. Every time on this dashboard is Amsterdam time, as the bar at the top
+          says.
         </p>
       </>
     ),
