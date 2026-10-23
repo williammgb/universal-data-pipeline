@@ -55,4 +55,4 @@ checks and schedules are in [docs/adding-a-source.md](docs/adding-a-source.md).
 [docs/guide.md](docs/guide.md) covers running from the source code, the demo, cleaning data with
 pipelines, settings, and backups. The dashboard's **Guide** tab explains each page.
 
-![The datasets list in the dashboard](assets/v1_datasets.png)
+![The datasets list in the dashboard](assets/v2_datasets.png)

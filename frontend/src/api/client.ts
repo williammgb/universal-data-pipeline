@@ -19,6 +19,7 @@ export type RunDetail = components["schemas"]["RunDetail"];
 export type RunAccepted = components["schemas"]["RunAccepted"];
 export type RunStatus = RunItem["status"];
 export type RunTrigger = RunItem["trigger"];
+export type RunKind = NonNullable<RunItem["kind"]>;
 export type SavedPipeline = components["schemas"]["SavedPipeline"];
 export type PipelineDraft = components["schemas"]["PipelineDraft"];
 export type PipelineRun = components["schemas"]["PipelineRun"];

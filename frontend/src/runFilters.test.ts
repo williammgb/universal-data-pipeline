@@ -1,7 +1,15 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import { RUN_STATUSES, RUN_TRIGGERS, parse, serialize, type RunFilters } from "./runFilters";
+import {
+  RUN_KINDS,
+  RUN_STATUSES,
+  RUN_TRIGGERS,
+  parse,
+  runsQuery,
+  serialize,
+  type RunFilters,
+} from "./runFilters";
 
 /** Text a filter could carry, including the characters that break a careless query string. */
 const text = fc.oneof(
@@ -20,6 +28,7 @@ const filters: fc.Arbitrary<RunFilters> = fc.record(
   {
     source: text,
     dataset: text,
+    kind: fc.constantFrom(...RUN_KINDS),
     status: fc.constantFrom(...RUN_STATUSES),
     trigger: fc.constantFrom(...RUN_TRIGGERS),
     since: moment,
@@ -34,6 +43,7 @@ function kept(given: RunFilters): RunFilters {
   const result: RunFilters = {};
   if (given.source) result.source = given.source;
   if (given.dataset) result.dataset = given.dataset;
+  if (given.kind !== undefined) result.kind = given.kind;
   if (given.status !== undefined) result.status = given.status;
   if (given.trigger !== undefined) result.trigger = given.trigger;
   if (given.since) result.since = given.since;
@@ -59,9 +69,20 @@ describe("runs filters in the address", () => {
     );
   });
 
-  it("ignore a status or trigger the API does not accept", () => {
-    const params = new URLSearchParams({ status: "done", trigger: "cron", offset: "-3" });
+  it("ignore a kind, status or trigger the API does not accept", () => {
+    const params = new URLSearchParams({
+      kind: "all",
+      status: "done",
+      trigger: "cron",
+      offset: "-3",
+    });
     expect(parse(params)).toEqual({});
+  });
+
+  it("ask for every kind of run only when told to and no kind is chosen", () => {
+    expect(runsQuery({}).get("kind")).toBeNull();
+    expect(runsQuery({}, true).get("kind")).toBe("all");
+    expect(runsQuery({ kind: "pipeline" }, true).get("kind")).toBe("pipeline");
   });
 
   it("ignore a time the API would refuse, and keep one it accepts", () => {

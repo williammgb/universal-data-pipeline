@@ -1,30 +1,34 @@
-/* The approved preview's stylesheet: https://claude.ai/artifact/GkTpeJLtbMiCfnBMtCA7Zp
+/* The approved preview's stylesheet: https://claude.ai/artifact/QUBhauC77GueqQiRpCZafM
    The faces are whatever the computer already has: the dashboard must render with no
    internet, so nothing here is fetched from a font host. */
 
 :root {
-  --ground: #f2f4f7;
+  --ground: #f6f7f9;
   --panel: #ffffff;
-  --panel-sunk: #f7f9fb;
-  --line: #d8dee8;
-  --line-soft: #e7ecf3;
-  --ink: #17202e;
-  --ink-soft: #55627a;
-  --ink-faint: #8794a9;
-  --accent: #0f6f7a;
+  --panel-sunk: #fafbfc;
+  --line: #e2e5ea;
+  --line-soft: #edeff2;
+  --ink: #15181d;
+  --ink-soft: #5a6371;
+  --ink-faint: #6b7380;
+  --accent: #0e6b6b;
+  --accent-soft: #e3f0ef;
+  --accent-ink: #0a4f4f;
   --on-accent: #ffffff;
-  --ok: #1c7a4b;
-  --ok-soft: #d8f0e2;
-  --warn: #8a5a09;
-  --warn-soft: #fbeccd;
-  --bad: #a32b35;
-  --bad-soft: #fadfe1;
-  --idle: #55627a;
-  --idle-soft: #e3e8f0;
-  --shadow: 0 8px 24px rgb(23 32 46 / 0.14);
-  --radius: 10px;
-  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", "DejaVu Sans Mono", Consolas, monospace;
+  --ok: #17663a;
+  --ok-soft: #e5f3ea;
+  --warn: #8a5a00;
+  --warn-soft: #fdf3dc;
+  --bad: #a8231b;
+  --bad-soft: #fcebe9;
+  --idle: #3d4450;
+  --idle-soft: #eef0f3;
+  --pipe: #2a4a8f;
+  --pipe-soft: #e8eefb;
+  --shadow: 0 8px 24px rgb(21 24 29 / 0.12);
+  --radius: 12px;
+  --body: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", "DejaVu Sans Mono", Consolas, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -38,6 +42,8 @@
     --ink-soft: #a3b0c2;
     --ink-faint: #75839a;
     --accent: #5bc6ce;
+    --accent-soft: #14343a;
+    --accent-ink: #8fdde3;
     --on-accent: #08191c;
     --ok: #6bd39b;
     --ok-soft: #10301f;
@@ -47,6 +53,8 @@
     --bad-soft: #3a1418;
     --idle: #a3b0c2;
     --idle-soft: #232d3a;
+    --pipe: #a9c0f5;
+    --pipe-soft: #1b2744;
     --shadow: 0 8px 24px rgb(0 0 0 / 0.5);
   }
 }
@@ -61,6 +69,8 @@
   --ink-soft: #a3b0c2;
   --ink-faint: #75839a;
   --accent: #5bc6ce;
+  --accent-soft: #14343a;
+  --accent-ink: #8fdde3;
   --on-accent: #08191c;
   --ok: #6bd39b;
   --ok-soft: #10301f;
@@ -70,6 +80,8 @@
   --bad-soft: #3a1418;
   --idle: #a3b0c2;
   --idle-soft: #232d3a;
+  --pipe: #a9c0f5;
+  --pipe-soft: #1b2744;
   --shadow: 0 8px 24px rgb(0 0 0 / 0.5);
 }
 
@@ -90,58 +102,112 @@ a {
   color: inherit;
 }
 
-.bar {
+/* A side bar beside the page; on a narrow screen the bar sits on top and its links wrap. */
+.shell {
   display: flex;
-  align-items: center;
-  gap: 18px;
   flex-wrap: wrap;
-  padding: 12px 20px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel-sunk);
+  min-height: 100vh;
+}
+
+.bar {
+  flex: 1 1 232px;
+  max-width: 232px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 20px 14px;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
 }
 
 .bar .name {
-  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 8px;
+  font-size: 15px;
+  font-weight: 700;
   letter-spacing: -0.01em;
   text-decoration: none;
 }
 
-.bar .name span {
-  color: var(--accent);
-}
-
 .bar nav {
   display: flex;
-  gap: 14px;
-  font-size: 14px;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .bar nav a {
-  color: var(--ink-soft);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  color: var(--idle);
+  font-size: 14px;
+  font-weight: 500;
   text-decoration: none;
-  padding-bottom: 2px;
+}
+
+.bar nav a:hover {
+  background: var(--idle-soft);
+  color: var(--ink);
 }
 
 .bar nav a.current {
-  color: var(--ink);
-  box-shadow: inset 0 -2px 0 var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
 }
 
 .bar .clock {
-  margin-left: auto;
-  font-family: var(--mono);
+  margin-top: auto;
+  padding: 8px 12px;
   font-size: 12px;
-  color: var(--ink-faint);
+  color: var(--ink-soft);
+}
+
+.page {
+  flex: 999 1 560px;
+  min-width: 0;
+}
+
+@media (max-width: 760px) {
+  .bar {
+    max-width: none;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 16px;
+    padding: 12px 16px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .bar nav {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .bar .clock {
+    display: none;
+  }
 }
 
 main {
-  max-width: 1060px;
+  max-width: 1160px;
   margin: 0 auto;
-  padding-inline: 20px;
-  padding-block: 22px 60px;
+  padding-inline: 40px;
+  padding-block: 32px 60px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 20px;
+}
+
+@media (max-width: 760px) {
+  main {
+    padding-inline: 16px;
+    padding-block: 20px 40px;
+  }
 }
 
 .head {
@@ -153,17 +219,61 @@ main {
 
 .head h1 {
   margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
   text-wrap: balance;
 }
 
 .head .sub {
   color: var(--ink-soft);
-  font-size: 13px;
-  font-family: var(--mono);
+  font-size: 14px;
   word-break: break-all;
+}
+
+.head .sub.mono,
+.mono-id {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.crumbs {
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-soft);
+  margin-bottom: -8px;
+}
+
+.crumbs a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.title-line {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.named {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+
+.named a {
+  font-weight: 600;
+  color: var(--accent);
 }
 
 /* The pop-up under the buttons is placed against this group. */
@@ -189,15 +299,15 @@ select {
   line-height: 20px;
   color: var(--ink);
   background-color: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  padding: 4px 9px;
+  border: 1px solid #d5d9df;
+  border-radius: 8px;
+  padding: 8px 12px;
 }
 
 /* The parts inside a date field make it taller than its text; it is held to the height every
    other field has, so a row of filters lines up. */
 input[type="datetime-local"] {
-  height: 30px;
+  height: 38px;
 }
 
 /* A dropdown keeps the browser's own element and gets our box and arrow in every browser. The
@@ -284,25 +394,31 @@ select:hover {
 }
 
 input[type="search"] {
-  min-width: 210px;
+  min-width: 260px;
 }
 
+/* A filter's name sits above its box, so a row of filters reads as a form. */
 label.field {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 6px;
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--ink-soft);
+}
+
+.controls {
+  align-items: flex-end;
 }
 
 button {
   font: inherit;
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
-  border-radius: 7px;
-  padding: 6px 12px;
-  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 16px;
+  border: 1px solid #d5d9df;
   background: var(--panel);
   color: var(--ink);
 }
@@ -346,18 +462,21 @@ table {
 th,
 td {
   text-align: left;
-  padding: 8px 12px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--line-soft);
   white-space: nowrap;
 }
 
 th {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
+  font-size: 12px;
+  color: var(--ink-soft);
   font-weight: 600;
+  background: var(--panel-sunk);
   border-bottom: 1px solid var(--line);
+}
+
+tbody tr:hover td {
+  background: var(--panel-sunk);
 }
 
 tbody tr:last-child td {
@@ -367,8 +486,6 @@ tbody tr:last-child td {
 td.num {
   text-align: right;
   font-variant-numeric: tabular-nums;
-  font-family: var(--mono);
-  font-size: 13px;
 }
 
 td.mono,
@@ -428,10 +545,11 @@ td.why {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
   border-radius: 999px;
-  padding: 2px 9px;
+  padding: 3px 10px;
   color: var(--idle);
   background: var(--idle-soft);
 }
@@ -462,53 +580,71 @@ td.why {
 
 .tabs {
   display: flex;
-  gap: 2px;
+  gap: 24px;
   border-bottom: 1px solid var(--line);
-  flex-wrap: wrap;
+  overflow-x: auto;
 }
 
 .tabs a {
-  padding: 8px 12px;
+  padding: 10px 2px;
   color: var(--ink-soft);
   text-decoration: none;
   font-size: 14px;
   font-weight: 500;
+  white-space: nowrap;
+}
+
+.tabs a:hover {
+  color: var(--ink);
 }
 
 .tabs a.current {
-  color: var(--ink);
+  color: var(--accent-ink);
   box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 .facts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 10px;
+  gap: 12px;
   margin: 0;
 }
 
 .fact {
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
-  padding: 10px 12px;
-  background: var(--panel-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  background: var(--panel);
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 6px;
+  min-width: 0;
 }
 
 .fact dt {
-  font-size: 11px;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-soft);
 }
 
 .fact dd {
   margin: 0;
-  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.fact dd small {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--ink-soft);
+}
+
+.fact dd.mono-id {
   font-size: 13px;
-  word-break: break-all;
+  font-weight: 500;
+  color: var(--ink);
 }
 
 .paging {
@@ -641,14 +777,33 @@ td.why {
   max-width: 48ch;
 }
 
+/* A small label for what a thing is: a source's type, a run's kind, a column's origin. */
 .kind {
-  font-family: var(--mono);
+  display: inline-block;
   font-size: 12px;
-  border: 1px solid var(--line);
+  font-weight: 600;
   border-radius: 6px;
-  padding: 1px 7px;
-  color: var(--ink-soft);
-  background: var(--panel-sunk);
+  padding: 2px 8px;
+  color: var(--idle);
+  background: var(--idle-soft);
+  white-space: nowrap;
+}
+
+.kind.pipeline,
+.kind.declared {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+
+.kind.pipeline {
+  color: var(--pipe);
+  background: var(--pipe-soft);
+}
+
+.with-kind {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .cron {
@@ -663,34 +818,56 @@ td.why {
   color: var(--ink-soft);
 }
 
-/* The schema tab's facts: one line, wrapping only when the screen is narrow. */
+/* The schema tab's facts: a row of cards, as many to a line as fit. */
 .strip {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
   margin: 0;
+}
+
+.platform-columns > summary {
+  cursor: pointer;
+  padding: 12px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  border-top: 1px solid var(--line);
   background: var(--panel-sunk);
-  border: 1px solid var(--line-soft);
-  border-radius: 8px;
 }
 
-.strip .fact {
-  flex-direction: row;
-  align-items: baseline;
+.section-head {
+  display: flex;
   gap: 8px;
-  border: 0;
-  border-right: 1px solid var(--line-soft);
-  border-radius: 0;
-  background: none;
-  padding: 8px 14px;
-  white-space: nowrap;
+  align-items: baseline;
 }
 
-.strip .fact:last-child {
-  border-right: 0;
+.section-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
 }
 
-.strip .fact dd {
-  word-break: normal;
+.section-head span {
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+
+.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.live::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
 }
 
 .summary {
@@ -823,10 +1000,8 @@ svg.hist {
 
 .values h4 {
   margin: 0 0 4px;
-  font-size: 11px;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
+  font-size: 12px;
+  color: var(--ink-soft);
   font-weight: 600;
 }
 
@@ -881,6 +1056,13 @@ svg.hist {
   font-size: 12px;
   color: var(--ink-soft);
   margin: 0;
+}
+
+/* Inside a table cell or a fact card, quiet text keeps the size of the text around it. */
+td .muted,
+td.muted,
+.fact dd .muted {
+  font-size: inherit;
 }
 
 .setting {
@@ -938,10 +1120,8 @@ svg.hist {
 
 .config-box > h4 {
   margin: 0;
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
+  font-size: 14px;
+  color: var(--ink);
   font-weight: 600;
   display: flex;
   align-items: center;
@@ -971,10 +1151,10 @@ svg.hist {
   word-break: break-word;
 }
 
+/* A short state word, "unsaved" or "edited", shown with a capital like every other label. */
 .tag {
-  font-size: 10.5px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  display: inline-block;
+  font-size: 12px;
   font-weight: 600;
   color: var(--warn);
   background: var(--warn-soft);
@@ -1246,11 +1426,27 @@ a.button {
 }
 
 .block-kind {
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
+  font-size: 12px;
+  color: var(--ink-soft);
   font-weight: 600;
+}
+
+.tag::first-letter {
+  text-transform: uppercase;
+}
+
+/* A file path is long and unbroken; its card takes two places in the row. */
+.strip .fact.wide {
+  grid-column: span 2;
+}
+
+/* The actions row lines its words up with the boxes, now that a box's name sits above it. */
+.actions {
+  align-items: flex-end;
+}
+
+.actions .said {
+  padding-bottom: 9px;
 }
 
 .block-tools {

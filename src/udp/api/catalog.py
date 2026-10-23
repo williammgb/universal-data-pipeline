@@ -73,6 +73,25 @@ _RUN_COLUMNS = (
     "rows_loaded, rows_quarantined, error_class, error_message"
 )
 
+# Loads and pipeline runs in one shape, so one list can hold both, newest first.
+_LOADS = (
+    f"SELECT {_RUN_COLUMNS}, 'load' AS kind, NULL::text AS pipeline, NULL::integer AS version "
+    "FROM platform.pipeline_runs"
+)
+_PIPELINE_RUNS = (
+    "SELECT runs.execution_id AS run_id, pipelines.source, pipelines.dataset, runs.trigger, "
+    "runs.status, runs.started_at, runs.ended_at, runs.rows_in AS rows_extracted, "
+    "runs.rows_out AS rows_loaded, NULL::bigint AS rows_quarantined, runs.error_class, "
+    "runs.error_message, 'pipeline' AS kind, pipelines.name AS pipeline, runs.version "
+    "FROM platform.pipeline_executions AS runs "
+    "JOIN platform.pipelines AS pipelines USING (pipeline_id)"
+)
+_RUNS_OF_KIND = {
+    "load": sql.SQL(_LOADS),
+    "pipeline": sql.SQL(_PIPELINE_RUNS),
+    "all": sql.SQL(f"{_LOADS} UNION ALL {_PIPELINE_RUNS}"),
+}
+
 
 def _table_rows(conn: psycopg.Connection[dict[str, Any]], table_name: str) -> int | None:
     """The exact number of rows in a dataset's table, or None when it does not exist yet."""
@@ -405,6 +424,7 @@ class PostgresCatalog:
         trigger: str | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
+        kind: str = "load",
         limit: int = 50,
         offset: int = 0,
     ) -> RunsPage:
@@ -429,9 +449,8 @@ class PostgresCatalog:
             sql.SQL(" WHERE ") + sql.SQL(" AND ").join(conditions) if conditions else sql.SQL("")
         )
         query = sql.SQL(
-            "SELECT {} FROM platform.pipeline_runs{} "
-            "ORDER BY started_at DESC, run_id DESC LIMIT %s OFFSET %s"
-        ).format(sql.SQL(_RUN_COLUMNS), where)
+            "SELECT * FROM ({}) AS runs{} ORDER BY started_at DESC, run_id DESC LIMIT %s OFFSET %s"
+        ).format(_RUNS_OF_KIND[kind], where)
         with self._connect() as conn:
             rows = conn.execute(query, [*values, limit + 1, offset]).fetchall()
         return RunsPage(

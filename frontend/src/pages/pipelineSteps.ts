@@ -87,6 +87,11 @@ export const STEP_KINDS: Record<string, Kind> = {
     fields: [{ name: "columns", label: "Columns", kind: "columns", optional: true }],
     start: {},
   },
+  drop_duplicates: {
+    label: "Drop duplicate rows",
+    fields: [{ name: "columns", label: "Columns", kind: "columns", optional: true }],
+    start: {},
+  },
   outliers: {
     label: "Outliers",
     fields: [

@@ -4,7 +4,14 @@ Importing this package registers the standard types and `python`; `load_steps` v
 steps, `run_step` runs one and `run_steps` runs them in order.
 """
 
-from udp.transformations import missing, outliers, python_step, standardize, validation
+from udp.transformations import (
+    duplicates,
+    missing,
+    outliers,
+    python_step,
+    standardize,
+    validation,
+)
 from udp.transformations.base import (
     StepContext,
     StepResult,
@@ -19,6 +26,7 @@ __all__ = [
     "StepContext",
     "StepResult",
     "Transformation",
+    "duplicates",
     "load_steps",
     "missing",
     "outliers",

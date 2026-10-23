@@ -269,7 +269,8 @@ def test_the_quarantine_limit_decides_the_run_and_a_failed_run_keeps_its_finding
     assert shop.loader.states[("shop", "customers")] == state
     assert len(shop.quarantined(failed)) == 2
     assert record["rows_quarantined"] == 2
-    assert shop.results(failed) == []
+    # The table checks still run, so the Quality tab shows them for the failed run too.
+    assert [(r["check_type"], r["passed"]) for r in shop.results(failed)] == [("min_rows", True)]
 
 
 def test_rows_added_by_transform_py_and_quarantined_fail_a_run_that_extracted_none(

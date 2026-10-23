@@ -7,7 +7,7 @@ from contextlib import AbstractContextManager, ExitStack, asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 import psycopg
@@ -497,9 +497,11 @@ def create_app(
         trigger: RunTrigger | None = None,
         since: AwareDatetime | None = None,
         until: AwareDatetime | None = None,
+        kind: Literal["load", "pipeline", "all"] = "load",
         limit: Limit = 50,
         offset: Offset = 0,
     ) -> RunsPage:
+        """Loads of sources by default; `kind=pipeline` lists pipeline runs, `kind=all` both."""
         return catalog.runs(
             source=source,
             dataset=dataset,
@@ -507,6 +509,7 @@ def create_app(
             trigger=trigger,
             since=since,
             until=until,
+            kind=kind,
             limit=limit,
             offset=offset,
         )

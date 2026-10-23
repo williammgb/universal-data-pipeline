@@ -164,6 +164,14 @@ def resolve_pipeline(
     )
 
 
+def _plain(problem: Mapping[str, Any]) -> str:
+    """A validation message as a person reads it: an empty list of columns asks for one."""
+    if problem["type"] == "too_short" and problem["ctx"].get("min_length") == 1:
+        field = str(problem["loc"][-1]) if problem["loc"] else ""
+        return "pick at least one column" if field.startswith("column") else "add at least one"
+    return str(problem["msg"])
+
+
 def draft_problems(
     constraints: Sequence[Any], steps: Sequence[Mapping[str, Any]]
 ) -> list[tuple[Where, str]]:
@@ -184,7 +192,7 @@ def draft_problems(
                 # A tagged union names the tag first, ("min", "value"); the field is what follows.
                 place = problem["loc"][1:] if problem["loc"][:1] == (kind,) else problem["loc"]
                 where = ("constraints", position, *(place or ("constraint",)))
-                problems.append((where, problem["msg"]))
+                problems.append((where, _plain(problem)))
     for position, step in enumerate(steps, 1):
         name = step.get("type")
         if not isinstance(name, str) or name not in TRANSFORMATIONS:
@@ -196,7 +204,7 @@ def draft_problems(
             TRANSFORMATIONS[name].model_validate(settings)
         except pydantic.ValidationError as error:
             problems.extend(
-                (("steps", position, *(problem["loc"] or ("type",))), problem["msg"])
+                (("steps", position, *(problem["loc"] or ("type",))), _plain(problem))
                 for problem in error.errors()
             )
     return problems

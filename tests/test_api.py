@@ -575,6 +575,18 @@ def test_a_draft_with_no_problems_is_exactly_one_the_engine_loads(
     assert (draft_problems(constraints, steps) == []) == loads
 
 
+def test_an_empty_list_of_columns_asks_for_one_in_plain_words() -> None:
+    problems = draft_problems(
+        [{"constraint": "unique", "columns": []}],
+        [{"type": "normalize_values", "columns": []}],
+    )
+
+    assert problems == [
+        (("constraints", 1, "columns"), "pick at least one column"),
+        (("steps", 1, "columns"), "pick at least one column"),
+    ]
+
+
 @pytest.mark.parametrize(
     ("script", "status"),
     [
@@ -1329,6 +1341,28 @@ def test_a_pipeline_run_requested_over_http_runs_against_postgres_and_reads_back
     assert [item["execution_id"] for item in lineage["runs"]] == [execution_id]
     assert lineage["runs"][0]["pipeline"] == f"{source}_items"
     assert [node["kind"] for node in lineage["chain"]] == ["source", "raw", "step", "clean"]
+    # The runs list holds loads only, unless asked for pipeline runs or both, newest first.
+    ran = {"source": source}
+    loads = client.get("/api/runs", params=ran).json()["runs"]
+    assert [(run["kind"], run["run_id"]) for run in loads] == [("load", str(ingest.run_id))]
+    both = client.get("/api/runs", params={**ran, "kind": "all"}).json()["runs"]
+    assert [(run["kind"], run["run_id"]) for run in both] == [
+        ("pipeline", execution_id),
+        ("load", str(ingest.run_id)),
+    ]
+    assert (both[0]["pipeline"], both[0]["version"], both[0]["dataset"]) == (
+        f"{source}_items",
+        1,
+        "items",
+    )
+    assert (both[0]["rows_extracted"], both[0]["rows_loaded"], both[0]["status"]) == (
+        2,
+        2,
+        "succeeded",
+    )
+    only = client.get("/api/runs", params={**ran, "kind": "pipeline", "status": "failed"})
+    assert only.json()["runs"] == []
+    assert client.get("/api/runs", params={"kind": "other"}).status_code == 422
     with psycopg.connect(_url()) as conn:
         clean = sql.Identifier("clean", f"{source}__items")
         rows = conn.execute(sql.SQL("SELECT id, name FROM {} ORDER BY id").format(clean))

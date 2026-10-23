@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useSearchParams } from "react-router";
 
 import { useLineage, type LineageNode, type LineageRun, type StepRecord } from "../api/client";
-import { count, duration, moment } from "../format";
+import { count, duration, moment, sentence } from "../format";
 import { Blank, Fact, Problem, Waiting } from "./parts";
 
 const KIND_NAMES: Record<LineageNode["kind"], string> = {
@@ -174,7 +174,10 @@ function StepNode({
       </span>
       {step.rows_in != null ? (
         <span className="lineage-meta">
-          {count(step.rows_in)} rows · {count(step.values_changed ?? null)} changed
+          {step.rows_out != null && step.rows_out !== step.rows_in
+            ? `${count(step.rows_in)} → ${count(step.rows_out)} rows`
+            : `${count(step.rows_in)} rows`}{" "}
+          · {count(step.values_changed ?? null)} changed
         </span>
       ) : null}
       {step.error ? <span className="lineage-step-error">{step.error}</span> : null}
@@ -183,7 +186,7 @@ function StepNode({
 }
 
 function StepStatus({ status }: { status: StepRecord["status"] }) {
-  return <span className={`pill ${status}`}>{status.replace("_", " ")}</span>;
+  return <span className={`pill ${status}`}>{sentence(status)}</span>;
 }
 
 /** A setting as one line: a list as its items, anything else as it was written. */
@@ -210,7 +213,7 @@ function StepDetail({ node, step }: { node: LineageNode; step: StepRecord }) {
         <Fact label="Input rows">{count(step.rows_in ?? null)}</Fact>
         <Fact label="Output rows">{count(step.rows_out ?? null)}</Fact>
         <Fact label="Values changed">{count(step.values_changed ?? null)}</Fact>
-        <Fact label="Status">{step.status.replace("_", " ")}</Fact>
+        <Fact label="Status">{sentence(step.status)}</Fact>
         <Fact label="Duration">
           {step.started_at ? duration(step.started_at, step.ended_at ?? null) : <Blank />}
         </Fact>

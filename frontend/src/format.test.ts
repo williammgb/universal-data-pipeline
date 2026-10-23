@@ -5,10 +5,12 @@ import {
   cell,
   connectorName,
   count,
+  datasetTitle,
   describeSchedule,
   duration,
   fromInput,
   moment,
+  sentence,
   toInput,
 } from "./format";
 
@@ -107,6 +109,19 @@ describe("times and counts", () => {
   it("show a missing count as a dash", () => {
     expect(count(null)).toBe("—");
     expect(count(2000)).toBe("2,000");
+  });
+});
+
+describe("labels", () => {
+  it("start a lower-case value with a capital and turn underscores into spaces", () => {
+    expect(["full", "succeeded", "every_step", "", "CSV"].map(sentence)).toEqual([
+      "Full",
+      "Succeeded",
+      "Every step",
+      "",
+      "CSV",
+    ]);
+    expect(datasetTitle("order_lines")).toBe("Order lines");
   });
 });
 
