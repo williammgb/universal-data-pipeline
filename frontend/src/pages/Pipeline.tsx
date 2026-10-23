@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router";
+import { Link, useSearchParams } from "react-router";
 
 import {
   ApiError,
@@ -13,7 +13,7 @@ import {
   type SavedPipeline,
   type StepRecord,
 } from "../api/client";
-import { count, moment } from "../format";
+import { count, moment, sentence } from "../format";
 import { Fact, Problem, Status, Waiting } from "./parts";
 import {
   CONSTRAINT_KINDS,
@@ -226,6 +226,8 @@ function Builder({
 }) {
   const { source, dataset, name } = saved;
   const columns = saved.columns.map((column) => column.name);
+  // A dataset no load has stored yet has no columns to build on: nothing can be added or saved.
+  const loaded = columns.length > 0;
   const storage = draftKey(source, dataset, name);
   const [draft, setDraft] = useState<Draft>(() =>
     draftOf(storedDraft(storage) ?? savedBody(saved)),
@@ -344,7 +346,7 @@ function Builder({
             ? `version ${saved.version} · saved ${moment(saved.saved_at)}`
             : "never saved"}
         </span>
-        <button type="button" disabled={!dirty || save.isPending} onClick={saveDraft}>
+        <button type="button" disabled={!loaded || !dirty || save.isPending} onClick={saveDraft}>
           {save.isPending ? "Saving…" : "Save"}
         </button>
         <button
@@ -391,6 +393,14 @@ function Builder({
                 <Fact label="Rows">{count(result.rows_in)}</Fact>
               </dl>
             ) : null}
+            {!loaded ? (
+              <dl className="block-facts">
+                <Fact label="Rows">not loaded yet</Fact>
+                <Fact label="Last load">
+                  <Link to={`/datasets/${source}/${dataset}?tab=runs`}>Runs</Link>
+                </Fact>
+              </dl>
+            ) : null}
           </section>
         </li>
         {draft.steps.map((item, index) => (
@@ -410,9 +420,11 @@ function Builder({
             />
           </li>
         ))}
-        <li>
-          <Adder label="Step type" button="Add step" kinds={STEP_KINDS} onAdd={addStep} />
-        </li>
+        {loaded ? (
+          <li>
+            <Adder label="Step type" button="Add step" kinds={STEP_KINDS} onAdd={addStep} />
+          </li>
+        ) : null}
         <li>
           <section className="block" aria-label="Validate">
             <header>
@@ -433,12 +445,14 @@ function Builder({
                 onRemove={() => removeConstraint(index)}
               />
             ))}
-            <Adder
-              label="Constraint type"
-              button="Add constraint"
-              kinds={CONSTRAINT_KINDS}
-              onAdd={addConstraint}
-            />
+            {loaded ? (
+              <Adder
+                label="Constraint type"
+                button="Add constraint"
+                kinds={CONSTRAINT_KINDS}
+                onAdd={addConstraint}
+              />
+            ) : null}
           </section>
         </li>
         <li>
@@ -569,7 +583,7 @@ function StepBlock({
 }
 
 function StepStatus({ status }: { status: StepRecord["status"] }) {
-  return <span className={`pill ${status}`}>{status.replace("_", " ")}</span>;
+  return <span className={`pill ${status}`}>{sentence(status)}</span>;
 }
 
 function ConstraintBox({

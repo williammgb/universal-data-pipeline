@@ -10,11 +10,19 @@ import {
   useStartRun,
   type DatasetDetail,
 } from "../api/client";
-import { cell, connectorName, count, describeSchedule, moment } from "../format";
+import {
+  cell,
+  connectorName,
+  count,
+  datasetTitle,
+  moment,
+  sentence,
+  typeName,
+} from "../format";
 import { runsQuery } from "../runFilters";
 import Config from "./Config";
 import Lineage from "./Lineage";
-import { Blank, Fact, Problem, RunError, Status, Waiting } from "./parts";
+import { Blank, Fact, Problem, RunError, Schedule, Status, Waiting } from "./parts";
 import Profile from "./Profile";
 
 // Exported so the guide names the same tabs this page renders: renaming one here renames it
@@ -30,7 +38,7 @@ export const TABS = [
 ] as const;
 type Tab = (typeof TABS)[number];
 export const TAB_NAMES: Record<Tab, string> = {
-  schema: "Schema & metadata",
+  schema: "Schema",
   profile: "Profile",
   preview: "Preview",
   quality: "Quality",
@@ -64,13 +72,27 @@ export default function Dataset() {
 
   return (
     <main>
+      <nav className="crumbs" aria-label="Breadcrumb">
+        <Link to="/">Datasets</Link>
+        <span aria-hidden="true">/</span>
+        <Link to={`/?source=${encodeURIComponent(source)}`}>{source}</Link>
+      </nav>
       <div className="head">
-        <h1>
-          {source} · {dataset}
-        </h1>
-        <div className="sub">datasets.{detail.data?.table_name ?? `${source}__${dataset}`}</div>
+        <div className="title-block">
+          <div className="title-line">
+            <h1>{datasetTitle(dataset)}</h1>
+            {detail.data?.last_run ? <Status status={detail.data.last_run.status} /> : null}
+          </div>
+          <div className="title-line">
+            <span className="mono-id">
+              datasets.{detail.data?.table_name ?? `${source}__${dataset}`}
+            </span>
+            {detail.data ? (
+              <span className="kind">{connectorName(detail.data.connector_type)}</span>
+            ) : null}
+          </div>
+        </div>
         <div className="right">
-          {detail.data?.last_run ? <Status status={detail.data.last_run.status} /> : null}
           <Link
             className="button"
             to={`/pipeline?${new URLSearchParams({ source, dataset }).toString()}`}
@@ -128,57 +150,116 @@ export default function Dataset() {
 function Schema({ detail }: { detail: DatasetDetail }) {
   const declared = detail.definition["columns"];
   const declaredTypes = (declared ?? {}) as Record<string, string>;
+  // Before a load has stored the table, the declared columns are all there is to list.
+  const stored = detail.columns.length > 0;
+  const rows: { name: string; type: string | null }[] = stored
+    ? detail.columns
+    : Object.keys(declaredTypes).map((name) => ({ name, type: null }));
   const version = detail.versions.at(-1);
-  const plainSchedule = detail.schedule ? describeSchedule(detail.schedule) : null;
+  const own = rows.filter((column) => !column.name.startsWith("_"));
+  const platform = rows.filter((column) => column.name.startsWith("_"));
+  const declaredCount = Object.keys(declaredTypes).length;
   return (
     <>
       <dl className="strip">
-        <Fact label="Type">{connectorName(detail.connector_type)}</Fact>
+        <Fact label="Rows">{count(detail.table_rows ?? null)}</Fact>
+        <Fact label="Last run">
+          {detail.last_run ? (
+            <>
+              {moment(detail.last_run.started_at)}
+              <small>{sentence(detail.last_run.trigger)}</small>
+            </>
+          ) : (
+            "Never"
+          )}
+        </Fact>
         <Fact label="Load mode">
-          {detail.load_mode}
-          {detail.primary_key.length > 0 ? ` on ${detail.primary_key.join(", ")}` : ""}
+          {sentence(detail.load_mode)}
+          {detail.primary_key.length > 0 ? (
+            <small>on {detail.primary_key.join(", ")}</small>
+          ) : null}
         </Fact>
         <Fact label="Schedule">
-          {detail.schedule ?? "none"}
-          {plainSchedule ? ` (${plainSchedule})` : ""}
+          <Schedule schedule={detail.schedule} />
         </Fact>
-        <Fact label="Rows">{count(detail.table_rows ?? null)}</Fact>
         <Fact label="Schema">
-          {version ? `v${version.version} · ${moment(version.recorded_at)}` : "none yet"}
+          {version ? (
+            <>
+              Version {version.version}
+              <small>{moment(version.recorded_at)}</small>
+            </>
+          ) : (
+            "Not stored yet"
+          )}
         </Fact>
-        {detail.state?.file_path ? <Fact label="File">{detail.state.file_path}</Fact> : null}
-        <Fact label="Watermark">
-          {detail.watermark ? `${detail.watermark} at ${detail.state?.watermark ?? "—"}` : "none"}
-        </Fact>
-        <Fact label="Declared">
-          {Object.keys(declaredTypes).length} of {detail.columns.length} columns
-        </Fact>
+        {detail.state?.file_path ? (
+          <div className="fact wide">
+            <dt>File</dt>
+            <dd className="mono-id">{detail.state.file_path}</dd>
+          </div>
+        ) : null}
+        {detail.watermark ? (
+          <Fact label="Watermark">
+            {detail.watermark}
+            <small>at {detail.state?.watermark ?? "—"}</small>
+          </Fact>
+        ) : null}
       </dl>
+      <div className="section-head">
+        <h2>Columns</h2>
+        <span>
+          {stored ? `${own.length} · ${declaredCount} declared` : `${declaredCount} declared`}
+        </span>
+      </div>
       <div className="panel scroll">
         <table>
           <thead>
             <tr>
+              <th className="num">#</th>
               <th>Column</th>
-              <th>Stored type</th>
-              <th>Declared</th>
+              <th>Type</th>
+              <th>Stored as</th>
+              <th>Origin</th>
             </tr>
           </thead>
           <tbody>
-            {detail.columns.map((column) => (
-              <tr key={column.name}>
-                <td className="mono">{column.name}</td>
-                <td className="mono">{column.type}</td>
-                <td className="mono">
-                  {declaredTypes[column.name] ?? (
-                    <span className="null">
-                      {column.name.startsWith("_") ? "platform column" : "inferred"}
-                    </span>
-                  )}
-                </td>
-              </tr>
-            ))}
+            {own.map((column, index) => {
+              const chosen = declaredTypes[column.name];
+              return (
+                <tr key={column.name}>
+                  <td className="num muted">{index + 1}</td>
+                  <td className="mono">{column.name}</td>
+                  <td>{typeName(chosen ?? column.type)}</td>
+                  <td className="mono muted">
+                    {column.type ?? <span className="null">Not stored yet</span>}
+                  </td>
+                  <td>
+                    {chosen ? (
+                      <span className="kind declared">Declared</span>
+                    ) : (
+                      <span className="kind">Inferred</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
+        {platform.length > 0 ? (
+          <details className="platform-columns">
+            <summary>Platform columns · {platform.length}</summary>
+            <table>
+              <tbody>
+                {platform.map((column) => (
+                  <tr key={column.name}>
+                    <td className="mono">{column.name}</td>
+                    <td className="mono muted">{column.type}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        ) : null}
       </div>
     </>
   );

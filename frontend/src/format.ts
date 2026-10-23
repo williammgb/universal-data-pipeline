@@ -115,6 +115,40 @@ export function connectorName(type: string): string {
   return CONNECTOR_NAMES[type] ?? type;
 }
 
+/** A value the API spells in lower case, as a label starts: "full" reads "Full",
+ * "every_step" reads "Every step". */
+export function sentence(value: string): string {
+  const words = value.replaceAll("_", " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** A dataset's name as a title: "order_lines" reads "Order lines". The name itself is still
+ * shown beside it wherever it is needed exactly. */
+export function datasetTitle(name: string): string {
+  return sentence(name);
+}
+
+const TYPE_NAMES: [RegExp, string][] = [
+  [/^(bigint|integer|smallint)$/, "Integer"],
+  [/^(double precision|real|float)$/, "Float"],
+  [/^(text|character varying.*)$/, "Text"],
+  [/^boolean$/, "Boolean"],
+  [/^date$/, "Date"],
+  [/^timestamp.*$/, "Timestamp"],
+  [/^jsonb?$/, "JSON"],
+];
+
+/** A column's type in words: a declared type or the table's own, "decimal(10,2)" and
+ * "numeric(10,2)" both reading "Decimal (10, 2)". An unknown type is shown as it is. */
+export function typeName(type: string | null): string {
+  if (type === null) return "—";
+  const exact = /^(?:decimal|numeric)\((\d+),\s*(\d+)\)$/.exec(type);
+  if (exact) return `Decimal (${exact[1]}, ${exact[2]})`;
+  if (type === "numeric" || type === "decimal") return "Decimal";
+  const found = TYPE_NAMES.find(([pattern]) => pattern.test(type));
+  return found ? found[1] : type;
+}
+
 const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
 function whole(field: string, low: number, high: number): number | null {

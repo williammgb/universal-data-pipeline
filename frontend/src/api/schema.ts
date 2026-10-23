@@ -240,7 +240,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Runs */
+        /**
+         * Runs
+         * @description Loads of sources by default; `kind=pipeline` lists pipeline runs, `kind=all` both.
+         */
         get: operations["runs_api_runs_get"];
         put?: never;
         /** Start Run */
@@ -802,6 +805,14 @@ export interface components {
             error_message: string | null;
             /** Error Traceback */
             error_traceback: string | null;
+            /**
+             * Kind
+             * @default load
+             * @enum {string}
+             */
+            kind: "load" | "pipeline";
+            /** Pipeline */
+            pipeline?: string | null;
             /** Quality */
             quality: components["schemas"]["CheckResult"][];
             /** Rows Extracted */
@@ -832,8 +843,14 @@ export interface components {
              * @enum {string}
              */
             trigger: "manual" | "scheduled";
+            /** Version */
+            version?: number | null;
         };
-        /** RunItem */
+        /**
+         * RunItem
+         * @description A load of a source, or a run of a pipeline (`kind`). A pipeline run's `run_id` is its
+         *     execution id, its rows extracted and loaded the rows it read and wrote to CLEAN.
+         */
         RunItem: {
             /** Dataset */
             dataset: string;
@@ -843,6 +860,14 @@ export interface components {
             error_class: string | null;
             /** Error Message */
             error_message: string | null;
+            /**
+             * Kind
+             * @default load
+             * @enum {string}
+             */
+            kind: "load" | "pipeline";
+            /** Pipeline */
+            pipeline?: string | null;
             /** Rows Extracted */
             rows_extracted: number | null;
             /** Rows Loaded */
@@ -871,6 +896,8 @@ export interface components {
              * @enum {string}
              */
             trigger: "manual" | "scheduled";
+            /** Version */
+            version?: number | null;
         };
         /** RunRequest */
         RunRequest: {
@@ -1576,6 +1603,7 @@ export interface operations {
                 trigger?: ("manual" | "scheduled") | null;
                 since?: string | null;
                 until?: string | null;
+                kind?: "load" | "pipeline" | "all";
                 limit?: number;
                 offset?: number;
             };

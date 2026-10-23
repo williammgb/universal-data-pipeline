@@ -1,13 +1,15 @@
 /** The runs list's filters, kept in the address so a filtered view can be shared or reloaded. */
 
-import type { RunStatus, RunTrigger } from "./api/client";
+import type { RunKind, RunStatus, RunTrigger } from "./api/client";
 
 export const RUN_STATUSES: RunStatus[] = ["running", "succeeded", "failed", "skipped"];
 export const RUN_TRIGGERS: RunTrigger[] = ["manual", "scheduled"];
+export const RUN_KINDS: RunKind[] = ["load", "pipeline"];
 
 export type RunFilters = {
   source?: string;
   dataset?: string;
+  kind?: RunKind;
   status?: RunStatus;
   trigger?: RunTrigger;
   since?: string;
@@ -25,6 +27,7 @@ export function serialize(filters: RunFilters): URLSearchParams {
     const value = filters[field];
     if (value !== undefined && value !== "") params.set(field, value);
   }
+  if (filters.kind !== undefined) params.set("kind", filters.kind);
   if (filters.status !== undefined) params.set("status", filters.status);
   if (filters.trigger !== undefined) params.set("trigger", filters.trigger);
   if (filters.offset !== undefined && filters.offset > 0) params.set("offset", String(filters.offset));
@@ -45,6 +48,8 @@ export function parse(params: URLSearchParams): RunFilters {
     if ((field === "since" || field === "until") && !isMoment(value)) continue;
     filters[field] = value;
   }
+  const kind = params.get("kind");
+  if (kind !== null && (RUN_KINDS as string[]).includes(kind)) filters.kind = kind as RunKind;
   const status = params.get("status");
   if (status !== null && (RUN_STATUSES as string[]).includes(status)) {
     filters.status = status as RunStatus;
@@ -60,9 +65,11 @@ export function parse(params: URLSearchParams): RunFilters {
 
 export const RUNS_PER_PAGE = 50;
 
-/** The same filters as the API query, which pages by offset. */
-export function runsQuery(filters: RunFilters): URLSearchParams {
+/** The same filters as the API query, which pages by offset. With `everyKind`, no kind filter
+ * asks for loads and pipeline runs both; without it the API lists loads only. */
+export function runsQuery(filters: RunFilters, everyKind = false): URLSearchParams {
   const params = serialize(filters);
+  if (everyKind && filters.kind === undefined) params.set("kind", "all");
   params.set("limit", String(RUNS_PER_PAGE));
   return params;
 }

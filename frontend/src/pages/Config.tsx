@@ -7,7 +7,7 @@ import {
   useStartRun,
   type DatasetConfig,
 } from "../api/client";
-import { describeSchedule, moment } from "../format";
+import { describeSchedule, moment, typeName } from "../format";
 import { Problem, Waiting } from "./parts";
 
 /** The declared types a column can be given; `decimal` needs its digits, so it is typed out. */
@@ -257,9 +257,9 @@ export default function Config({ source, dataset }: { source: string; dataset: s
               value={mode}
               onChange={(event) => changeMode(event.target.value, values)}
             >
-              <option value="full">full</option>
-              <option value="append">append</option>
-              <option value="merge">merge</option>
+              <option value="full">Full</option>
+              <option value="append">Append</option>
+              <option value="merge">Merge</option>
             </select>
           </Row>
           {mode === "full" ? null : (
@@ -274,7 +274,7 @@ export default function Config({ source, dataset }: { source: string; dataset: s
                 value={watermark}
                 onChange={(event) => set("watermark", event.target.value || null)}
               >
-                <option value="">choose a column</option>
+                <option value="">Choose a column</option>
                 {rows.map((name) => (
                   <option key={name} value={name}>
                     {name}
@@ -372,13 +372,13 @@ export default function Config({ source, dataset }: { source: string; dataset: s
                           )
                         }
                       >
-                        <option value={INFERRED}>inferred</option>
+                        <option value={INFERRED}>Inferred</option>
                         {DECLARED_TYPES.map((kind) => (
                           <option key={kind} value={kind}>
-                            {kind}
+                            {typeName(kind)}
                           </option>
                         ))}
-                        <option value="decimal">decimal</option>
+                        <option value="decimal">Decimal</option>
                       </select>
                       {isDecimal(value) ? (
                         <input

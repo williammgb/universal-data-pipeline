@@ -131,6 +131,34 @@ def test_a_failed_run_adds_nothing_to_raw(tmp_path: Path) -> None:
     assert loader.raw[raw_table("shop", "orders")].equals(before)
 
 
+def test_a_run_over_its_quarantine_limit_still_runs_and_records_the_table_checks(
+    tmp_path: Path,
+) -> None:
+    sources_dir = tmp_path / "sources"
+    _write_source(
+        sources_dir,
+        "shop",
+        "  - name: orders\n    path: orders.csv\n    checks:\n"
+        "      - check: not_null\n        column: qty\n"
+        "      - check: unique\n        columns: [sku]\n",
+    )
+    loader = MemoryLoader()
+
+    # B has no qty, so one row in three is quarantined; the two A rows break unique.
+    outcome = _run_orders(sources_dir, loader, "A,1\nA,2\nB,\n")
+
+    assert outcome.status == "failed"
+    checks = {
+        result["check_type"]: result["passed"]
+        for result in loader.quality_results
+        if result["run_id"] == outcome.run_id
+    }
+    assert checks == {"not_null": False, "unique": False}
+    message = loader.runs[outcome.run_id]["error_message"]
+    assert message.startswith("1 of 3 rows (33.33%) quarantined, above the dataset's limit of 1%")
+    assert "check 1 unique" in message
+
+
 def test_missing_file_fails_the_run_and_the_next_dataset_still_runs(tmp_path: Path) -> None:
     sources_dir = tmp_path / "sources"
     _write_source(
