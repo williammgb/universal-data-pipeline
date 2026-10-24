@@ -1,0 +1,198 @@
+#!/bin/sh
+# The release launcher: put it beside compose.release.yaml, and `udp load my_shop` is
+# `docker compose -f <this folder>/compose.release.yaml run --rm app load my_shop`. `udp help`
+# lists the commands. It works on the folder it lives in, whatever the current folder is.
+#
+# The first command (any but help) makes sources/, pipelines/ and backups/ here and writes .env
+# with POSTGRES_PASSWORD and UDP_API_KEYS: the exported values when there are any, else random
+# ones. Compose reads that .env, so nothing has to be exported again. It is never rewritten.
+#
+# With UDP_DRY_RUN=1 every docker call is printed, one per line, instead of made; an argument
+# holding a space is shown in double quotes. The setup still writes .env in a dry run.
+set -eu
+
+# Only shell builtins until Docker is found, so a machine without it hears so first.
+case "$0" in
+  */*) here=${0%/*} ;;
+  *) here=. ;;
+esac
+here=$(cd "$here" && pwd)
+file="$here/compose.release.yaml"
+dry=${UDP_DRY_RUN:-}
+
+usage() {
+  cat <<'USAGE'
+usage: udp <command>
+
+  udp up (or udp run)    start the platform and print its address
+  udp down               stop it, keeping the data
+  udp status             show the containers
+  udp logs [service]     the last 100 log lines (add -f to follow them)
+  udp open               open the dashboard in the browser
+  udp restart            restart the api and the scheduler (after adding a schedule)
+  udp upgrade            pull the newest images and start on them
+  udp backup             save the database to backups/udp-<date>-<time>.dump
+  udp new <source>       write sources/<source>/source.yaml from that folder's files
+  udp help               this list
+  udp <command> ...      anything else runs in the app: load, pipeline, profile, doctor
+
+The first command writes .env here with a new password and API key. upgrade updates the
+images only: a new launcher or compose file comes from running the installer again.
+USAGE
+}
+
+# Prints its arguments as one line, an empty one or one holding a space in double quotes.
+show() {
+  line=
+  for arg in "$@"; do
+    case "$arg" in
+      '' | *[[:space:]]*) arg="\"$arg\"" ;;
+    esac
+    line="${line:+$line }$arg"
+  done
+  printf '%s\n' "$line"
+}
+
+call() {
+  if [ "$dry" = 1 ]; then
+    show "$@"
+    return 0
+  fi
+  "$@"
+}
+
+compose() {
+  call docker compose -f "$file" "$@"
+}
+
+refuse_arguments() {
+  [ "$#" -le 1 ] || {
+    echo "usage: udp $1" >&2
+    exit 2
+  }
+}
+
+random_hex() {
+  od -An -N16 -tx1 /dev/urandom | tr -d ' \n'
+}
+
+setup() {
+  [ -f "$here/.env" ] && return 0
+  mkdir -p "$here/sources" "$here/pipelines" "$here/backups"
+  password=${POSTGRES_PASSWORD:-}
+  if [ -z "$password" ]; then
+    password=$(random_hex)
+    if [ "$dry" != 1 ] && docker volume inspect udp_pgdata > /dev/null 2>&1; then
+      echo "A database from before exists. If it was made with another password, put that" \
+        "password in $here/.env as POSTGRES_PASSWORD before udp up."
+    fi
+  fi
+  key=${UDP_API_KEYS:-$(random_hex)}
+  mask=$(umask)
+  umask 077
+  printf 'POSTGRES_PASSWORD=%s\nUDP_API_KEYS=%s\n' "$password" "$key" > "$here/.env"
+  umask "$mask"
+  echo "Saved a new password and API key in $here/.env. Your API key: $key"
+}
+
+address() {
+  port=$(grep '^UDP_API_PORT=' "$here/.env" 2> /dev/null | tail -n 1 | cut -d= -f2- | tr -d '\r') ||
+    port=
+  echo "http://127.0.0.1:${port:-8000}"
+}
+
+command=${1:-help}
+if [ "$command" = help ]; then
+  usage
+  exit 0
+fi
+
+if [ "$dry" != 1 ] && ! command -v docker > /dev/null 2>&1; then
+  echo "Docker is not installed or not on PATH: see https://docs.docker.com/get-docker/" >&2
+  exit 1
+fi
+setup
+
+case "$command" in
+  up | run)
+    refuse_arguments "$@"
+    if [ "$dry" != 1 ] && ! docker info > /dev/null 2>&1; then
+      echo "Docker is not running: start Docker Desktop (or the Docker service) and wait until" \
+        "it says the engine is running" >&2
+      exit 1
+    fi
+    compose up -d --wait
+    [ "$dry" = 1 ] || echo "Dashboard: $(address) (API key in $here/.env)"
+    ;;
+  down)
+    # `down -v` would delete the database, so down takes nothing at all.
+    refuse_arguments "$@"
+    compose down
+    ;;
+  status)
+    shift
+    compose ps "$@"
+    ;;
+  logs)
+    shift
+    compose logs --tail 100 "$@"
+    ;;
+  open)
+    refuse_arguments "$@"
+    url=$(address)
+    case "$(uname -s)" in
+      Darwin) opener=open ;;
+      MINGW* | MSYS* | CYGWIN*) opener=cmd.exe ;;
+      *) opener=xdg-open ;;
+    esac
+    if ! command -v "$opener" > /dev/null 2>&1; then
+      echo "$url"
+    elif [ "$opener" = cmd.exe ]; then
+      # Git Bash would turn /c into a folder.
+      MSYS_NO_PATHCONV=1
+      export MSYS_NO_PATHCONV
+      call cmd.exe /c start "" "$url"
+    else
+      call "$opener" "$url"
+    fi
+    ;;
+  restart)
+    refuse_arguments "$@"
+    compose restart api scheduler
+    ;;
+  upgrade)
+    refuse_arguments "$@"
+    compose pull
+    compose up -d --wait
+    ;;
+  backup)
+    refuse_arguments "$@"
+    dump="$here/backups/udp-$(date +%Y%m%d-%H%M%S).dump"
+    set -- docker compose -f "$file" exec -T postgres pg_dump -U udp -Fc udp
+    if [ "$dry" = 1 ]; then
+      echo "$(show "$@") > $(show "$dump")"
+      exit 0
+    fi
+    mkdir -p "$here/backups"
+    # The dump is named only once it is whole, so a failed one never looks like a backup.
+    if "$@" > "$dump.part"; then
+      mv "$dump.part" "$dump"
+      echo "Saved $dump"
+    else
+      rm -f "$dump.part"
+      exit 1
+    fi
+    ;;
+  new)
+    shift
+    # On Linux the container would write the file as root; this way it is the user's own.
+    if [ "$(uname -s)" = Linux ]; then
+      compose run --rm --no-deps --user "$(id -u):$(id -g)" scaffold new "$@"
+    else
+      compose run --rm --no-deps scaffold new "$@"
+    fi
+    ;;
+  *)
+    compose run --rm app "$@"
+    ;;
+esac

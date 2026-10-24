@@ -1,2 +1,4 @@
 * text=auto eol=lf
 *.xlsx binary
+# A batch file needs CRLF: with LF alone cmd can miss its labels.
+*.cmd text eol=crlf
