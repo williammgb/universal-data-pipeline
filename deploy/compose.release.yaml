@@ -1,8 +1,9 @@
 name: udp
 
-# The platform from the published image, with no source code needed: download this file into
-# an empty folder, set POSTGRES_PASSWORD and UDP_API_KEYS, and `docker compose -f
-# compose.release.yaml up -d --wait`. UDP_VERSION pins a release (1.2.0); it defaults to latest.
+# The platform from the published image, with no source code needed: put this file and the
+# launcher beside it (udp, or udp.cmd on Windows) in a folder, then `udp up` starts it and
+# `udp help` lists the rest. The first udp command writes .env here with a password and an API
+# key. UDP_VERSION in .env pins a release (1.2.0); it defaults to latest.
 # The services are copied from compose.yaml, which builds the image from the source instead.
 # Its demo, scale and monitoring services need files from the source, so they are not here.
 
@@ -52,6 +53,16 @@ services:
         limits:
           cpus: "2"
           memory: 4g
+
+  # `udp new <source>` writes sources/<source>/source.yaml: the one container that may write into
+  # sources/. It needs no database, so it runs before `udp up` too (`run --rm --no-deps`).
+  scaffold:
+    <<: *app
+    profiles: ["app"]
+    depends_on: {}
+    volumes:
+      - ./sources:/app/sources
+      - ./pipelines:/app/pipelines:ro
 
   # Creates or updates the platform tables, then exits; everything on the app anchor waits for it.
   migrate:
