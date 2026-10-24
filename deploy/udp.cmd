@@ -4,7 +4,7 @@ rem Put it beside compose.release.yaml, and `udp load my_shop` is
 rem `docker compose -f <this folder>\compose.release.yaml run --rm app load my_shop`, from any
 rem folder. The first command (any but help) makes sources, pipelines and backups here and
 rem writes .env with POSTGRES_PASSWORD and UDP_API_KEYS: the set values when there are any, else
-rem random ones. It is never rewritten. With UDP_DRY_RUN=1 every docker call is printed instead
+rem random ones, each in single quotes. It is never rewritten. With UDP_DRY_RUN=1 every docker call is printed instead
 rem of made. PowerShell is used for two things only: a random key and the backup's timestamp.
 setlocal EnableExtensions DisableDelayedExpansion
 
@@ -40,19 +40,30 @@ if exist "%here%\.env" goto :dispatch
 if not exist "%here%\sources" mkdir "%here%\sources"
 if not exist "%here%\pipelines" mkdir "%here%\pipelines"
 if not exist "%here%\backups" mkdir "%here%\backups"
-set "password=%POSTGRES_PASSWORD%"
-set "key=%UDP_API_KEYS%"
+rem The values are only ever expanded with !, after the line is parsed, so any of ^ & > | ) " %
+rem in them stays text. Each is written in single quotes, which Compose reads as it is.
+setlocal EnableDelayedExpansion
+set "password=!POSTGRES_PASSWORD!"
+set "key=!UDP_API_KEYS!"
 if defined password goto :have_password
 call :random password
 if defined dry goto :have_password
 docker volume inspect udp_pgdata >nul 2>&1
 if errorlevel 1 goto :have_password
-echo A database from before exists. If it was made with another password, put that password in %here%\.env as POSTGRES_PASSWORD before udp up.
+echo A database from before exists. If it was made with another password, put that password in !here!\.env as POSTGRES_PASSWORD before udp up.
 :have_password
 if not defined key call :random key
-> "%here%\.env" echo POSTGRES_PASSWORD=%password%
->> "%here%\.env" echo UDP_API_KEYS=%key%
-echo Saved a new password and API key in %here%\.env. Your API key: %key%
+rem Single quotes cannot hold a ', nor a final \, which Compose takes for an escaped quote.
+set "name=POSTGRES_PASSWORD"
+if not "!password:'=!"=="!password!" goto :unquotable
+if "!password:~-1!"=="\" goto :unquotable
+set "name=UDP_API_KEYS"
+if not "!key:'=!"=="!key!" goto :unquotable
+if "!key:~-1!"=="\" goto :unquotable
+> "!here!\.env" echo POSTGRES_PASSWORD='!password!'
+>> "!here!\.env" echo UDP_API_KEYS='!key!'
+echo Saved a new password and API key in !here!\.env. Your API key: !key!
+endlocal
 
 :dispatch
 if /i "%command%"=="up" goto :up
@@ -148,6 +159,10 @@ exit /b
 
 :refuse
 1>&2 echo usage: udp %command%
+exit /b 2
+
+:unquotable
+1>&2 echo !name! holds a ' or a final \, which .env cannot keep as it is: set another, or write !here!\.env yourself
 exit /b 2
 
 :help
