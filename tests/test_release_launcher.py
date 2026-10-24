@@ -81,6 +81,16 @@ def _calls(result: subprocess.CompletedProcess[str]) -> list[str]:
     return [line for line in result.stdout.splitlines() if not line.startswith("Saved a new")]
 
 
+def _written(launcher: Launcher) -> dict[str, str]:
+    """The values in the .env the launcher wrote, each of which it must have single-quoted."""
+    values = {}
+    for line in launcher.env_file().read_text().splitlines():
+        name, value = line.split("=", 1)
+        assert value[0] == value[-1] == "'", line
+        values[name] = value[1:-1]
+    return values
+
+
 @pytest.fixture(
     params=[
         "sh",
@@ -184,7 +194,7 @@ def test_the_first_run_writes_env_once_with_a_random_password_and_key(launcher: 
     second = launcher.run("status")
 
     assert first.returncode == second.returncode == 0, first.stderr + second.stderr
-    values = dict(line.split("=", 1) for line in written.splitlines())
+    values = _written(launcher)
     assert set(values) == set(SECRETS)
     assert all(HEX32.fullmatch(value) for value in values.values()), values
     assert values["POSTGRES_PASSWORD"] != values["UDP_API_KEYS"]
@@ -201,10 +211,57 @@ def test_the_first_run_writes_env_once_with_a_random_password_and_key(launcher: 
 def test_exported_secrets_are_written_instead_of_random_ones(launcher: Launcher) -> None:
     result = launcher.run("status", exported={"POSTGRES_PASSWORD": "mine-secret"})
 
-    values = dict(line.split("=", 1) for line in launcher.env_file().read_text().splitlines())
+    values = _written(launcher)
     assert result.returncode == 0, result.stderr
     assert values["POSTGRES_PASSWORD"] == "mine-secret"
     assert HEX32.fullmatch(values["UDP_API_KEYS"])
+
+
+# Characters cmd would act on unquoted (& > | ) ^ % !) and the $ Compose would expand.
+AWKWARD = ["p&ss", "a&b>c", "pa$word", "x|y)z", 'q"uote %PATH% !bang! ^caret', "${HOME} $$ \\x"]
+
+
+@pytest.mark.parametrize("value", AWKWARD)
+def test_an_exported_value_is_written_quoted_and_as_it_is(launcher: Launcher, value: str) -> None:
+    result = launcher.run("status", exported={"POSTGRES_PASSWORD": value, "UDP_API_KEYS": value})
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert launcher.env_file().read_text() == (
+        f"POSTGRES_PASSWORD='{value}'\nUDP_API_KEYS='{value}'\n"
+    )
+    assert result.stdout.splitlines()[0].endswith(f"Your API key: {value}")
+    assert _calls(result) == [f"{launcher.compose} ps"]
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="needs docker compose, not a daemon")
+def test_compose_reads_the_written_values_as_they_are(launcher: Launcher) -> None:
+    password, key = "pa$word&b>c", 'k"ey ${HOME} %PATH% ^!x!'
+    launcher.run("status", exported={"POSTGRES_PASSWORD": password, "UDP_API_KEYS": key})
+
+    # Nothing exported this time, so only the .env beside the compose file supplies them.
+    env = {k: v for k, v in os.environ.items() if k not in SECRETS}
+    file = str(launcher.folder / "compose.release.yaml")
+    read = subprocess.run(
+        ["docker", "compose", "-f", file, "config", "--environment"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    seen = dict(line.split("=", 1) for line in read.stdout.splitlines() if "=" in line)
+    assert seen["POSTGRES_PASSWORD"] == password
+    assert seen["UDP_API_KEYS"] == key
+
+
+@pytest.mark.parametrize("value", ["it's", "ends\\"])
+def test_a_value_single_quotes_cannot_hold_is_refused(launcher: Launcher, value: str) -> None:
+    result = launcher.run("status", exported={"POSTGRES_PASSWORD": value})
+
+    assert result.returncode == 2
+    assert result.stderr.startswith("POSTGRES_PASSWORD holds a '")
+    assert not launcher.env_file().exists()
 
 
 def test_an_existing_env_is_never_rewritten(launcher: Launcher) -> None:

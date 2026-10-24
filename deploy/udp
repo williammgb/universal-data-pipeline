@@ -5,7 +5,8 @@
 #
 # The first command (any but help) makes sources/, pipelines/ and backups/ here and writes .env
 # with POSTGRES_PASSWORD and UDP_API_KEYS: the exported values when there are any, else random
-# ones. Compose reads that .env, so nothing has to be exported again. It is never rewritten.
+# ones, each in single quotes so Compose reads it as it is. Compose reads that .env, so nothing
+# has to be exported again. It is never rewritten.
 #
 # With UDP_DRY_RUN=1 every docker call is printed, one per line, instead of made; an argument
 # holding a space is shown in double quotes. The setup still writes .env in a dry run.
@@ -76,6 +77,19 @@ random_hex() {
   od -An -N16 -tx1 /dev/urandom | tr -d ' \n'
 }
 
+# Refuses a value that single quotes in .env cannot hold: one with a ' or a line break in it,
+# or one ending in \, which Compose takes for an escaped closing quote.
+literal() {
+  case "$2" in
+    *\'* | *\\ | *'
+'*)
+      echo "$1 holds a ', a line break or a final \\, which .env cannot keep as it is:" \
+        "export another, or write $here/.env yourself" >&2
+      exit 2
+      ;;
+  esac
+}
+
 setup() {
   [ -f "$here/.env" ] && return 0
   mkdir -p "$here/sources" "$here/pipelines" "$here/backups"
@@ -88,9 +102,12 @@ setup() {
     fi
   fi
   key=${UDP_API_KEYS:-$(random_hex)}
+  literal POSTGRES_PASSWORD "$password"
+  literal UDP_API_KEYS "$key"
   mask=$(umask)
   umask 077
-  printf 'POSTGRES_PASSWORD=%s\nUDP_API_KEYS=%s\n' "$password" "$key" > "$here/.env"
+  # Compose reads a single-quoted .env value as it is, so a $ in it is not a variable.
+  printf "POSTGRES_PASSWORD='%s'\nUDP_API_KEYS='%s'\n" "$password" "$key" > "$here/.env"
   umask "$mask"
   echo "Saved a new password and API key in $here/.env. Your API key: $key"
 }
