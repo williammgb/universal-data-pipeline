@@ -77,6 +77,65 @@ def test_load_refuses_every_source_when_one_of_them_has_a_bad_config(tmp_path: P
     assert "invalid source config" in result.output
 
 
+def test_load_with_no_names_lists_the_sources_without_a_database(tmp_path: Path) -> None:
+    _csv_source(tmp_path, "second", "1,a\n")
+    _csv_source(tmp_path, "first", "1,a\n")
+    (tmp_path / "no_file_yet").mkdir()
+    env = {"UDP_SOURCES_DIR": str(tmp_path), "UDP_DATABASE_URL": None}
+
+    result = CliRunner().invoke(app, ["load"], env=env)
+
+    assert result.exit_code == 2
+    assert (
+        result.output.strip() == "Name a source to load: udp load <source>. Sources: first, second"
+    )
+
+
+def test_load_with_no_names_and_no_sources_says_how_to_add_one(tmp_path: Path) -> None:
+    env = {"UDP_SOURCES_DIR": str(tmp_path / "sources"), "UDP_DATABASE_URL": None}
+
+    result = CliRunner().invoke(app, ["load"], env=env)
+
+    assert result.exit_code == 2
+    shown = (tmp_path / "sources").as_posix()
+    assert result.output.strip() == (
+        f"No sources yet. Put your files in {shown}/<name>/ and run: udp new <name>"
+    )
+
+
+def test_new_writes_source_yaml_and_says_how_to_load_it(tmp_path: Path) -> None:
+    (tmp_path / "my_shop" / "data").mkdir(parents=True)
+    (tmp_path / "my_shop" / "data" / "customers.csv").write_text("id\n1\n", encoding="utf-8")
+    (tmp_path / "my_shop" / "orders.csv").write_text("id\n1\n", encoding="utf-8")
+    env = {"UDP_SOURCES_DIR": str(tmp_path), "UDP_DATABASE_URL": None}
+
+    result = CliRunner().invoke(app, ["new", "my_shop"], env=env)
+
+    assert result.exit_code == 0, result.output
+    shown = (tmp_path / "my_shop" / "source.yaml").as_posix()
+    assert result.output.strip() == (
+        f"Wrote {shown} with 2 datasets: orders, customers. Load it: udp load my_shop"
+    )
+    assert (tmp_path / "my_shop" / "source.yaml").is_file()
+
+
+def test_new_with_one_file_says_dataset(tmp_path: Path) -> None:
+    (tmp_path / "my_shop").mkdir()
+    (tmp_path / "my_shop" / "customers.csv").write_text("id\n1\n", encoding="utf-8")
+
+    result = CliRunner().invoke(app, ["new", "my_shop"], env={"UDP_SOURCES_DIR": str(tmp_path)})
+
+    assert result.exit_code == 0, result.output
+    assert " with 1 dataset: customers. " in result.output
+
+
+def test_new_refusal_prints_the_reason_and_exits_2(tmp_path: Path) -> None:
+    result = CliRunner().invoke(app, ["new", "my_shop"], env={"UDP_SOURCES_DIR": str(tmp_path)})
+
+    assert result.exit_code == 2
+    assert result.output.startswith(f"No folder {(tmp_path / 'my_shop').as_posix()}. ")
+
+
 @pytest.mark.db
 def test_load_loads_several_sources_in_one_command(tmp_path: Path) -> None:
     _csv_source(tmp_path, "first", "1,a\n2,b\n")
