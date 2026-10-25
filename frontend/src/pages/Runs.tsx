@@ -1,14 +1,36 @@
 import { Link, useSearchParams } from "react-router";
 
-import { useRuns, useSources } from "../api/client";
-import { count, fromInput, moment, toInput } from "../format";
-import { RUNS_PER_PAGE, RUN_STATUSES, RUN_TRIGGERS, parse, runsQuery, serialize } from "../runFilters";
+import { useRuns, useSources, type RunItem, type RunKind } from "../api/client";
+import { count, datasetTitle, fromInput, moment, sentence, toInput } from "../format";
+import {
+  RUNS_PER_PAGE,
+  RUN_KINDS,
+  RUN_STATUSES,
+  RUN_TRIGGERS,
+  parse,
+  runsQuery,
+  serialize,
+} from "../runFilters";
 import { Problem, RunError, Status, Waiting } from "./parts";
+
+const KIND_NAMES: Record<RunKind, string> = { load: "Loads", pipeline: "Pipelines" };
+
+/** A load opens its run page; a pipeline run opens the builder showing that run. */
+function runAddress(run: RunItem): string {
+  if (run.kind !== "pipeline" || !run.pipeline) return `/runs/${run.run_id}`;
+  const params = new URLSearchParams({
+    source: run.source,
+    dataset: run.dataset,
+    name: run.pipeline,
+    run: run.run_id,
+  });
+  return `/pipeline?${params.toString()}`;
+}
 
 export default function Runs() {
   const [params, setParams] = useSearchParams();
   const filters = parse(params);
-  const runs = useRuns(runsQuery(filters));
+  const runs = useRuns(runsQuery(filters, true));
   const sources = useSources();
   const offset = filters.offset ?? 0;
 
@@ -29,6 +51,9 @@ export default function Runs() {
     <main>
       <div className="head">
         <h1>Runs</h1>
+        <span className="live" title="Refreshes every 5 seconds">
+          Live
+        </span>
       </div>
 
       <div className="controls">
@@ -39,10 +64,25 @@ export default function Runs() {
             value={filters.source ?? ""}
             onChange={(event) => change("source", event.target.value)}
           >
-            <option value="">all</option>
+            <option value="">All sources</option>
             {(sources.data ?? []).map((item) => (
               <option key={item.source} value={item.source}>
                 {item.source}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field" htmlFor="filter-kind">
+          Kind
+          <select
+            id="filter-kind"
+            value={filters.kind ?? ""}
+            onChange={(event) => change("kind", event.target.value)}
+          >
+            <option value="">Loads and pipelines</option>
+            {RUN_KINDS.map((kind) => (
+              <option key={kind} value={kind}>
+                {KIND_NAMES[kind]}
               </option>
             ))}
           </select>
@@ -54,10 +94,10 @@ export default function Runs() {
             value={filters.status ?? ""}
             onChange={(event) => change("status", event.target.value)}
           >
-            <option value="">all</option>
+            <option value="">Any status</option>
             {RUN_STATUSES.map((status) => (
               <option key={status} value={status}>
-                {status}
+                {sentence(status)}
               </option>
             ))}
           </select>
@@ -69,10 +109,10 @@ export default function Runs() {
             value={filters.trigger ?? ""}
             onChange={(event) => change("trigger", event.target.value)}
           >
-            <option value="">all</option>
+            <option value="">Any trigger</option>
             {RUN_TRIGGERS.map((trigger) => (
               <option key={trigger} value={trigger}>
-                {trigger}
+                {sentence(trigger)}
               </option>
             ))}
           </select>
@@ -107,11 +147,11 @@ export default function Runs() {
               <thead>
                 <tr>
                   <th>Started</th>
-                  <th>Source</th>
                   <th>Dataset</th>
+                  <th>Kind</th>
                   <th>Trigger</th>
                   <th>Status</th>
-                  <th className="mono">Loaded</th>
+                  <th className="num">Rows</th>
                   <th>Error</th>
                 </tr>
               </thead>
@@ -119,15 +159,37 @@ export default function Runs() {
                 {runs.data.runs.map((run) => (
                   <tr key={run.run_id}>
                     <td className="mono">
-                      <Link to={`/runs/${run.run_id}`}>{moment(run.started_at)}</Link>
+                      <Link to={runAddress(run)}>{moment(run.started_at)}</Link>
                     </td>
-                    <td className="mono">{run.source}</td>
-                    <td className="mono">{run.dataset}</td>
-                    <td>{run.trigger}</td>
+                    <td>
+                      <div className="named">
+                        <span>{datasetTitle(run.dataset)}</span>
+                        <span className="mono-id">
+                          {run.source}.{run.dataset}
+                        </span>
+                      </div>
+                    </td>
+                    <td>
+                      {run.kind === "pipeline" ? (
+                        <div className="named">
+                          <span className="kind pipeline">Pipeline</span>
+                          <span className="mono-id">
+                            {run.pipeline} v{run.version}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="kind">Load</span>
+                      )}
+                    </td>
+                    <td>{sentence(run.trigger)}</td>
                     <td>
                       <Status status={run.status} />
                     </td>
-                    <td className="num">{count(run.rows_loaded)}</td>
+                    <td className="num">
+                      {run.kind === "pipeline" && run.rows_loaded !== null
+                        ? `${count(run.rows_extracted)} → ${count(run.rows_loaded)}`
+                        : count(run.rows_loaded)}
+                    </td>
                     <td className="why">
                       <RunError run={run} />
                     </td>
@@ -137,7 +199,11 @@ export default function Runs() {
             </table>
           </div>
           <div className="paging">
-            <span>{RUNS_PER_PAGE} per page · refreshing every 5s</span>
+            <span>
+              {runs.data.runs.length > 0
+                ? `${offset + 1}–${offset + runs.data.runs.length}`
+                : "No runs"}
+            </span>
             <span className="spacer" />
             <button
               type="button"

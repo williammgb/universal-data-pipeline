@@ -1,8 +1,16 @@
 #!/bin/sh
 # The platform's one command, without the `uv run --locked` prefix:
 #
-#   ./udp up [--demo]              start the platform in containers (with the demo sources)
+#   ./udp up [--demo]              start the platform in containers (with the demo sources),
+#                                  then print the dashboard's address
+#   ./udp run [--demo]             the same as up
 #   ./udp down                     stop every container, keeping the data
+#   ./udp status                   list the containers and their health
+#   ./udp logs [<service>...] [-f] the last 100 log lines of every container, or of those named;
+#                                  -f keeps following them
+#   ./udp open                     open the dashboard in the browser
+#   ./udp restart                  restart the API and the scheduler
+#   ./udp backup                   dump the database to backups/udp-<yyyyMMdd-HHmmss>.dump
 #   ./udp load <source>... --docker
 #                                  load sources inside the running containers, building the
 #                                  image first so the load runs the current code
@@ -38,8 +46,17 @@ compose() {
   $engine env COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-udp}" "$@"
 }
 
+# The dashboard's address: the port in this shell's UDP_API_PORT, else in deploy/.env, else 8000.
+address() {
+  port=${UDP_API_PORT:-}
+  if [ -z "$port" ] && [ -f deploy/.env ]; then
+    port=$(sed -n 's/^UDP_API_PORT=//p' deploy/.env | tail -n 1 | tr -d "\r\"'")
+  fi
+  echo "http://127.0.0.1:${port:-8000}"
+}
+
 case "${1:-}" in
-  up)
+  up | run)
     shift
     profiles=
     for arg in "$@"; do
@@ -53,6 +70,7 @@ case "${1:-}" in
     if [ "${UDP_DRY_RUN:-}" != 1 ]; then keepalive_stop udp; keepalive_start udp infinity; fi
     # shellcheck disable=SC2086
     compose $profiles up -d --build --wait
+    [ "${UDP_DRY_RUN:-}" = 1 ] || echo "Dashboard: $(address) (API key in deploy/.env)"
     ;;
   down)
     shift
@@ -72,6 +90,57 @@ case "${1:-}" in
     done
     # `run` alone never rebuilds an image that exists, and `up` does not build this one.
     compose run --rm --build app load "$@"
+    ;;
+  status)
+    shift
+    compose --profile app --profile demo --profile monitoring --profile scale ps "$@"
+    ;;
+  logs)
+    shift
+    compose logs --tail 100 "$@"
+    ;;
+  restart)
+    shift
+    [ $# -eq 0 ] || { echo "usage: ./udp restart" >&2; exit 2; }
+    compose restart api scheduler
+    ;;
+  backup)
+    shift
+    [ $# -eq 0 ] || { echo "usage: ./udp backup" >&2; exit 2; }
+    dump="backups/udp-$(date +%Y%m%d-%H%M%S).dump"
+    if [ "${UDP_DRY_RUN:-}" = 1 ]; then
+      called=$(compose exec -T postgres pg_dump -U udp -Fc udp)
+      echo "$called > $dump"
+      exit 0
+    fi
+    # Written under a .part name, so a dump cut short is never mistaken for a whole one.
+    mkdir -p backups
+    if compose exec -T postgres pg_dump -U udp -Fc udp > "$dump.part"; then
+      mv "$dump.part" "$dump"
+      echo "Backup: $dump"
+    else
+      rm -f "$dump.part"
+      exit 1
+    fi
+    ;;
+  open)
+    url=$(address)
+    if [ "$(uname -s)" = Darwin ]; then
+      set -- open "$url"
+      shown="open $url"
+    elif command -v xdg-open > /dev/null 2>&1; then
+      set -- xdg-open "$url"
+      shown="xdg-open $url"
+    elif command -v cmd.exe > /dev/null 2>&1; then
+      set -- cmd.exe /c start "" "$url"
+      shown="cmd.exe /c start \"\" $url"
+    else
+      echo "Dashboard: $url"
+      exit 0
+    fi
+    if [ "${UDP_DRY_RUN:-}" = 1 ]; then echo "$shown"; exit 0; fi
+    # MSYS_NO_PATHCONV: without it Git Bash turns /c into a Windows path.
+    MSYS_NO_PATHCONV=1 "$@"
     ;;
   *)
     exec uv run --locked udp "$@"

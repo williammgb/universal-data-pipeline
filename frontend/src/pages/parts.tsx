@@ -1,10 +1,22 @@
 import type { ReactNode } from "react";
 
 import type { RunItem } from "../api/client";
-import { moment } from "../format";
+import { describeSchedule, moment, sentence } from "../format";
 
 export function Status({ status }: { status: RunItem["status"] }) {
-  return <span className={`pill ${status}`}>{status}</span>;
+  return <span className={`pill ${status}`}>{sentence(status)}</span>;
+}
+
+/** A schedule in words where it has a common shape, the cron as the tooltip; otherwise the
+ * cron as written. */
+export function Schedule({ schedule }: { schedule: string | null | undefined }) {
+  if (!schedule) return <span className="muted">Not scheduled</span>;
+  const plain = describeSchedule(schedule);
+  return plain ? (
+    <span title={schedule}>{sentence(plain)}</span>
+  ) : (
+    <span className="mono-id">{schedule}</span>
+  );
 }
 
 export function Problem({ error }: { error: unknown }) {

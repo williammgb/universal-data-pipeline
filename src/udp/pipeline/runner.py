@@ -255,15 +255,25 @@ def _load_dataset(
     transaction.record_lineage(source, dataset.name, RunRef(ingest_run_id=run_id), went, started_at)
     log.info("added to RAW", step="load", rows=raw_rows)
     limit = dataset.quarantine_threshold_percent
+    over_limit = None
     if threshold_exceeded(findings.quarantined_rows, counter.rows, limit):
         # transform.py can add rows, so rows can be quarantined when none were extracted.
         share = f" ({findings.quarantined_rows * 100 / counter.rows:.2f}%)" if counter.rows else ""
-        raise QualityError(
+        over_limit = (
             f"{findings.quarantined_rows} of {counter.rows} rows{share} quarantined, "
             f"above the dataset's limit of {limit:g}%"
         )
-    if dataset.checks or dataset.columns:
-        check_dataset(transaction, table, dataset, findings, started_at)
+    # The table checks run even on a run that will fail for its quarantine, so the Quality tab
+    # shows every check, not only the row checks.
+    try:
+        if dataset.checks or dataset.columns:
+            check_dataset(transaction, table, dataset, findings, started_at)
+    except QualityError as error:
+        if over_limit is None:
+            raise
+        raise QualityError(f"{over_limit}; {error}") from error
+    if over_limit is not None:
+        raise QualityError(over_limit)
     if incremental and tracker.kind is None:
         # No rows arrived, so the column types are unknown: nothing is saved, and the next
         # run with data builds the table again as a first load.

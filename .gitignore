@@ -17,6 +17,8 @@ dist/
 .ruff_cache/
 .hypothesis/
 reports/
+# Database dumps written by ./udp backup.
+backups/
 
 # Downloaded test datasets, too large to keep in git.
 sources/owid_co2/data/

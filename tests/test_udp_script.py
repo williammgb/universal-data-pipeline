@@ -62,10 +62,20 @@ def test_help_lists_the_new_command_names_and_not_the_old_ones() -> None:
     [
         (["up"], f"{COMPOSE} up -d --build --wait"),
         (["up", "--demo"], f"{COMPOSE} --profile demo up -d --build --wait"),
+        # `run` is another name for `up`, making the same call.
+        (["run"], f"{COMPOSE} up -d --build --wait"),
+        (["run", "--demo"], f"{COMPOSE} --profile demo up -d --build --wait"),
         (
             ["down"],
             f"{COMPOSE} --profile app --profile demo --profile monitoring --profile scale down",
         ),
+        (
+            ["status"],
+            f"{COMPOSE} --profile app --profile demo --profile monitoring --profile scale ps",
+        ),
+        (["logs"], f"{COMPOSE} logs --tail 100"),
+        (["logs", "api", "-f"], f"{COMPOSE} logs --tail 100 api -f"),
+        (["restart"], f"{COMPOSE} restart api scheduler"),
         # --build: the app image is built before the load, so it never runs stale code.
         (["load", "demo_csv", "--docker"], f"{COMPOSE} run --rm --build app load demo_csv"),
         (
@@ -107,7 +117,34 @@ def test_a_variable_exported_empty_is_not_passed(arguments: list[str]) -> None:
     assert _passing(result) == "passing: UDP_API_PORT"
 
 
-@pytest.mark.parametrize("arguments", [["up", "--demo", "--other"], ["down", "-v"]])
+def test_backup_dumps_the_database_into_a_dated_file_under_backups() -> None:
+    result = _udp("backup")
+
+    assert result.returncode == 0, result.stderr
+    dump = f"{COMPOSE} exec -T postgres pg_dump -U udp -Fc udp > backups/udp-"
+    assert re.fullmatch(re.escape(dump) + r"\d{8}-\d{6}\.dump", result.stdout.strip()), (
+        result.stdout
+    )
+
+
+def test_open_uses_the_port_this_shell_exports() -> None:
+    result = _udp("open", exported={"UDP_API_PORT": "8123"})
+
+    # The opener depends on the machine; the address it is handed does not.
+    assert result.returncode == 0, result.stderr
+    assert "http://127.0.0.1:8123" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["up", "--demo", "--other"],
+        ["run", "--demo", "--other"],
+        ["down", "-v"],
+        ["restart", "x"],
+        ["backup", "x"],
+    ],
+)
 def test_container_shortcuts_refuse_what_they_do_not_know(arguments: list[str]) -> None:
     result = _udp(*arguments)
 

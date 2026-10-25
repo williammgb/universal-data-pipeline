@@ -6,14 +6,26 @@ datasets read through it — and, when the data needs shaping, a `transform.py`.
 
 ## The shortest possible source
 
+Put the data files in a folder under `sources/`, directly in it or in its `data/` folder:
+
 ```
 sources/
   my_shop/
-    source.yaml
     data/customers.csv
 ```
 
+Then write its `source.yaml` from them, and load it:
+
+```
+udp new my_shop
+udp load my_shop
+```
+
+From the source code, the same is `./udp new my_shop` and `./udp load my_shop`. `udp new` writes
+one dataset per file, named after the file, and never overwrites a `source.yaml` already there:
+
 ```yaml
+# Made by udp new. Every setting: docs/adding-a-source.md
 connection:
   type: csv
 datasets:
@@ -22,13 +34,10 @@ datasets:
     load_mode: full
 ```
 
-Then:
+A source reads one kind of file, so CSV, Excel and JSON files each go in a folder of their own.
+Everything below is a setting added to that file by hand.
 
-```
-./udp load my_shop
-```
-
-That reads the file, cleans the column names (`Customer ID` becomes `customer_id`), works out a
+`udp load` reads the file, cleans the column names (`Customer ID` becomes `customer_id`), works out a
 type per column, and replaces the table `datasets.my_shop__customers`. The run is recorded in
 `platform.pipeline_runs`, and the dataset appears in the dashboard.
 
@@ -230,21 +239,24 @@ describes the code that ran, and editing it makes the next run reload everything
 ## Running it
 
 ```
-./udp load my_shop                          every dataset of the source
-./udp load my_shop other_shop               several sources, one after another
-./udp load my_shop --full-refresh           forget the saved state and reload
-./udp load my_shop --docker                 the same, inside the running containers
+udp load my_shop                            every dataset of the source
+udp load my_shop other_shop                 several sources, one after another
+udp load my_shop --full-refresh             forget the saved state and reload
 ```
+
+From the source code, `./udp load` takes the same and runs on this machine; add `--docker` to run
+it inside the running containers instead.
 
 Exit codes: 0 when every dataset succeeded or was skipped, 1 when a run failed, 2 when the
 configuration is invalid — with the file and field named.
 
-To have it run by itself, give the dataset a `schedule:` and start the scheduler — it starts
-with the platform's containers, or runs on its own without them:
+To have it run by itself, give the dataset a `schedule:`. The scheduler starts with the platform
+and reads the schedules only when it starts, so restart it after adding one:
 
 ```
-./udp up                                    the platform, its scheduler included
-./udp schedule                              the scheduler alone, until stopped
+udp restart                                 the API and the scheduler, which reads the schedule
+./udp restart                               the same, from the source code
+./udp schedule                              without containers: the scheduler alone, until stopped
 ```
 
 ## Seeing it

@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,8 +20,9 @@ from udp.api.app import create_app
 from udp.api.auth import parse_keys
 from udp.api.catalog import PostgresCatalog
 from udp.config.pipeline import load_pipeline, read_pipeline_file
+from udp.config.scaffold import write_source
 from udp.config.secrets import read_environment
-from udp.config.source import SourceConfig, load_source
+from udp.config.source import SOURCE_FILE, SourceConfig, load_source
 from udp.errors import ConfigError, LoadError
 from udp.log import configure_logging
 from udp.names import Stage
@@ -52,9 +54,17 @@ def main(
     """Universal data platform."""
 
 
+def _sources_dir() -> Path:
+    """The sources folder, by the same rule as `Settings.sources_dir`, with no database address."""
+    return Path(os.environ.get("UDP_SOURCES_DIR", "sources"))
+
+
 @app.command()
 def load(
-    sources: Annotated[list[str], typer.Argument(help="Folder names under sources/.")],
+    sources: Annotated[
+        list[str] | None,
+        typer.Argument(help="Folder names under sources/; none lists them.", show_default=False),
+    ] = None,
     full_refresh: Annotated[
         bool,
         typer.Option("--full-refresh", help="Delete each dataset's table and load it again."),
@@ -63,8 +73,22 @@ def load(
     """Load every dataset of each source, in the order given.
 
     Exit 0 when every run succeeded or was skipped because another run of its dataset was in
-    progress, 1 when a run failed, 2 on invalid config.
+    progress, 1 when a run failed, 2 on invalid config or when no source is named.
     """
+    if not sources:
+        folder = _sources_dir()
+        names = (
+            sorted(p.name for p in folder.iterdir() if (p / SOURCE_FILE).is_file())
+            if folder.is_dir()
+            else []
+        )
+        if names:
+            raise _fail(f"Name a source to load: udp load <source>. Sources: {', '.join(names)}", 2)
+        raise _fail(
+            f"No sources yet. Put your files in {folder.as_posix()}/<name>/ "
+            "and run: udp new <name>",
+            2,
+        )
     configure_logging()
     settings = Settings()  # type: ignore[call-arg]
     environment = read_environment(Path(".env"))
@@ -315,3 +339,29 @@ def doctor() -> None:
     with psycopg.connect(settings.database_url) as conn:
         row = conn.execute("SHOW server_version").fetchone()
     typer.echo(f"postgres {row[0] if row else 'unknown'}")
+
+
+@app.command()
+def new(
+    source: Annotated[
+        str, typer.Argument(help="Folder name under sources/, holding the data files.")
+    ],
+) -> None:
+    """Write sources/<source>/source.yaml from the data files in that folder and its data/.
+
+    One dataset per .csv, .xlsx, .xls, .json or .jsonl file; an existing source.yaml is never
+    overwritten. Needs no database. Exit 0 when the file was written, 2 when it was refused.
+    """
+    sources_dir = _sources_dir()
+    try:
+        names = write_source(sources_dir, source)
+    except ConfigError as error:
+        raise _fail(str(error), 2) from error
+    except OSError as error:
+        folder = (sources_dir / source).as_posix()
+        raise _fail(f"Cannot read {folder}: {error.strerror}.", 2) from error
+    shown = (sources_dir / source / SOURCE_FILE).as_posix()
+    noun = "dataset" if len(names) == 1 else "datasets"
+    typer.echo(
+        f"Wrote {shown} with {len(names)} {noun}: {', '.join(names)}. Load it: udp load {source}"
+    )

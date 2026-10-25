@@ -135,7 +135,13 @@ class QualityReport(BaseModel):
     results: list[CheckResult]
 
 
+RunKind = Literal["load", "pipeline"]
+
+
 class RunItem(RunSummary):
+    """A load of a source, or a run of a pipeline (`kind`). A pipeline run's `run_id` is its
+    execution id, its rows extracted and loaded the rows it read and wrote to CLEAN."""
+
     source: str
     dataset: str
     rows_extracted: int | None
@@ -143,6 +149,9 @@ class RunItem(RunSummary):
     rows_quarantined: int | None
     error_class: str | None
     error_message: str | None
+    kind: RunKind = "load"
+    pipeline: str | None = None
+    version: int | None = None
 
 
 class RunsPage(BaseModel):

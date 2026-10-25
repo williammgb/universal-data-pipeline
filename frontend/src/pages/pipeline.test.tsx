@@ -288,7 +288,7 @@ describe("the pipeline builder", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Run" }));
     await waitFor(() => expect(asked).toContain(`POST ${PIPELINE}/runs`));
-    expect(await within(block("CLEAN")).findByText("succeeded")).toBeTruthy();
+    expect(await within(block("CLEAN")).findByText("Succeeded")).toBeTruthy();
   });
 
   it("refuses to save an invalid parameter with a message naming the step and the field", async () => {
@@ -336,17 +336,17 @@ describe("the pipeline builder", () => {
     show(`${PAGE}&run=${EXECUTION}`);
 
     const first = await screen.findByRole("region", { name: "Step 1 · Normalize values" });
-    await within(first).findByText("succeeded");
+    await within(first).findByText("Succeeded");
     expect(within(first).getByText("Rows in").nextSibling?.textContent).toBe("20");
     expect(within(first).getByText("Rows out").nextSibling?.textContent).toBe("20");
     expect(within(first).getByText("Values changed").nextSibling?.textContent).toBe("3");
     const second = block("Step 2 · Fill missing values");
-    expect(within(second).getByText("failed")).toBeTruthy();
+    expect(within(second).getByText("Failed")).toBeTruthy();
     expect(
       within(second).getByText("median needs a numeric column; lifetime_value is text"),
     ).toBeTruthy();
-    expect(within(block("Step 3 · Outliers")).getByText("not run")).toBeTruthy();
-    expect(within(block("CLEAN")).getByText("failed")).toBeTruthy();
+    expect(within(block("Step 3 · Outliers")).getByText("Not run")).toBeTruthy();
+    expect(within(block("CLEAN")).getByText("Failed")).toBeTruthy();
     // A run that ended at a step has no CLEAN profile to compare with.
     expect(screen.queryByRole("region", { name: "Before and after" })).toBe(null);
   });
@@ -405,6 +405,36 @@ describe("the pipeline builder", () => {
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByLabelText("Dataset") as HTMLSelectElement).value).toBe("demo_csv/customers");
     expect(onlyReads(asked)).toBe(true);
+  });
+
+  it("offers nothing to build on before a load has stored the dataset", async () => {
+    serve({
+      "GET /api/datasets": { body: [{ source: "demo_csv", dataset: "customers" }] },
+      [`GET ${PIPELINE}`]: {
+        body: { ...SAVED, version: null, saved_at: null, steps: [], constraints: [], columns: [] },
+      },
+    });
+
+    show(PAGE);
+
+    await screen.findByText("not loaded yet");
+    expect(within(block("RAW")).getByText("not loaded yet")).toBeTruthy();
+    const runs = within(block("RAW")).getByRole("link", { name: "Runs" });
+    expect(runs.getAttribute("href")).toBe("/datasets/demo_csv/customers?tab=runs");
+    expect(screen.queryByRole("button", { name: "Add step" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add constraint" })).toBeNull();
+    expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("adds a step that drops duplicate rows", async () => {
+    serve(BASE);
+    show(PAGE);
+    await screen.findByRole("region", { name: "Step 3 · Outliers" });
+
+    fireEvent.change(screen.getByLabelText("Step type"), { target: { value: "drop_duplicates" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add step" }));
+
+    expect(await screen.findByRole("region", { name: "Step 4 · Drop duplicate rows" })).toBeTruthy();
   });
 
   it("is reached from a dataset's page", async () => {

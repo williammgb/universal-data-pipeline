@@ -21,6 +21,7 @@ import type {
 import { rememberKey } from "../api/key";
 import App from "../App";
 import { FULL_CLASS } from "../settings";
+import { typeName } from "../format";
 import { TAB_NAMES, TABS } from "./Dataset";
 
 const SOURCES: SourceItem[] = [
@@ -272,6 +273,7 @@ const RUNS: RunsPage = {
       rows_quarantined: 0,
       error_class: "ExtractError",
       error_message: "could not connect to the source database",
+      kind: "load",
     },
   ],
   limit: 50,
@@ -325,10 +327,15 @@ describe("the dashboard", () => {
 
     show("/");
 
-    expect(await screen.findByRole("link", { name: "customers" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "orders" })).toBeTruthy();
-    expect(screen.getByText("* * * * *")).toBeTruthy();
-    expect(screen.getByText("succeeded")).toBeTruthy();
+    // A dataset is named as a title, with its exact name under it.
+    expect(await screen.findByRole("link", { name: "Customers" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Orders" })).toBeTruthy();
+    expect(screen.getByText("demo_csv.customers")).toBeTruthy();
+    // The schedule in words, the cron as its tooltip; no schedule says so.
+    expect(screen.getByTitle("* * * * *").textContent).toBe("Every minute");
+    expect(screen.getByText("Not scheduled")).toBeTruthy();
+    expect(screen.getByText("Succeeded")).toBeTruthy();
+    expect(screen.getByText("Merge")).toBeTruthy();
     expect(screen.getByText("2026-09-16 09:14:00")).toBeTruthy();
     // Rows are the table's own count, not what the last run added.
     expect(screen.getByText("20")).toBeTruthy();
@@ -336,7 +343,6 @@ describe("the dashboard", () => {
     expect(screen.queryByText("0")).toBeNull();
     expect(screen.getByText("CSV")).toBeTruthy();
     expect(screen.getByText("Database")).toBeTruthy();
-    expect(screen.getByText("every minute")).toBeTruthy();
     expect(screen.queryByText(/appears here after its first run/)).toBeNull();
   });
 
@@ -348,7 +354,7 @@ describe("the dashboard", () => {
 
     show("/?q=cust");
 
-    await screen.findByRole("link", { name: "customers" });
+    await screen.findByRole("link", { name: "Customers" });
     expect(asked).toContain("GET /api/datasets?q=cust");
   });
 
@@ -358,15 +364,47 @@ describe("the dashboard", () => {
     show("/datasets/demo_csv/customers");
 
     expect(await screen.findByText("datasets.demo_csv__customers")).toBeTruthy();
-    expect(await screen.findByText("integer")).toBeTruthy();
-    expect(screen.getByText("inferred")).toBeTruthy();
-    expect(screen.getByText("bigint")).toBeTruthy();
-    // One line of facts: the file's path without its sha256, the type and the row count.
+    expect(screen.getByRole("heading", { name: "Customers" })).toBeTruthy();
+    const table = await screen.findByRole("table");
+    const rows = within(table)
+      .getAllByRole("row")
+      .slice(1)
+      .map((row) => within(row).getAllByRole("cell").map((cell) => cell.textContent));
+    // customer_id was declared an integer and is stored as bigint; city was inferred.
+    expect(rows).toEqual([
+      ["1", "customer_id", "Integer", "bigint", "Declared"],
+      ["2", "city", "Text", "text", "Inferred"],
+    ]);
+    // The facts as cards: the file's path without its sha256, the row count and the schedule.
     expect(screen.getByText("data/customers.csv")).toBeTruthy();
     expect(screen.queryByText(/sha256/)).toBeNull();
     expect(screen.getByText("CSV")).toBeTruthy();
     expect(screen.getByText("20")).toBeTruthy();
-    expect(screen.getByText(/\(every minute\)/)).toBeTruthy();
+    expect(screen.getByTitle("* * * * *").textContent).toBe("Every minute");
+  });
+
+  it("names column types in words", () => {
+    expect(
+      ["bigint", "numeric(10,2)", "decimal(8,2)", "timestamp with time zone", "jsonb", "uuid"].map(
+        typeName,
+      ),
+    ).toEqual(["Integer", "Decimal (10, 2)", "Decimal (8, 2)", "Timestamp", "JSON", "uuid"]);
+  });
+
+  it("lists the declared columns of a dataset no load has stored yet", async () => {
+    const declared = { name: "customers", columns: { customer_id: "integer", signed_up: "date" } };
+    serve({
+      "GET /api/datasets/demo_csv/customers": {
+        body: { ...DETAIL, columns: [], versions: [], definition: declared },
+      },
+    });
+
+    show("/datasets/demo_csv/customers");
+
+    expect(await screen.findByText("2 declared")).toBeTruthy();
+    expect(screen.queryByText(/of 0 columns/)).toBeNull();
+    expect(screen.getByText("signed_up")).toBeTruthy();
+    expect(within(screen.getByRole("table")).getAllByText("Not stored yet")).toHaveLength(2);
   });
 
   it("profiles each kind of column and says when a sample was used", async () => {
@@ -578,6 +616,48 @@ describe("the dashboard", () => {
     }
   });
 
+  it("lists loads and pipeline runs together, each linking to its own page", async () => {
+    const load = RUNS.runs[0]!;
+    const pipelineRun = {
+      ...load,
+      run_id: "01a0a3de-9cb0-73ec-be37-1caa01588b64",
+      source: "demo_csv",
+      dataset: "customers",
+      kind: "pipeline" as const,
+      pipeline: "customers_built",
+      version: 2,
+      status: "succeeded" as const,
+      rows_loaded: 18,
+      error_class: null,
+      error_message: null,
+    };
+    const asked = serve({
+      "GET /api/runs": { body: { ...RUNS, runs: [pipelineRun, load] } },
+      "GET /api/sources": { body: SOURCES },
+    });
+
+    show("/runs");
+
+    const rows = (await screen.findAllByRole("row")).slice(1);
+    expect(rows.map((row) => within(row).getAllByRole("cell")[2]!.textContent)).toEqual([
+      "Pipelinecustomers_built v2",
+      "Load",
+    ]);
+    expect(within(rows[0]!).getByRole("link").getAttribute("href")).toBe(
+      `/pipeline?source=demo_csv&dataset=customers&name=customers_built&run=${pipelineRun.run_id}`,
+    );
+    expect(within(rows[1]!).getByRole("link").getAttribute("href")).toBe(`/runs/${load.run_id}`);
+    expect(asked.some((call) => call.startsWith("GET /api/runs?") && call.includes("kind=all"))).toBe(
+      true,
+    );
+
+    fireEvent.change(screen.getByLabelText("Kind"), { target: { value: "pipeline" } });
+
+    await waitFor(() =>
+      expect(asked.some((call) => call.includes("kind=pipeline"))).toBe(true),
+    );
+  });
+
   it("shows a failed run's error class and keeps the status filter in the address", async () => {
     const asked = serve({ "GET /api/runs": { body: RUNS }, "GET /api/sources": { body: SOURCES } });
 
@@ -644,7 +724,10 @@ describe("the dashboard", () => {
     show("/runs");
 
     expect(await screen.findByText("ExtractError")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Runs" }).parentElement?.textContent).toBe("Runs");
+    // Beside the title only the Live mark, which says the list refreshes by itself.
+    expect(screen.getByRole("heading", { name: "Runs" }).parentElement?.textContent).toBe(
+      "RunsLive",
+    );
     // The sentence is put together here, so that searching the code for it finds nothing.
     const gone = ["filters are", "kept in the address"].join(" ");
     expect(document.body.textContent).not.toContain(gone);
@@ -828,7 +911,7 @@ describe("the dashboard", () => {
     expect(guide).toContain("schedule");
     expect(guide).toContain("cron fields in UTC");
     expect(guide).toContain("Amsterdam time");
-    expect(screen.getByRole("banner").textContent).toContain("all times Amsterdam");
+    expect(screen.getByRole("banner").textContent).toContain("Times in Amsterdam");
     // A page that reads nothing cannot fail on a machine with no API to read.
     expect(asked).toEqual([]);
   });
@@ -1056,6 +1139,21 @@ describe("the lineage tab", () => {
     expect(screen.getByRole("link", { name: "Lineage" }).className).toContain("current");
   });
 
+  it("shows a step's rows before and after when it dropped some", async () => {
+    const dropped: DatasetLineage = {
+      ...PREPARED,
+      chain: PREPARED.chain.map((node, index) =>
+        index === 3 && node.step ? { ...node, step: { ...node.step, rows_out: 18 } } : node,
+      ),
+    };
+    showLineage({ [LINEAGE_ADDRESS]: { body: dropped } });
+
+    const blocks = await chainShown();
+
+    expect(blocks[2]).toContain("20 rows · 3 changed");
+    expect(blocks[3]).toContain("20 → 18 rows · 1 changed");
+  });
+
   it("shows a step's transformation, column, method, input rows, values changed and status", async () => {
     showLineage({ [LINEAGE_ADDRESS]: { body: PREPARED } });
     await chainShown();
@@ -1068,7 +1166,7 @@ describe("the lineage tab", () => {
     expect(factIn(panel, "Method")).toBe("median");
     expect(factIn(panel, "Input rows")).toBe("20");
     expect(factIn(panel, "Values changed")).toBe("1");
-    expect(factIn(panel, "Status")).toBe("succeeded");
+    expect(factIn(panel, "Status")).toBe("Succeeded");
     expect(within(panel).getByText("Profile after step 2")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Step 2/ }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("button", { name: /Step 1/ }).getAttribute("aria-pressed")).toBe("false");
@@ -1085,7 +1183,7 @@ describe("the lineage tab", () => {
     expect(within(failed).getByText("ValueError: cannot read row 3")).toBeTruthy();
     // The failed step is the one shown first, with its error and the line it failed on.
     const panel = screen.getByRole("complementary", { name: "Step 2" });
-    expect(factIn(panel, "Status")).toBe("failed");
+    expect(factIn(panel, "Status")).toBe("Failed");
     expect(factIn(panel, "Failing line")).toBe("2");
     expect(within(panel).getByText("ValueError: cannot read row 3")).toBeTruthy();
     expect(screen.queryByText(/clean\.demo_csv__customers/)).toBeNull();
@@ -1138,7 +1236,7 @@ describe("the lineage tab", () => {
     await waitFor(() => expect(screen.queryByText(/clean\.demo_csv__customers/)).toBeNull());
     const blocks = await chainShown();
     expect(blocks[3]).toContain("python");
-    expect(blocks[4]).toContain("not run");
+    expect(blocks[4]).toContain("Not run");
     expect(asked).toContain(`${LINEAGE_ADDRESS}?run=${BROKE.execution_id}`);
     expect((screen.getByLabelText("Run") as HTMLSelectElement).value).toBe(BROKE.execution_id);
   });

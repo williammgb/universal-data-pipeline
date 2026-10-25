@@ -66,6 +66,32 @@ def test_drop_missing_with_no_columns_drops_a_null_anywhere() -> None:
     assert result.rows_out == 2
 
 
+DUPLICATED = pl.DataFrame(
+    {
+        "id": [1, 2, 1, 3, 2, None, None],
+        "city": ["a", "b", "a", "c", "x", None, None],
+    }
+)
+
+
+def test_drop_duplicates_keeps_the_first_of_each_repeated_row_in_order() -> None:
+    frame, result = _run({"type": "drop_duplicates"}, DUPLICATED)
+    # Two rows of nulls count as the same row.
+    assert frame.rows() == [(1, "a"), (2, "b"), (3, "c"), (2, "x"), (None, None)]
+    assert (result.status, result.rows_in, result.rows_out) == ("succeeded", 7, 5)
+
+
+def test_drop_duplicates_on_named_columns_compares_only_those() -> None:
+    frame, result = _run({"type": "drop_duplicates", "columns": ["id"]}, DUPLICATED)
+    assert frame.rows() == [(1, "a"), (2, "b"), (3, "c"), (None, None)]
+    assert result.rows_out == 4
+
+
+def test_drop_duplicates_refuses_a_column_not_in_the_data() -> None:
+    with pytest.raises(ConfigError, match="column 'nope' is not in the data"):
+        _one({"type": "drop_duplicates", "columns": ["nope"]}, DUPLICATED)
+
+
 @pytest.mark.parametrize(
     ("method", "value", "column", "filled"),
     [
@@ -315,6 +341,8 @@ def test_a_critical_failure_does_not_stop_the_step_when_told_not_to() -> None:
     ("definition", "frame", "changed"),
     [
         ({"type": "drop_missing"}, PEOPLE, 0),
+        # Rows are dropped, never changed.
+        ({"type": "drop_duplicates"}, DUPLICATED, 0),
         # name has one null.
         ({"type": "fill_missing", "columns": ["name"], "method": "mode"}, PEOPLE, 1),
         # age has two nulls, score one.
@@ -352,6 +380,7 @@ def test_values_changed_matches_a_hand_count(
 
 def test_the_standard_types_are_registered() -> None:
     assert set(TRANSFORMATIONS) >= {
+        "drop_duplicates",
         "drop_missing",
         "fill_missing",
         "convert_type",

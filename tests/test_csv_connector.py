@@ -54,11 +54,29 @@ def test_chunks_are_bounded_and_join_back_into_the_whole_file(
             csv.writer(handle).writerows(table)
 
         chunks = list(_extract(Path(directory), chunk_size))
-        whole = pl.read_csv(path, infer_schema_length=INFER_SCHEMA_ROWS)
+        try:
+            whole = pl.read_csv(path, infer_schema_length=INFER_SCHEMA_ROWS)
+        except pl.exceptions.ComputeError:
+            # Polars guessed a type it cannot parse: the connector reads such a file as text.
+            whole = pl.read_csv(path, infer_schema=False)
 
     assert len(chunks) >= 1
     assert all(chunk.height <= chunk_size for chunk in chunks)
     assert_frame_equal(pl.concat(chunks), whole)
+
+
+@pytest.mark.parametrize("chunk_size", [1, 10])
+def test_a_cell_polars_takes_for_a_number_but_cannot_parse_makes_every_column_text(
+    tmp_path: Path, chunk_size: int
+) -> None:
+    (tmp_path / "data.csv").write_text("id,code\n1,5\n2,\U00011450\n", encoding="utf-8")
+
+    chunks = list(_extract(tmp_path, chunk_size))
+
+    assert pl.concat(chunks).to_dicts() == [
+        {"id": "1", "code": "5"},
+        {"id": "2", "code": "\U00011450"},
+    ]
 
 
 def test_missing_file_raises_extract_error_naming_the_path(tmp_path: Path) -> None:

@@ -111,11 +111,13 @@ const SECTIONS: Section[] = [
       <>
         <p>
           Sources are not added from this dashboard — they are files in the project, so they can be
-          reviewed and kept in version control. The shortest one is a folder under{" "}
-          <code>sources/</code> holding a <code>source.yaml</code>:
+          reviewed and kept in version control. Put the data files in a folder under{" "}
+          <code>sources/</code> and run <code>udp new my_shop</code>, which writes the{" "}
+          <code>source.yaml</code> below, one dataset per file:
         </p>
         <pre>
-          <code>{`connection:
+          <code>{`# Made by udp new. Every setting: docs/adding-a-source.md
+connection:
   type: csv
 datasets:
   - name: customers
@@ -123,7 +125,7 @@ datasets:
     load_mode: full`}</code>
         </pre>
         <p>
-          Then run <code>./udp load my_shop</code> once. It reads the file, tidies the
+          Then run <code>udp load my_shop</code> once. It reads the file, tidies the
           column names (<code>Customer ID</code> becomes <code>customer_id</code>), works out a type
           for every column, writes the table, and the dataset appears in the list on this
           dashboard.

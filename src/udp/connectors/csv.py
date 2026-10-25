@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Literal
 
 import polars as pl
@@ -54,6 +55,8 @@ class CsvConnector:
             frame = pl.scan_csv(
                 path, infer_schema_length=INFER_SCHEMA_ROWS, schema_overrides=text_columns
             )
+            if _guessed_a_number_it_cannot_parse(path, frame.collect_schema()):
+                frame = pl.scan_csv(path, infer_schema=False)
             yielded = False
             for batch in frame.collect_batches(chunk_size=request.chunk_size):
                 for chunk in batch.iter_slices(request.chunk_size):
@@ -69,3 +72,17 @@ class CsvConnector:
             )
         except pl.exceptions.PolarsError as error:
             raise ExtractError(f"could not read CSV file {path.as_posix()}: {error}") from error
+
+
+def _guessed_a_number_it_cannot_parse(path: Path, schema: pl.Schema) -> bool:
+    """Whether a column guessed as a number holds a non-ASCII character in the rows guessed from.
+
+    Polars' guess counts any Unicode digit (U+11450, say) as a digit, but its parser takes only
+    ASCII ones, so such a file fails on a row the guess itself saw: it is read as text instead.
+    """
+    numbers = [name for name, dtype in schema.items() if dtype.is_numeric()]
+    if not numbers:
+        return False
+    window = pl.scan_csv(path, infer_schema=False).head(INFER_SCHEMA_ROWS)
+    found = pl.any_horizontal(pl.col(numbers).str.contains(r"[^\x00-\x7F]").any())
+    return bool(window.select(found).collect().item())
