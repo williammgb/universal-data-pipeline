@@ -118,13 +118,41 @@ def test_sh_writes_both_bashrc_and_zshrc_when_both_exist(tmp_path: Path) -> None
         assert lines[0] == "# mine" and len(lines) == 2 and lines[1].endswith("# udp"), rc
 
 
-def test_sh_with_neither_rc_file_writes_profile(tmp_path: Path) -> None:
-    _ok(_sh(tmp_path))
-    _ok(_sh(tmp_path))
+def test_sh_with_neither_rc_file_writes_profile_and_zprofile(tmp_path: Path) -> None:
+    _ok(_sh(tmp_path, SHELL="/bin/bash"))
+    _ok(_sh(tmp_path, SHELL="/bin/bash"))
 
     assert not (tmp_path / ".bashrc").exists() and not (tmp_path / ".zshrc").exists()
-    assert len((tmp_path / ".profile").read_text().splitlines()) == 1
-    _ok(_on_path_after_sourcing(tmp_path, ".profile"))
+    for rc in (".profile", ".zprofile"):
+        assert len((tmp_path / rc).read_text().splitlines()) == 1, rc
+        found = _ok(_on_path_after_sourcing(tmp_path, rc)).stdout.strip()
+        assert found.endswith("/udp/udp"), rc
+
+
+def test_sh_with_neither_rc_file_and_zsh_writes_profile_and_zshrc(tmp_path: Path) -> None:
+    """A new Mac: zsh, and no shell file yet. zsh reads ~/.zshrc, never ~/.profile."""
+    _ok(_sh(tmp_path, SHELL="/bin/zsh"))
+    _ok(_sh(tmp_path, SHELL="/bin/zsh"))
+
+    assert not (tmp_path / ".bashrc").exists() and not (tmp_path / ".zprofile").exists()
+    for rc in (".profile", ".zshrc"):
+        assert len((tmp_path / rc).read_text().splitlines()) == 1, rc
+        found = _ok(_on_path_after_sourcing(tmp_path, rc)).stdout.strip()
+        assert found.endswith("/udp/udp"), rc
+
+
+def test_sh_does_not_add_a_second_line_to_a_file_with_the_older_one(tmp_path: Path) -> None:
+    home = (
+        _ok(_sh(tmp_path, UDP_SKIP_PATH="1"))
+        .stdout.splitlines()[0]
+        .removeprefix("Installed udp in ")
+    )
+    older = f'export PATH="{home}:$PATH"  # udp\n'
+    (tmp_path / ".bashrc").write_text(older)
+
+    _ok(_sh(tmp_path))
+
+    assert (tmp_path / ".bashrc").read_text() == older
 
 
 def test_sh_with_home_already_on_path_changes_no_shell_file(tmp_path: Path) -> None:
@@ -179,6 +207,46 @@ def test_sh_home_with_a_space(tmp_path: Path) -> None:
         assert (home / name).is_file(), name
     found = _ok(_on_path_after_sourcing(tmp_path, ".bashrc")).stdout.strip()
     assert found.endswith("/my udp/udp")
+
+
+# Windows file names cannot hold a ", so it is tried only where they can.
+ODD_NAME = "udp $(touch ran) `touch ran2` it's ${HOME}" + (
+    "" if sys.platform == "win32" else ' "q"'
+)
+
+
+def test_sh_home_with_quotes_dollars_and_backticks_is_taken_as_typed(tmp_path: Path) -> None:
+    (tmp_path / ".bashrc").write_text("")
+    home = tmp_path / ODD_NAME
+
+    _ok(_sh(tmp_path, UDP_HOME=str(home)))
+    _ok(_sh(tmp_path, UDP_HOME=str(home)))
+
+    assert len((tmp_path / ".bashrc").read_text().splitlines()) == 1
+    sourced = _on_path_after_sourcing(tmp_path, ".bashrc")
+    found = _ok(sourced).stdout.strip()
+    assert found.endswith(f"/{ODD_NAME}/udp"), found
+    assert sourced.stderr == ""
+    assert not list(tmp_path.rglob("ran*"))
+
+
+@pytest.mark.parametrize("name", ["a:b", "a\nb"], ids=["colon", "line break"])
+def test_sh_home_that_path_cannot_hold_is_refused_before_installing(
+    tmp_path: Path, name: str
+) -> None:
+    if sys.platform == "win32" and ":" in name:
+        pytest.skip("Windows file names cannot hold a :")
+    if sys.platform == "win32" and "\n" in name:
+        pytest.skip("Windows file names cannot hold a line break")
+    (tmp_path / ".bashrc").write_text("")
+    home = tmp_path / name
+
+    result = _sh(tmp_path, UDP_HOME=str(home))
+
+    assert result.returncode == 1
+    assert "cannot go on PATH" in result.stderr
+    assert not (home / "udp").exists()
+    assert (tmp_path / ".bashrc").read_text() == ""
 
 
 def _ps1(home: Path, source: Path = DEPLOY) -> subprocess.CompletedProcess[str]:

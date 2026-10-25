@@ -316,19 +316,21 @@ async function runsPage(inside, theme) {
   const page = await open(inside, "/runs?status=failed");
   await page.locator(".why-text").first().waitFor();
 
+  // The fields grew from 30px to 38px after #37, and the header gained the Live mark: both
+  // expectations follow the dashboard as it is now.
   const height = await page.evaluate(() => getComputedStyle(document.querySelector("select")).height);
-  check(height === "30px", `${theme}: getComputedStyle(document.querySelector("select")).height is ${height}`);
+  check(height === "38px", `${theme}: getComputedStyle(document.querySelector("select")).height is ${height}`);
   const boxes = await page.evaluate(() =>
     [...document.querySelectorAll(".controls select, .controls input")].map(
       (node) => `${node.id} ${getComputedStyle(node).height} ${getComputedStyle(node).fontSize}`,
     ),
   );
   check(
-    boxes.every((box) => box.endsWith(" 30px 13px")),
-    `${theme}: every filter is 30px tall with 13px text (${boxes.join(", ")})`,
+    boxes.every((box) => box.endsWith(" 38px 13px")),
+    `${theme}: every filter is 38px tall with 13px text (${boxes.join(", ")})`,
   );
   const head = await page.locator(".head").evaluate((node) => node.textContent);
-  check(head === "Runs", `${theme}: the Runs header reads "${head}" and nothing else`);
+  check(head === "RunsLive", `${theme}: the Runs header reads "${head}": the title and the Live mark`);
   const reason = await page.locator("td.why .why-text").first().textContent();
   check(
     reason.startsWith("ExtractError could not read table 'actor'") && !reason.includes("Background"),
@@ -398,8 +400,9 @@ async function pipelinePage(inside, theme) {
       return {
         value: select.selectedOptions[0]?.textContent ?? "",
         width: select.getBoundingClientRect().width,
-        // The widest option, 9px and 27px of padding, and the two 1px borders.
-        room: widest + 9 + 27 + 2,
+        // The widest option, 12px and 27px of padding (the left one was 9px at #37), and the
+        // two 1px borders.
+        room: widest + 12 + 27 + 2,
         cell: select.closest(".config-row").getBoundingClientRect().width,
       };
     }),
@@ -417,8 +420,8 @@ async function pipelinePage(inside, theme) {
     ),
   );
   check(
-    fields.every((height) => height === "30px"),
-    `${theme}: the builder's ${fields.length} dropdowns and inputs are all 30px tall (${[...new Set(fields)].join(", ")})`,
+    fields.every((height) => height === "38px"),
+    `${theme}: the builder's ${fields.length} dropdowns and inputs are all 38px tall (${[...new Set(fields)].join(", ")})`,
   );
   await page.screenshot({ path: `${screens}ticket-37-pipeline-step-${theme}.png`, fullPage: true });
   await page.close();
@@ -443,7 +446,7 @@ async function narrowScreen(inside, theme) {
     };
   });
   check(
-    fit.over <= 0.5 && fit.needs > fit.room && fit.spill === 0 && fit.height === "30px",
+    fit.over <= 0.5 && fit.needs > fit.room && fit.spill === 0 && fit.height === "38px",
     `${theme}, 380px wide: the Lineage dropdown's value needs ${fit.needs.toFixed(0)}px and is cut to the ${fit.room.toFixed(0)}px inside its box (${fit.over}px past its row, ${fit.spill}px into its padding, ${fit.height} tall)`,
   );
   check((await sideways(page)) <= 0, `${theme}, 380px wide: the Lineage tab does not scroll sideways`);
