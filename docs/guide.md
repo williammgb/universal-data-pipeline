@@ -36,6 +36,12 @@ by a one-off container running `udp update`, which every other container waits f
 ./udp up                      start the platform
 ./udp up --demo               the same, plus a sample database and REST API, with all five
                               demo sources loaded
+./udp run                     the same as up (it takes --demo too)
+./udp status                  list the containers and their health
+./udp logs [service...] [-f]  the last 100 log lines, of every container or of those named
+./udp open                    open the dashboard in the browser
+./udp restart                 restart the API and the scheduler (after adding a schedule)
+./udp backup                  save the database to backups/udp-<date>-<time>.dump
 ./udp load my_source --docker load a source in the running stack (several names run in turn)
 ./udp down                    stop everything, keeping the data
 ```
@@ -123,11 +129,16 @@ the environment when the source is read, and the copy stored in the database kee
 
 ## Backup and restore
 
-The platform's whole state is in PostgreSQL, so one dump is the backup. With
-`compose.release.yaml`, put `-f compose.release.yaml` in place of `-f deploy/compose.yaml`:
+The platform's whole state is in PostgreSQL, so one dump is the backup. `udp backup` saves it as
+`~/udp/backups/udp-<date>-<time>.dump`; from the source code, `./udp backup` saves it in the
+clone's `backups/`.
+
+Restoring has no short command. These lines copy a dump into the database container and restore
+it into a new database beside the platform's own; with the release, run them in the `udp` folder
+and put `-f compose.release.yaml` in place of `-f deploy/compose.yaml`:
 
 ```
-docker compose -f deploy/compose.yaml exec postgres pg_dump -U udp -Fc -f /tmp/udp.dump udp
+docker compose -f deploy/compose.yaml cp backups/udp-<date>-<time>.dump postgres:/tmp/udp.dump
 docker compose -f deploy/compose.yaml exec postgres \
   psql -U udp -d postgres -c 'CREATE DATABASE udp_restored OWNER udp'
 docker compose -f deploy/compose.yaml exec postgres pg_restore -U udp -d udp_restored /tmp/udp.dump

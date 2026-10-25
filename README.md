@@ -6,49 +6,82 @@ into PostgreSQL, checks the data, and shows it in a dashboard. Each source is on
 ## Start it
 
 You need Docker with Compose. On Windows or macOS, start Docker Desktop first and wait until it
-says the engine is running. Then, in an empty folder:
+says the engine is running. Then install the `udp` command. It goes in a `udp` folder in your home
+folder (`~/udp`, on Windows `%USERPROFILE%\udp`), which holds everything the platform reads.
+
+On Windows, in PowerShell:
 
 ```
-mkdir sources
-curl -fsSLO https://raw.githubusercontent.com/williammgb/universal-data-pipeline/main/deploy/compose.release.yaml
-export POSTGRES_PASSWORD=pick-a-password
-export UDP_API_KEYS=pick-a-key
-docker compose -f compose.release.yaml up -d --wait
+irm https://raw.githubusercontent.com/williammgb/universal-data-pipeline/main/deploy/install.ps1 | iex
 ```
 
-Open http://127.0.0.1:8000 and enter your API key. This runs the `latest` release; to pin one,
-set `UDP_VERSION` before `up`, as in `export UDP_VERSION=2.0.0`.
+On macOS or Linux:
 
-To stop it, keeping the data: `docker compose -f compose.release.yaml down`.
+```
+curl -fsSL https://raw.githubusercontent.com/williammgb/universal-data-pipeline/main/deploy/install.sh | sh
+```
+
+Then, in a new terminal:
+
+```
+udp up
+```
+
+The first `udp up` saves a new database password and API key in `~/udp/.env` and prints the key.
+Open http://127.0.0.1:8000 (or run `udp open`) and enter that key. This runs the `latest`
+release; to pin one, add the line `UDP_VERSION=2.0.0` to `~/udp/.env`.
+
+| Command | What it does |
+| --- | --- |
+| `udp up` (or `udp run`) | start the platform and print its address |
+| `udp down` | stop it, keeping the data |
+| `udp status` | show the containers |
+| `udp logs [service]` | the last 100 log lines (add `-f` to follow them) |
+| `udp open` | open the dashboard in the browser |
+| `udp restart` | restart the API and the scheduler (after adding a schedule) |
+| `udp upgrade` | pull the newest images and start on them |
+| `udp backup` | save the database to `~/udp/backups/udp-<date>-<time>.dump` |
+| `udp new <source>` | write `sources/<source>/source.yaml` from that folder's files |
+| `udp help` | this list |
+| `udp <command> ...` | anything else runs in the app: `load`, `pipeline`, `profile`, `doctor` |
 
 ## Add a source
 
-A source is a folder in `sources/` with a `source.yaml` that says where the data is:
+A source is a folder in `~/udp/sources/`. Put your data files in it, directly or in its `data/`
+folder:
 
 ```
-sources/
+~/udp/sources/
   my_shop/
-    source.yaml
     data/customers.csv
 ```
 
-```yaml
-connection:
-  type: csv
-datasets:
-  - name: customers
-    path: data/customers.csv
-    load_mode: full
-```
-
-Load it:
+Then describe it and load it:
 
 ```
-docker compose -f compose.release.yaml run --rm app load my_shop
+udp new my_shop
+udp load my_shop
 ```
 
-The dataset now shows in the dashboard. Excel, JSON, database and REST API sources, quality
-checks and schedules are in [docs/adding-a-source.md](docs/adding-a-source.md).
+`udp new` writes `sources/my_shop/source.yaml`, with one dataset per file, and `udp load` loads
+them. The dataset now shows in the dashboard. Excel, JSON, database and REST API sources, quality
+checks and schedules are settings in that file, all in
+[docs/adding-a-source.md](docs/adding-a-source.md).
+
+## Coming from the old commands
+
+If you started the platform before with `export POSTGRES_PASSWORD=...` and a `docker compose`
+line:
+
+- Before the first `udp up`, set `POSTGRES_PASSWORD` and `UDP_API_KEYS` to the values you used
+  then (`export NAME=value`, or `$env:NAME = 'value'` in PowerShell). `udp up` saves them in
+  `~/udp/.env`, and the data you loaded is there again. Or write that file yourself, with both
+  lines: `POSTGRES_PASSWORD='your-password'` and `UDP_API_KEYS='your-key'`.
+- Copy your old `sources/` folders into `~/udp/sources/`.
+
+To uninstall, run `udp down`, delete the `~/udp` folder, and take it off your PATH: on macOS or
+Linux, delete the line ending in `# udp` from `~/.bashrc`, `~/.zshrc` or `~/.profile`; on Windows,
+remove `%USERPROFILE%\udp` from the user PATH (Settings > Environment variables).
 
 ## More
 
