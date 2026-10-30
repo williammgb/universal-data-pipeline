@@ -15,7 +15,9 @@ steps:
   - type: validate
 ```
 
-`script` is a path relative to the project folder — the folder `sources/` is in. The pipeline
+`script` is a path relative to the project folder — the folder `sources/` is in. In an installed
+copy that is the udp folder (default `~/udp`): put scripts in `scripts/custom/` inside it, which
+the installer creates and the containers read, read-only, without a restart. The pipeline
 file around the steps, and running it, are in `stages-and-pipelines.md`; the step itself, its
 record and its failures are what this page describes.
 

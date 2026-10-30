@@ -3,9 +3,10 @@
 #   irm https://raw.githubusercontent.com/williammgb/universal-data-pipeline/main/deploy/install.ps1 | iex
 #
 # It puts compose.release.yaml, udp.cmd and udp (the launcher for Git Bash) in UDP_HOME (default
-# $HOME\udp), makes sources\ and pipelines\ there, and adds that folder to the user's PATH and to
-# this window's, so `udp up` works at once and in every new window. Running it again updates the
-# compose file and the launchers; .env, sources\, pipelines\ and backups\ are never touched.
+# $HOME\udp), makes sources\, pipelines\ and scripts\custom\ there, and adds that folder to the
+# user's PATH and to this window's, so `udp up` works at once and in every new window. Running it
+# again updates the compose file and the launchers; .env, sources\, pipelines\, scripts\ and
+# backups\ are never touched.
 #
 # Every file is fetched to a temporary name first and only moved into place once all of them
 # arrived, so a failed download leaves the files from before as they were. udp.cmd is written
@@ -60,6 +61,7 @@
     }
     $null = [IO.Directory]::CreateDirectory((Join-Path $udpHome 'sources'))
     $null = [IO.Directory]::CreateDirectory((Join-Path $udpHome 'pipelines'))
+    $null = [IO.Directory]::CreateDirectory((Join-Path (Join-Path $udpHome 'scripts') 'custom'))
 
     $isHome = {
         param($entry)

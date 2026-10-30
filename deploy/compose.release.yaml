@@ -42,6 +42,7 @@ services:
       # Folders next to this file; Docker makes an empty one when it is missing.
       - ./sources:/app/sources:ro
       - ./pipelines:/app/pipelines:ro
+      - ./scripts:/app/scripts:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,6 +64,7 @@ services:
     volumes:
       - ./sources:/app/sources
       - ./pipelines:/app/pipelines:ro
+      - ./scripts:/app/scripts:ro
 
   # Creates or updates the platform tables, then exits; everything on the app anchor waits for it.
   migrate:

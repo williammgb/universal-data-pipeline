@@ -85,6 +85,7 @@ def test_sh_puts_the_compose_file_and_an_executable_launcher_in_home_udp(tmp_pat
     for name in INSTALLED:
         assert (udp / name).read_bytes() == (DEPLOY / name).read_bytes(), name
     assert (udp / "sources").is_dir() and (udp / "pipelines").is_dir()
+    assert (udp / "scripts" / "custom").is_dir()
     executable = [_tool("sh"), "-c", '[ -x "$1" ]', "sh", (udp / "udp").as_posix()]
     _ok(subprocess.run(executable, capture_output=True, text=True))
     assert "udp up" in result.stdout
@@ -275,6 +276,7 @@ def test_ps1_puts_both_launchers_and_the_compose_file_in_udp_home(tmp_path: Path
     for name in ("compose.release.yaml", "udp.cmd", "udp"):
         assert (tmp_path / name).read_bytes() == (DEPLOY / name).read_bytes(), name
     assert (tmp_path / "sources").is_dir() and (tmp_path / "pipelines").is_dir()
+    assert (tmp_path / "scripts" / "custom").is_dir()
     assert "udp up" in result.stdout
     assert not any(path.name.endswith(".download") for path in tmp_path.iterdir())
 
