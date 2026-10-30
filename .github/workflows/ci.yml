@@ -72,6 +72,12 @@ jobs:
           ACTOR: ${{ github.actor }}
           VERSION: ${{ github.ref_name }}
         run: |
+          # A tag publishes only the version pyproject.toml says, so the CLI and API report it.
+          declared=$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml | head -n 1)
+          if [ "$declared" != "${VERSION#v}" ]; then
+            echo "::error::tag $VERSION but pyproject.toml says $declared; bump it first"
+            exit 1
+          fi
           echo "$TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
           docker tag "$IMAGE:${{ github.sha }}" "$IMAGE:${VERSION#v}"
           docker tag "$IMAGE:${{ github.sha }}" "$IMAGE:latest"
