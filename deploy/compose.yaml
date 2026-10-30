@@ -97,6 +97,8 @@ services:
       - ../sources:/app/sources:ro
       # Next to sources/, where `udp pipeline run` and the API's pipeline runs look for them.
       - ../pipelines:/app/pipelines:ro
+      # The scripts a pipeline's python steps name, relative to /app; read-only, as trusted code.
+      - ../scripts:/app/scripts:ro
     # Nothing that reads or writes the platform tables starts before they exist.
     depends_on:
       postgres:

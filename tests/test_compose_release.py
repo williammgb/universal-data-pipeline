@@ -41,10 +41,19 @@ def test_every_app_service_but_scaffold_reads_sources_only() -> None:
         assert "./sources:/app/sources:ro" in _services()[name]["volumes"], name
 
 
+def test_every_app_service_reads_scripts_from_a_folder_next_to_the_file_read_only() -> None:
+    for name in ("app", "migrate", "api", "scheduler", "scaffold"):
+        assert "./scripts:/app/scripts:ro" in _services()[name]["volumes"], name
+
+
 def test_scaffold_writes_sources_and_runs_without_the_database() -> None:
     scaffold = _services()["scaffold"]
 
     assert scaffold["profiles"] == ["app"]
-    assert scaffold["volumes"] == ["./sources:/app/sources", "./pipelines:/app/pipelines:ro"]
+    assert scaffold["volumes"] == [
+        "./sources:/app/sources",
+        "./pipelines:/app/pipelines:ro",
+        "./scripts:/app/scripts:ro",
+    ]
     # `run --no-deps` skips the dependencies; none at all keeps `up` from waiting on it.
     assert not scaffold.get("depends_on")

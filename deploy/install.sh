@@ -3,14 +3,14 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/williammgb/universal-data-pipeline/main/deploy/install.sh | sh
 #
-# It puts compose.release.yaml and the udp launcher in UDP_HOME (default ~/udp), makes sources/
-# and pipelines/ there, and adds that folder to PATH in ~/.bashrc and ~/.zshrc, so `udp up` works
+# It puts compose.release.yaml and the udp launcher in UDP_HOME (default ~/udp), makes sources/,
+# pipelines/ and scripts/custom/ there, and adds that folder to PATH in ~/.bashrc and ~/.zshrc, so `udp up` works
 # in any new terminal. When neither exists it writes ~/.profile, and ~/.zshrc when the shell is
 # zsh or ~/.zprofile when it is not: a Mac terminal is zsh, which never reads ~/.profile. The
 # folder goes into the line in single quotes, so a name with `"`, `$` or a backtick is taken as
 # typed; one with a `:` or a line break, which PATH cannot hold, is refused before anything is
 # installed. Running it again updates the compose file and the launcher; .env, sources/,
-# pipelines/ and backups/ are never touched.
+# pipelines/, scripts/ and backups/ are never touched.
 #
 # Every file is fetched to a temporary name first and only moved into place once all of them
 # arrived, so a failed download leaves the files from before as they were.
@@ -60,7 +60,7 @@ for name in $files; do
   mv -f "$home/.$name.download" "$home/$name"
 done
 chmod +x "$home/udp"
-mkdir -p "$home/sources" "$home/pipelines"
+mkdir -p "$home/sources" "$home/pipelines" "$home/scripts/custom"
 
 # The folder in single quotes, each ' in it written as '\'' : nothing in it is expanded or run.
 quoted="'$(printf '%s' "$home" | sed "s/'/'\\\\''/g")'"

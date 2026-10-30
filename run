@@ -205,8 +205,18 @@ smoke_sources() {
   for source in $SMOKE_SOURCES; do
     uv run --locked udp load "$source" || return
   done
-  smoke_run && smoke_scheduler && smoke_api && smoke_pipeline && smoke_dashboard && smoke_metrics &&
-    smoke_console && smoke_backup && smoke_hold
+  smoke_run && smoke_scheduler && smoke_api && smoke_pipeline && smoke_scripts && smoke_dashboard &&
+    smoke_metrics && smoke_console && smoke_backup && smoke_hold
+}
+
+# The api container sees scripts/ through its own mount: the check that refused a python step's
+# script as "not a file" must accept the repo's example script.
+smoke_scripts() {
+  script=scripts/custom/customer_transform.py
+  check="from udp.api.app import script_problem; p = script_problem('$script'); assert p is None, p"
+  compose exec -T api python -c "$check" || {
+    echo "smoke scripts: the api cannot see $script"; compose logs api; return 1; }
+  echo "smoke scripts: $script is visible to the api"
 }
 
 # The api container reads pipelines/ through its own mount: the demo pipeline, started over HTTP,
